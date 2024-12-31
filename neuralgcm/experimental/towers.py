@@ -340,3 +340,129 @@ class ResNet(nnx.Module):
     if self.apply_remat:
       apply_fn = nnx.remat(apply_fn)
     return apply_fn(inputs)
+
+
+class Unet(nnx.Module):
+  """A U-Net tower module that uses ConvLonLatTower for each block."""
+
+  def __init__(
+      self,
+      input_size: int,
+      output_size: int,
+      *,
+      conv_block_num_channels: tuple[int, ...],
+      downsampler=functools.partial(
+          standard_layers.ResizeLonLat, mode='downsample'
+      ),
+      upsampler=functools.partial(
+          standard_layers.ResizeLonLat, mode='upsample'
+      ),
+      reshape_ratio: tuple[int, int] = (2, 2),
+      conv_block_hidden_layers: int = 0,
+      kernel_size: tuple[int, int] = (3, 3),
+      dilations: tuple[int, ...] | int = 1,
+      activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.gelu,
+      use_bias: bool = True,
+      apply_remat: bool = False,
+      rngs: nnx.Rngs,
+  ):
+    self.apply_remat = apply_remat
+    if isinstance(dilations, int):
+      dilations = tuple([dilations] * (len(conv_block_num_channels)))
+
+    if len(conv_block_num_channels) != len(dilations):
+      raise ValueError(
+          'hidden_sizes and dilations must have the same length. Or dilations '
+          'must be a single value.'
+      )
+
+    self.reshape_ratio = reshape_ratio
+
+    self.downsampler = downsampler(reshape_ratio)
+    self.upsampler = upsampler(reshape_ratio)
+
+    in_to_center_channels = (input_size,) + conv_block_num_channels
+    self.downward_blocks = []
+    for i, din_dout in enumerate(itertools.pairwise(in_to_center_channels)):
+      self.downward_blocks.append(
+          ConvLonLatTower(
+              input_size=din_dout[0],
+              output_size=din_dout[1],
+              num_hidden_units=din_dout[1],
+              num_hidden_layers=conv_block_hidden_layers,
+              use_bias=use_bias,
+              kernel_size=kernel_size,
+              dilation=dilations[i],
+              activation=activation,
+              activate_final=True,
+              rngs=rngs,
+          )
+      )
+
+    self.bottom_block = ConvLonLatTower(
+        input_size=conv_block_num_channels[-1],
+        output_size=conv_block_num_channels[-1],
+        num_hidden_units=conv_block_num_channels[-1],
+        num_hidden_layers=conv_block_hidden_layers,
+        use_bias=use_bias,
+        kernel_size=kernel_size,
+        dilation=dilations[-1],
+        activation=activation,
+        activate_final=True,
+        rngs=rngs,
+    )
+
+    self.upward_blocks = []
+    reversed_dilation = tuple(reversed(dilations))
+    for i, din_dout in enumerate(
+        itertools.pairwise(in_to_center_channels[-1:0:-1]),
+    ):
+      self.upward_blocks.append(
+          ConvLonLatTower(
+              input_size=din_dout[0],
+              output_size=din_dout[1],
+              num_hidden_units=din_dout[1],
+              num_hidden_layers=conv_block_hidden_layers,
+              use_bias=use_bias,
+              kernel_size=kernel_size,
+              dilation=reversed_dilation[i],
+              activation=activation,
+              activate_final=True,
+              rngs=rngs,
+          )
+      )
+
+    self.upward_blocks.append(
+        ConvLonLatTower(
+            input_size=conv_block_num_channels[0],
+            output_size=output_size,
+            num_hidden_units=output_size,
+            num_hidden_layers=conv_block_hidden_layers,
+            use_bias=use_bias,
+            kernel_size=kernel_size,
+            dilation=dilations[0],
+            activation=activation,
+            activate_final=False,
+            rngs=rngs,
+        )
+    )
+
+  def apply(self, inputs):
+    carry = inputs
+    skip_connections = []
+    for block in self.downward_blocks:
+      carry = block(carry)
+      skip_connections.append(carry)
+      carry = self.downsampler(carry)
+    carry = self.bottom_block(carry)
+    for level, block in enumerate(self.upward_blocks, start=1):
+      carry = self.upsampler(carry)
+      carry += skip_connections[-level]
+      carry = block(carry)
+    return carry
+
+  def __call__(self, inputs):
+    apply_fn = self.apply
+    if self.apply_remat:
+      apply_fn = nnx.remat(apply_fn)
+    return apply_fn(inputs)

@@ -324,6 +324,91 @@ class TowersTest(parameterized.TestCase):
       outputs = resnet_tower(inputs)
       self.assertEqual(outputs.shape, (output_size,) + inputs.shape[1:])
 
+  @parameterized.parameters(
+      dict(
+          input_size=1,
+          output_size=1,
+          conv_block_num_channels=(1, 1),
+          reshape_ratio=(4, 4),
+          conv_block_hidden_layers=2,
+          use_bias=True,
+          kernel_size=(5, 5),
+          dilations=(4, 4),
+          activation=jax.nn.relu,
+      ),
+      dict(
+          input_size=1,
+          output_size=1,
+          conv_block_num_channels=(1, 1),
+          reshape_ratio=(4, 4),
+          conv_block_hidden_layers=2,
+          use_bias=True,
+          kernel_size=(5, 5),
+          dilations=1,
+          activation=jax.nn.relu,
+      ),
+      dict(
+          input_size=3,
+          output_size=1,
+          conv_block_num_channels=(1, 1),
+          reshape_ratio=(2, 2),
+          conv_block_hidden_layers=2,
+          use_bias=True,
+          kernel_size=(5, 5),
+          dilations=5,
+          activation=jax.nn.relu,
+      ),
+      dict(
+          input_size=10,
+          output_size=5,
+          conv_block_num_channels=(1, 1),
+          reshape_ratio=(2, 2),
+          conv_block_hidden_layers=2,
+          use_bias=True,
+          kernel_size=(3, 3),
+          dilations=(1, 2),
+          activation=jax.nn.relu,
+      ),
+  )
+  def test_unet(
+      self,
+      input_size: int,
+      output_size: int,
+      conv_block_num_channels: tuple[int, int],
+      reshape_ratio: tuple[int, int],
+      conv_block_hidden_layers: int,
+      use_bias: bool,
+      kernel_size: tuple[int, int],
+      dilations: tuple[int, ...] | int,
+      activation: Callable[[jnp.ndarray], jnp.ndarray],
+  ):
+
+    downsample_layer = functools.partial(
+        standard_layers.ResizeLonLat, mode='downsample'
+    )
+    upsample_layer = functools.partial(
+        standard_layers.ResizeLonLat, mode='upsample'
+    )
+
+    unet_tower = towers.Unet(
+        input_size=input_size,
+        output_size=output_size,
+        conv_block_num_channels=conv_block_num_channels,
+        reshape_ratio=reshape_ratio,
+        downsampler=downsample_layer,
+        upsampler=upsample_layer,
+        conv_block_hidden_layers=conv_block_hidden_layers,
+        use_bias=use_bias,
+        kernel_size=kernel_size,
+        dilations=dilations,
+        activation=activation,
+        rngs=nnx.Rngs(0),
+    )
+
+    inputs = jnp.ones((input_size, 128, 64))
+    outputs = unet_tower(inputs)
+    self.assertEqual(outputs.shape, (output_size,) + inputs.shape[1:])
+
 
 def count_conv_tower_params(
     input_size: int,

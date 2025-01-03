@@ -1156,12 +1156,10 @@ class EmbeddedFeatures(TransformABC):
 
   def __init__(
       self,
-      fields_to_embed: Sequence[str],
       *,
       embedding_module: nnx.Module,
       transform: Transform = Identity(),
   ):
-    self.fields_to_embed = fields_to_embed
     self.embedding_module = embedding_module
     self.transform = transform
 
@@ -1173,7 +1171,7 @@ class EmbeddedFeatures(TransformABC):
       self, input_shapes: typing.Pytree | None = None
   ) -> typing.Pytree:
     return self.transform.output_shapes(
-        self.embedding_module.output_shapes(input_shapes)
+        self.embedding_module.output_shapes
     )
 
 

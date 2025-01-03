@@ -224,7 +224,7 @@ class StandardPytreeTransformsTest(parameterized.TestCase):
       xs_std = jax.tree.map(std_over_batch, xs)
       for i, k in enumerate(keys):
         mean_atol = 6 * (expected_stds[i] / np.sqrt(batch_size))
-        std_atol = 6 * (np.sqrt(2 / (batch_size - 1)) * expected_stds[i]**2)
+        std_atol = 6 * (np.sqrt(2 / (batch_size - 1)) * expected_stds[i] ** 2)
         expected_mean = np.array([expected_means[i]] * feature_size)
         expected_std = np.array([expected_stds[i]] * feature_size)
         np.testing.assert_allclose(xs_mean[k], expected_mean, atol=mean_atol)
@@ -443,6 +443,46 @@ class InputsFeaturesTest(parameterized.TestCase):
     )
     self._test_feature_module(surface_embedding_features, None)
 
+  def test_embedded_features(self):
+    n_levels = 12
+    coords = coordinates.DinosaurCoordinates(
+        horizontal=coordinates.LonLatGrid.T21(),
+        vertical=coordinates.LayerLevels(n_levels),
+    )
+    mlp_factory = functools.partial(
+        standard_layers.MlpUniform, hidden_size=6, n_hidden_layers=2
+    )
+    tower_factory = functools.partial(
+        towers.ColumnTower, column_net_factory=mlp_factory
+    )
+    mapping_factory = functools.partial(
+        pytree_mappings.ChannelMapping,
+        tower_factory=tower_factory,
+    )
+    feature_module = pytree_transforms.LatitudeFeatures(
+        grid=coords.horizontal,
+    )
+
+    embedding_size = 3
+
+    embedding_output_shapes = {
+        'embedded_field': typing.ShapeFloatStruct(
+            (embedding_size,) + coords.horizontal.shape
+        ),
+    }
+
+    embedding_module = pytree_mappings.Embedding(
+        output_shapes=embedding_output_shapes,
+        feature_module=feature_module,
+        mapping_factory=mapping_factory,
+        rngs=nnx.Rngs(0),
+    )
+
+    surface_embedding_features = pytree_transforms.EmbeddedFeatures(
+        embedding_module=embedding_module,
+    )
+    self._test_feature_module(surface_embedding_features, None)
+
   @parameterized.named_parameters(
       dict(
           testcase_name='T21_grid',
@@ -510,6 +550,7 @@ class InputsFeaturesTest(parameterized.TestCase):
         'log_surface_pressure': np.ones((1,) + coords.horizontal.shape),
     }
     self._test_feature_module(pressure_features, inputs)
+
 
 if __name__ == '__main__':
   absltest.main()

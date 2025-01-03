@@ -348,3 +348,40 @@ class ConvLonLat(nnx.Module):
     )
     outputs = self.conv_layer(inputs).squeeze(axis=0)
     return jnp.moveaxis(outputs, -1, 0)
+
+
+class ResizeLonLat(nnx.Module):
+  """Layer to resize array inputs."""
+
+  def __init__(
+      self,
+      resize_ratio: tuple[int, int] = (2, 2),
+      *,
+      mode='upsample',
+      method='bilinear',
+  ):
+    self.resize_ratio = resize_ratio
+    self.method = method
+    self.mode = mode
+
+  def __call__(self, inputs):
+
+    input_shape = inputs.shape
+    trailing_shape_and_ratio = zip(input_shape[-2:], self.resize_ratio)
+    output_shape = input_shape[: inputs.ndim - 2]
+    if self.mode == 'upsample':
+      output_shape += tuple(
+          size * ratio for size, ratio in trailing_shape_and_ratio
+      )
+    elif self.mode == 'downsample':
+      for input_axis_shape, ratio in trailing_shape_and_ratio:
+        new_size, r = divmod(input_axis_shape, ratio)
+        if r != 0:
+          raise ValueError(
+              f'{self.resize_ratio=} does not evenly divide {input_shape=}'
+          )
+        else:
+          output_shape += (new_size,)
+    else:
+      raise ValueError(f'Invalid mode: {self.mode}')
+    return jax.image.resize(inputs, output_shape, method=self.method)

@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuralgcm"
-version = "1.1.0"  # keep in sync with __version__ in neuralgcm/__init__.py
+version = "1.1.1"  # keep in sync with __version__ in neuralgcm/__init__.py
 authors = [
     {name = "Google LLC", email = "noreply@google.com"},
 ]

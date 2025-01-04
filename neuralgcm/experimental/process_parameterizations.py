@@ -87,7 +87,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     modal_tendencies = self.to_div_curl(tendencies)
     modal_tendencies = self.filter.filter_modal(modal_tendencies)
     modal_tendencies = pytree_utils.replace_with_matching_or_default(
-        inputs_dict, modal_tendencies
+        inputs_dict, modal_tendencies, default=0.0
     )
     outputs = from_dict_fn(modal_tendencies)
     # outputs = self.coords.with_dycore_sharding(outputs)

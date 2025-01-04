@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests for models constructed via global_circulation.ml.model_builder.py."""
 
+import functools
 from absl.testing import absltest
 from absl.testing import parameterized
 from dinosaur import coordinate_systems
@@ -511,15 +512,13 @@ class NodalModalEncoderDecoderTest(parameterized.TestCase):
 
     with self.subTest('model_state'):
       # check that `encode` produces an expected state.
-      model_state = jax.jit(model.encode_fn)(
-          params, rng, data_inputs, forcing
-      )
+      model_state = jax.jit(model.encode_fn)(params, rng, data_inputs, forcing)
       actual_prognostic_vars = model_state.state
-      for actual, expected in zip(
-          actual_prognostic_vars.astuple(), initial_modal_state.astuple()
-      ):
-        if not isinstance(actual, dict):  # ignore empty dict of tracers.
-          np.testing.assert_allclose(actual, expected, atol=1e-4)
+      jax.tree.map(
+          functools.partial(np.testing.assert_allclose, atol=1e-4),
+          actual_prognostic_vars,
+          initial_modal_state,
+      )
 
     with self.subTest('decoded_state'):
       # check that `decode(encode(x))` is close to identity.
@@ -538,9 +537,11 @@ class NodalModalEncoderDecoderTest(parameterized.TestCase):
 
       encode_decode_fn = jax.jit(encode_decode_fn)
       actual_nodal = encode_decode_fn(params, data_inputs, forcing)
-      for x, y in zip(actual_nodal.values(), target_nodal.values()):
-        if not isinstance(x, dict):  # ignore empty dict of tracers.
-          np.testing.assert_allclose(x, y, atol=2e-4)
+      jax.tree.map(
+          functools.partial(np.testing.assert_allclose, atol=2e-4),
+          actual_nodal,
+          target_nodal,
+      )
 
 
 if __name__ == '__main__':

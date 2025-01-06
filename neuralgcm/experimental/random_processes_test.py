@@ -164,7 +164,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     # generating multiple trajectories of random fields.
     n_samples = 500
     unroll_length = 40
-    init_rngs = jax.random.split(jax.random.PRNGKey(5), n_samples)
+    init_rngs = jax.random.split(jax.random.key(5), n_samples)
     graph, params = nnx.split(random_field)
     sample_fn = lambda x: graph.apply(params).unconditional_sample(x)[0]
     evaluate_fn = lambda x: graph.apply(params).state_values(grid, x)[0]
@@ -268,7 +268,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
   def check_nnx_state_structure_is_invariant(self, grf, grid):
     """Checks that random process does not mutate nnx.state(grf) structure."""
     init_nnx_state = nnx.state(grf, nnx.Param)
-    random_state = grf.unconditional_sample(jax.random.PRNGKey(0))
+    random_state = grf.unconditional_sample(jax.random.key(0))
     random_state = grf.advance(random_state)
     _ = grf.state_values(grid, random_state)
     nnx_state = nnx.state(grf, nnx.Param)
@@ -429,7 +429,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     n_fields = len(variances)
     unroll_length = 10
     n_samples = 1000
-    rngs = jax.random.split(jax.random.PRNGKey(802701), n_samples)
+    rngs = jax.random.split(jax.random.key(802701), n_samples)
 
     ###
     graph, params = nnx.split(random_field)

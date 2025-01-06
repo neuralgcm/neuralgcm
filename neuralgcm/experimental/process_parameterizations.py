@@ -17,6 +17,7 @@
 from typing import Callable
 
 from flax import nnx
+import jax_datetime as jdt
 from neuralgcm.experimental import coordinates
 from neuralgcm.experimental import pytree_mappings
 from neuralgcm.experimental import pytree_transforms
@@ -64,7 +65,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     for name in set(surface_field_names):
       output_shapes[name] = ShapeFloatStruct((1,) + dinosaur_grid.nodal_shape)
     if input_state_shapes is None:
-      input_state_shapes = pytree_mappings.MINIMAL_STATE_STRUCT  # default.
+      input_state_shapes = pytree_mappings.minimal_state_struct()
     input_shapes = features_module.output_shapes(input_state_shapes)
     self.parameterization_mapping = mapping_factory(
         input_shapes=input_shapes,
@@ -76,10 +77,11 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     self.to_div_curl = pytree_transforms.ToModalWithDivCurl(coords.horizontal)
     self.filter = modal_filter
 
-  def __call__(self, inputs: typing.PyTreeState) -> typing.PyTreeState:
+  def __call__(self, inputs: typing.PyTreeState, time: jdt.Datetime) -> typing.PyTreeState:
     # inputs = self.coords.with_dycore_sharding(inputs)
+    # TODO(shoyer): always take a dict instead of a pytree?
     inputs_dict, from_dict_fn = pytree_utils.as_dict(inputs)
-    features = self.features_module(inputs_dict)
+    features = self.features_module(inputs_dict | {'time': time})
     # features = self.coords.dycore_to_physics_sharding(features)
     tendencies = self.parameterization_mapping(features)
     # tendencies = self.coords.physics_to_dycore_sharding(tendencies)

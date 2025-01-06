@@ -20,7 +20,7 @@ import functools
 from flax import nnx
 import jax
 import jax.numpy as jnp
-
+import jax_datetime as jdt
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import typing
 
@@ -42,8 +42,8 @@ class DynamicInputModule(nnx.Module, abc.ABC):
     raise NotImplementedError()
 
   @abc.abstractmethod
-  def __call__(self, sim_time: float) -> typing.Pytree:
-    """Returns dynamic data at the specified sim_time."""
+  def __call__(self, time: jdt.Datetime) -> typing.Pytree:
+    """Returns dynamic data at the specified time."""
     raise NotImplementedError()
 
 
@@ -60,10 +60,9 @@ class DynamicInputSlice(DynamicInputModule):
 
   def update_dynamic_inputs(self, dynamic_inputs):
     # TODO(dkochkov): check that data aligns with expected data_specs.
-    self.times = DynamicInputValue({
-        k: dynamic_inputs[k].timestamp
-        for k in self.keys_to_coords.keys()
-    })
+    self.times = DynamicInputValue(
+        {k: dynamic_inputs[k].timestamp for k in self.keys_to_coords.keys()}
+    )
     self.data = DynamicInputValue(
         {k: dynamic_inputs[k].field.data for k in self.keys_to_coords.keys()}
     )
@@ -74,16 +73,13 @@ class DynamicInputSlice(DynamicInputModule):
         for k, v in self.keys_to_coords.items()
     }
 
-  def __call__(
-      self,
-      sim_time: float,
-  ) -> typing.Pytree:
-    """Returns covariates at the specified sim_time."""
+  def __call__(self, time: jdt.Datetime) -> typing.Pytree:
+    """Returns covariates at the specified time."""
     outputs = {}
-    for k, time in self.times.value.items():  # pylint: disable=attribute-error
-      time_indices = jnp.arange(time.size)
-      approx_index = jnp.interp(sim_time, time, time_indices)
-      index = jnp.round(approx_index).astype('int32')
+    for k, times in self.times.value.items():  # pylint: disable=attribute-error
+      time_indices = jnp.arange(times.size)
+      approx_index = jdt.interp(time, times, time_indices)
+      index = jnp.round(approx_index).astype(int)
       field_index_fn = functools.partial(
           jax.lax.dynamic_index_in_dim,
           index=index,

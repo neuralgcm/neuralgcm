@@ -84,7 +84,7 @@ class TowersTest(parameterized.TestCase):
         apply_remat=apply_remat,
     )
     inputs = jax.random.uniform(
-        jax.random.PRNGKey(42), nn_input_shape + spatial_shape
+        jax.random.key(42), nn_input_shape + spatial_shape
     )
     outputs = tower(inputs)
     with self.subTest('output_shape'):
@@ -148,7 +148,7 @@ class TowersTest(parameterized.TestCase):
         rngs=nnx.Rngs(0),
     )
     inputs = jax.random.uniform(
-        jax.random.PRNGKey(42), nn_input_shape + spatial_shape
+        jax.random.key(42), nn_input_shape + spatial_shape
     )
     outputs = tower(inputs)
     with self.subTest('output_shape'):

@@ -18,6 +18,7 @@ from typing import Callable, Protocol, Sequence
 
 from flax import nnx
 import jax
+import jax_datetime as jdt
 
 from neuralgcm.experimental import coordinates
 from neuralgcm.experimental import pytree_transforms
@@ -40,7 +41,10 @@ class PytreeMapping(Protocol):
 PytreeMappingFactory = Callable[..., PytreeMapping]
 
 
-MINIMAL_STATE_STRUCT = {'sim_time': 0.0}
+def minimal_state_struct() -> typing.Pytree:
+  return {
+      'time': jdt.to_datetime('1970-01-01T00'),  # arbitrary date
+  }
 
 
 class ChannelMapping(nnx.Module):
@@ -201,7 +205,7 @@ class Embedding(nnx.Module):
       rngs: nnx.Rngs,
   ):
     if input_state_shapes is None:
-      input_state_shapes = MINIMAL_STATE_STRUCT  # default.
+      input_state_shapes = minimal_state_struct()  # default.
     self.feature_module = feature_module
     self.mapping = mapping_factory(
         input_shapes=feature_module.output_shapes(input_state_shapes),

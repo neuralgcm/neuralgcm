@@ -215,7 +215,7 @@ class StandardPytreeTransformsTest(parameterized.TestCase):
           for k, rng, mean, std in zip(keys, rngs, input_means, input_stds)
       }
 
-    xs = get_inputs(jax.random.PRNGKey(1))
+    xs = get_inputs(jax.random.key(1))
 
     def _check_mean_and_std(xs, expected_means, expected_stds):
       mean_over_batch = functools.partial(np.mean, axis=0)
@@ -460,7 +460,7 @@ class InputsFeaturesTest(parameterized.TestCase):
           variance=1.0,
           rngs=nnx.Rngs(0),
       )
-      random_process.unconditional_sample(jax.random.PRNGKey(0))
+      random_process.unconditional_sample(jax.random.key(0))
       randomness_features = pytree_transforms.RandomnessFeatures(
           random_process=random_process,
           grid=grid,
@@ -477,7 +477,7 @@ class InputsFeaturesTest(parameterized.TestCase):
           variances=[1.0, 1.0],
           rngs=nnx.Rngs(0),
       )
-      random_process.unconditional_sample(jax.random.PRNGKey(0))
+      random_process.unconditional_sample(jax.random.key(0))
       randomness_features = pytree_transforms.RandomnessFeatures(
           random_process=random_process,
           grid=grid,

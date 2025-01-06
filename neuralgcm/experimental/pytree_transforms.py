@@ -31,11 +31,11 @@ import functools
 import re
 from typing import Callable, Protocol, Sequence
 
-from dinosaur import radiation
 from dinosaur import spherical_harmonic
 from flax import nnx
 import jax
 import jax.numpy as jnp
+import jax_solar
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import coordinates
 from neuralgcm.experimental import data_specs
@@ -510,7 +510,9 @@ class Nondimensionalize(TransformABC):
 
   def _nondim_numeric(self, x: typing.Numeric, k: str):
     if k not in self.inputs_to_units_mapping:
-      raise ValueError(f'Key {k} not found in {self.inputs_to_units_mapping=}')
+      raise ValueError(
+          f'Key {k!r} not found in {self.inputs_to_units_mapping=}'
+      )
     quantity = typing.Quantity(self.inputs_to_units_mapping[k])
     return self.sim_units.nondimensionalize(quantity * x)
 
@@ -728,62 +730,29 @@ class InverseLevelScale(TransformABC):
 #
 
 
-# TSI: Energy input to the top of the Earth's atmosphere
-# https://www.ncei.noaa.gov/products/climate-data-records/total-solar-irradiance
-TOTAL_SOLAR_IRRADIANCE = 1361 * typing.units.W / typing.units.meter**2
-# Seasonal variation in apparent solar irradiance due to Earth-Sun distance
-SOLAR_IRRADIANCE_VARIATION = (
-    47 * typing.units.W / typing.units.meter**2
-)  # .5 * 6.9% * TSI
-
-
 class RadiationFeatures(TransformABC):
   """Feature module that computes incident radiation flux."""
 
   def __init__(
       self,
       coords: coordinates.DinosaurCoordinates,
-      sim_units: units.SimUnits,
       transform: Transform = Identity(),
   ):
     self.coords = coords
     self.transform = transform
-    self.orbital_rate = jax.tree.map(
-        sim_units.nondimensionalize,
-        radiation.OrbitalTime(
-            2 * jnp.pi / typing.units.year, 2 * jnp.pi / typing.units.day
-        ),
-    )
-    self.mean_irradiance = sim_units.nondimensionalize(TOTAL_SOLAR_IRRADIANCE)
-    self.variation = sim_units.nondimensionalize(SOLAR_IRRADIANCE_VARIATION)
-    datetime = radiation.datetime64_to_datetime(sim_units.reference_datetime)
-    self.reference_orbital_time = radiation.datetime_to_orbital_time(datetime)
 
   @property
   def lon(self) -> typing.Array:
-    return self.coords.dinosaur_grid.nodal_mesh[0]
+    return jnp.rad2deg(self.coords.dinosaur_grid.nodal_mesh[0])
 
   @property
   def lat(self) -> typing.Array:
-    return np.arcsin(self.coords.dinosaur_grid.nodal_mesh[1])
-
-  def time_to_orbital_time(self, time: typing.Numeric) -> radiation.OrbitalTime:
-    """Returns the OribtalTime corresponding to the specified nondim time."""
-    orbital_time = self.reference_orbital_time + self.orbital_rate * time
-    # Reduce the magnitude of the result to avoid loss of precision errors
-    # downstream. Avoid jnp.fmod, which is not very precise on float32.
-    orbital_time -= orbital_time // (2 * jnp.pi) * (2 * jnp.pi)
-    return orbital_time
+    return jnp.rad2deg(np.arcsin(self.coords.dinosaur_grid.nodal_mesh[1]))
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     features = {}
-    orbital_time = self.time_to_orbital_time(inputs['sim_time'])
-    features['radiation'] = radiation.get_normalized_radiation_flux(
-        orbital_time=orbital_time,
-        longitude=self.lon,
-        latitude=self.lat,
-        mean_irradiance=self.mean_irradiance,
-        variation=self.variation,
+    features['radiation'] = jax_solar.normalized_radiation_flux(
+        time=inputs['time'], longitude=self.lon, latitude=self.lat
     )
     features = jax.tree.map(lambda x: jnp.expand_dims(x, 0), features)
     return self.transform(features)
@@ -930,8 +899,8 @@ class DynamicInputFeatures(TransformABC):
     }
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    sim_time = inputs['sim_time']
-    data_features = self.dynamic_input_module(sim_time)
+    time = inputs['time']
+    data_features = self.dynamic_input_module(time)
     # TODO(dkochkov) Used to expand dim here.
     features = {k: data_features[k].data for k in self.keys}
     features = {
@@ -1062,6 +1031,8 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
       prognostics_keys.remove('tracers')
     if 'sim_time' in prognostics_keys:
       prognostics_keys.remove('sim_time')
+    if 'time' in prognostics_keys:
+      prognostics_keys.remove('time')
     for k in set(self.fields_to_include) - set([self.u_key, self.v_key]):
       if k in prognostics_keys:
         modal_features[typing.KeyWithCosLatFactor(prefix + k, 0)] = inputs[k]

@@ -121,7 +121,7 @@ class StandardLayersTest(parameterized.TestCase):
     """Tests output_shape and number of params in ConvLevel."""
     level_size = 24
     input_shape = (input_size, level_size)
-    inputs = jax.random.uniform(jax.random.PRNGKey(42), shape=input_shape)
+    inputs = jax.random.uniform(jax.random.key(42), shape=input_shape)
     conv_level_layer = standard_layers.ConvLevel(
         input_size=input_size,
         output_size=output_size,
@@ -177,7 +177,7 @@ class StandardLayersTest(parameterized.TestCase):
     """Tests that VerticalConvNet outputs and params have expected shapes."""
     n_levels = 13
     input_shape = (input_size, n_levels)
-    inputs = jax.random.uniform(jax.random.PRNGKey(42), shape=input_shape)
+    inputs = jax.random.uniform(jax.random.key(42), shape=input_shape)
     cnn_level_layer = standard_layers.CnnLevel(
         input_size=input_size,
         output_size=output_size,

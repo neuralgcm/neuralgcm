@@ -20,6 +20,7 @@ import dataclasses
 from typing import Generic, TypeVar
 
 import jax
+import jax_datetime as jdt
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import typing
 from penzai.core import struct
@@ -51,7 +52,7 @@ class TimedObservations(
   """
 
   fields: dict[str, F] = dataclasses.field(metadata={'pytree_node': True})
-  timestamp: jax.Array = dataclasses.field(metadata={'pytree_node': True})
+  timestamp: jdt.Datetime = dataclasses.field(metadata={'pytree_node': True})
 
   def get_specs(self) -> TimedObservations:
     if_field = lambda x: isinstance(x, cx.Field)
@@ -76,7 +77,7 @@ class TimedField(
   """
 
   field: F = dataclasses.field(metadata={'pytree_node': True})
-  timestamp: jax.Array | None = dataclasses.field(
+  timestamp: jdt.Datetime | None = dataclasses.field(
       default=None, metadata={'pytree_node': True}
   )
 

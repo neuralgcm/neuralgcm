@@ -127,7 +127,7 @@ class NeuralEquation(time_integrators.ExplicitODE):
     for field in surface_field_names:
       output_shapes[field] = ShapeFloatStruct((1,) + coords.horizontal.shape)
     if input_state_shapes is None:
-      input_state_shapes = pytree_mappings.MINIMAL_STATE_STRUCT  # default.
+      input_state_shapes = pytree_mappings.minimal_state_struct()  # default.
     self.explicit_tendency_mapping = mapping_factory(
         input_shapes=features_module.output_shapes(input_state_shapes),
         output_shapes=output_shapes,
@@ -147,6 +147,11 @@ class NeuralEquation(time_integrators.ExplicitODE):
     return from_dict_fn(tendencies)
 
 
+def _sum_non_nones(*args: jax.Array | None) -> jax.Array | None:
+  terms = [x for x in args if x is not None]
+  return sum(terms) if terms else None
+
+
 @dataclasses.dataclass
 class ComposedODE(ImplicitExplicitODE):
   """Composed equation with exactly one ImplicitExplicitODE instance."""
@@ -162,15 +167,13 @@ class ComposedODE(ImplicitExplicitODE):
           'ComposedODE only supports exactly 1 ImplicitExplicitODE, '
           f'got {imex_equations=}'
       )
-    implicit_explicit_eq, = imex_equations
+    (implicit_explicit_eq,) = imex_equations
     self.implicit_explicit_equation = implicit_explicit_eq
 
   def explicit_terms(self, x: typing.Pytree) -> typing.Pytree:
     explicit_tendencies = [fn.explicit_terms(x) for fn in self.equations]
     return jax.tree.map(
-        lambda *args: sum(x for x in args if x is not None),
-        *explicit_tendencies,
-        is_leaf=lambda x: x is None,
+        _sum_non_nones, *explicit_tendencies, is_leaf=lambda x: x is None
     )
 
   def implicit_terms(self, x: typing.Pytree) -> typing.Pytree:

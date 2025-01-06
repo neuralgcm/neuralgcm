@@ -153,7 +153,6 @@ def primitive_equations_to_uvtz(
       v_component_of_wind=regrid_with_constant_fn(v),
       temperature=regrid_with_linear_fn(t),
       geopotential=regrid_with_linear_fn(z),
-      sim_time=source_state.sim_time,
   )
   for k, v in regrid_with_constant_fn(tracers).items():
     outputs[k] = v

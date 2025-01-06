@@ -23,6 +23,7 @@ from etils import epath
 import fiddle as fdl
 from flax import nnx
 import jax
+import jax_datetime as jdt
 from neuralgcm.experimental import checkpointing  # pylint: disable=unused-import
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import coordinates
@@ -151,7 +152,9 @@ class ForecastSystem(nnx.Module, abc.ABC):
       random_process.unconditional_sample(key)
 
   def format_diagnostics(
-      self, state: typing.ModelState | None = None, time: float | None = None
+      self,
+      state: typing.ModelState | None = None,
+      time: jdt.Datetime | None = None,
   ) -> typing.Pytree:
     if state is not None:
       nnx.update(self, state.diagnostics)

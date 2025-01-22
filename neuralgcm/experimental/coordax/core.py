@@ -28,12 +28,16 @@ import dataclasses
 import functools
 import operator
 import textwrap
-from typing import Any, Callable, Mapping, Self, TypeAlias, TypeGuard
+from typing import Any, Callable, Mapping, Self, TYPE_CHECKING, TypeAlias, TypeGuard
 
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.coordax import named_axes
 import numpy as np
+
+if TYPE_CHECKING:
+  # Xarray should be an optional dependency of core Coordax
+  import xarray
 
 
 Pytree: TypeAlias = Any
@@ -91,6 +95,13 @@ class Coordinate(abc.ABC):
       return (self,)
     else:
       return tuple(SelectedAxis(self, i) for i in range(self.ndim))
+
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    """Returns a matching instance of this coordinate."""
+    raise NotImplementedError("from_xarray not implemented")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -259,6 +270,13 @@ class NamedAxis(Coordinate):
   def __repr__(self):
     return f'coordax.NamedAxis({self.name!r}, size={self.size})'
 
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    dim = dims[0]
+    return cls(dim, size=coords.sizes[dim])
+
 
 # TODO(dkochkov): consider using @struct.pytree_dataclass here and storing
 # tuple values instead of np.ndarray (which could be exposed as a property).
@@ -296,6 +314,17 @@ class LabeledAxis(Coordinate):
 
   def __repr__(self):
     return f'coordax.LabeledAxis({self.name!r}, ticks={self.ticks!r})'
+
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    dim = dims[0]
+    if dim not in coords:
+      raise ValueError(f'dimension {dim!r} not found')
+    if coords[dim].ndim != 1:
+      raise ValueError(f'dimension {dim!r} does not have a 1D coordinate')
+    return cls(dim, coords[dim].data)
 
 
 def compose_coordinates(*coordinates: Coordinate) -> Coordinate:

@@ -14,7 +14,7 @@
 """Functionality for converting between coordax.Field and Xarray objects."""
 from collections import abc
 import typing
-from typing import Callable
+from typing import Callable, Type
 
 from neuralgcm.experimental.coordax import core
 import xarray
@@ -56,39 +56,22 @@ def field_to_data_array(field: core.Field) -> xarray.DataArray:
   return xarray.DataArray(data=field.data, dims=field.dims, coords=coords)
 
 
-CoordMatcher = Callable[
-    [tuple[str, ...], xarray.Coordinates], core.Coordinate | None
-]
-
-
-def _labeled_axis_matcher(dims: tuple[str, ...], coords: xarray.Coordinates):
-  dim = dims[0]
-  if dim in coords and coords[dim].ndim == 1:
-    return core.LabeledAxis(dim, coords[dim].data)
-  return None
-
-
-def _named_axis_matcher(dims: tuple[str, ...], coords: xarray.Coordinates):
-  dim = dims[0]
-  return core.NamedAxis(dim, size=coords.sizes[dim])
-
-
-DEFAULT_MATCHERS = (_labeled_axis_matcher, _named_axis_matcher)
+DEFAULT_COORD_TYPES = (core.LabeledAxis, core.NamedAxis)
 
 
 def data_array_to_field(
     data_array: xarray.DataArray,
-    coord_matchers: abc.Sequence[CoordMatcher] = DEFAULT_MATCHERS,
+    coord_types: abc.Sequence[Type[core.Coordinate]] = DEFAULT_COORD_TYPES,
 ) -> core.Field:
   """Converts an xarray.DataArray to a coordax.Field.
 
   Args:
     data_array: xarray.DataArray to convert into a Field.
-    coord_matchers: sequence of functions that take a tuple of dimensions and
-      an xarray.Coordinates object and return a coordax.Coordinate object from
-      the leading dimensions if possible, or None otherwise. The first matcher
-      that returns a match will be used. By default, coordinates are constructed
-      out of generic coordax.LabeledAxis and coordax.NamedAxis objects.
+    coord_types: sequence of coordax.Coordinate subclasses with
+      `maybe_from_xarray` methods defined. The first coordinate class that
+      returns a coordinate object (indicating a match) will be used. By default,
+      coordinates are constructed out of generic coordax.LabeledAxis and
+      coordax.NamedAxis objects.
 
   Returns:
     A coordax.Field object with the same data as the input xarray.DataArray.
@@ -103,12 +86,25 @@ def data_array_to_field(
     )
   dims = typing.cast(tuple[str, ...], dims)
 
+  if not coord_types:
+    raise ValueError('coord_types must be non-empty')
+
   def get_next_match():
-    for matcher in coord_matchers:
-      coord = matcher(dims, data_array.coords)
-      if coord is not None:
-        return coord
-    raise ValueError(f'no match found for dimensions starting with {dims}')
+    reasons = []
+    for coord_type in coord_types:
+      try:
+        return coord_type.from_xarray(dims, data_array.coords)
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        coord_name = coord_type.__module__ + '.' + coord_type.__name__
+        reasons.append(f'{coord_name}: {e}')
+
+    reasons_str = '\n'.join(reasons)
+    raise ValueError(
+        'failed to convert xarray.DataArray to coordax.Field, because no '
+        f'coordinate type matched the dimensions starting with {dims}:\n'
+        f'{data_array}\n\n'
+        f'Reasons why coordinate matching failed:\n{reasons_str}'
+    )
 
   while dims:
     coord = get_next_match()

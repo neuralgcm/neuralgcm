@@ -18,16 +18,18 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any, Iterable
+from typing import Any, Iterable, Self
 
 from dinosaur import coordinate_systems as dinosaur_coordinates
 from dinosaur import sigma_coordinates
 from dinosaur import spherical_harmonic
 from dinosaur import vertical_interpolation
 import jax
+import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import typing
 import numpy as np
+import xarray
 
 
 SphericalHarmonicsImpl = spherical_harmonic.SphericalHarmonicsImpl
@@ -73,6 +75,17 @@ class TimeDelta(cx.Coordinate):
   @property
   def fields(self):
     return {'timedelta': cx.wrap(self.time, self)}
+
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    dim = dims[0]
+    if dim != 'timedelta':
+      raise ValueError(f"dimension {dim!r} != 'timedelta'")
+    if coords['timedelta'].ndim != 1:
+      raise ValueError('timedelta coordinate is not a 1D array')
+    return cls(time=coords['timedelta'].data)
 
   @classmethod
   def as_index(cls, axis_size: int, offset: float = 0.0) -> TimeDelta:
@@ -145,9 +158,11 @@ class LonLatGrid(cx.Coordinate):
 
   @property
   def fields(self):
+    lons = jnp.rad2deg(self.ylm_grid.longitudes)
+    lats = jnp.rad2deg(self.ylm_grid.latitudes)
     return {
-        k: cx.wrap(v, cx.SelectedAxis(self, i))
-        for i, (k, v) in enumerate(zip(self.dims, self.ylm_grid.nodal_axes))
+        'longitude': cx.wrap(lons, cx.SelectedAxis(self, axis=0)),
+        'latitude': cx.wrap(lats, cx.SelectedAxis(self, axis=1)),
     }
 
   def to_spherical_harmonic_grid(
@@ -331,6 +346,59 @@ class LonLatGrid(cx.Coordinate):
   @classmethod
   def TL1279(cls, **kwargs) -> LonLatGrid:
     return cls.construct(max_wavenumber=1279, gaussian_nodes=640, **kwargs)
+
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    if dims[:2] != ('longitude', 'latitude'):
+      raise ValueError("leading dimensions are not ('longitude', 'latitude')")
+
+    if coords['longitude'].dims != ('longitude',):
+      raise ValueError('longitude is not a 1D coordinate')
+
+    if coords['latitude'].dims != ('latitude',):
+      raise ValueError('latitude is not a 1D coordinate')
+
+    lon = coords['longitude'].data
+    lat = coords['latitude'].data
+
+    if lon.max() < 2 * np.pi:
+      raise ValueError(f'expected longitude values in degrees, got {lon}')
+
+    if np.allclose(np.diff(lat), lat[1] - lat[0]):
+      if np.isclose(max(lat), 90.0):
+        latitude_spacing = 'equiangular_with_poles'
+      else:
+        latitude_spacing = 'equiangular'
+    else:
+      latitude_spacing = 'gauss'
+
+    longitude_offset = np.deg2rad(coords['longitude'].data[0])
+    longitude_nodes = coords.sizes['longitude']
+    latitude_nodes = coords.sizes['latitude']
+
+    result = cls(
+        longitude_nodes=longitude_nodes,
+        latitude_nodes=latitude_nodes,
+        latitude_spacing=latitude_spacing,
+        longitude_offset=longitude_offset,
+    )
+    result_lat = np.rad2deg(result._ylm_grid.latitudes)
+    if not np.allclose(result_lat, lat, atol=1e-3):
+      raise ValueError(
+          f'inferred latitudes with spacing={latitude_spacing!r} do not '
+          f' match coordinate data: {result_lat} vs {lat}'
+      )
+
+    result_lon = np.rad2deg(result._ylm_grid.longitudes)
+    if not np.allclose(result_lon, lon, atol=1e-3):
+      raise ValueError(
+          'inferred longitudes do not match coordinate data:'
+          f' {result_lon} vs {lon}'
+      )
+
+    return result
 
 
 @jax.tree_util.register_static
@@ -597,6 +665,50 @@ class SphericalHarmonicGrid(cx.Coordinate):
   def TL1279(cls, **kwargs) -> SphericalHarmonicGrid:
     return cls.construct(max_wavenumber=1279, gaussian_nodes=640, **kwargs)
 
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+
+    if dims[:2] != ('longitude_wavenumber', 'total_wavenumber'):
+      raise ValueError(
+          "leading dimensions are not ('longitude_wavenumber',"
+          " 'total_wavenumber')"
+      )
+
+    if coords['longitude_wavenumber'].dims != ('longitude_wavenumber',):
+      raise ValueError('longitude_wavenumber is not a 1D coordinate')
+
+    if coords['total_wavenumber'].dims != ('total_wavenumber',):
+      raise ValueError('total_wavenumber is not a 1D coordinate')
+
+    candidate = cls(
+        longitude_wavenumbers=coords.sizes['longitude_wavenumber'],
+        total_wavenumbers=coords.sizes['total_wavenumber'],
+    )
+
+    expected = candidate._ylm_grid.modal_axes[0]
+    got = coords['longitude_wavenumber'].data
+    if not (expected == got).all():
+      raise ValueError(
+          'inferred longitude wavenumbers do not match coordinate data:'
+          f' {expected} vs {got}. Perhaps you attempted to restore coordinate '
+          ' data from FastSphericalHarmonics, which does not support '
+          'restoration?'
+      )
+
+    expected = candidate._ylm_grid.modal_axes[1]
+    got = coords['total_wavenumber'].data
+    if not (expected == got).all():
+      raise ValueError(
+          f'inferred total wavenumbers do not match coordinate data: {expected}'
+          f' vs {got}. Perhaps you attempted to restore coordinate '
+          ' data from FastSphericalHarmonics, which does not support '
+          'restoration?'
+      )
+
+    return candidate
+
 
 #
 # Vertical level coordinates
@@ -667,6 +779,29 @@ class SigmaLevels(cx.Coordinate):
     boundaries = sigma_levels.boundaries
     return cls(boundaries=boundaries)
 
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    dim = dims[0]
+    if dim != 'sigma':
+      raise ValueError(f"dimension {dim!r} != 'sigma'")
+
+    if coords['sigma'].ndim != 1:
+      raise ValueError('sigma coordinate is not a 1D array')
+
+    candidate = cls.equidistant(coords.sizes['sigma'])
+
+    # TODO(shoyer): add metadata that allows for round-tripping of
+    # non-equidistant sigma levels
+    if not (candidate.centers == coords['sigma'].data).all():
+      raise ValueError(
+          'inferred sigma boundaries do not match coordinate data:'
+          f' {candidate.centers} vs {coords["sigma"].data}. Perhaps sigma '
+          'levels are not equidistant?'
+      )
+    return candidate
+
 
 @jax.tree_util.register_static
 @dataclasses.dataclass(frozen=True)
@@ -723,6 +858,17 @@ class PressureLevels(cx.Coordinate):
   ):
     return cls(centers=pressure_levels.centers)
 
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    dim = dims[0]
+    if dim != 'pressure':
+      raise ValueError(f"dimension {dim!r} != 'pressure'")
+    if coords['pressure'].ndim != 1:
+      raise ValueError('pressure coordinate is not a 1D array')
+    return cls(centers=coords['pressure'].data)
+
 
 @jax.tree_util.register_static
 @dataclasses.dataclass(frozen=True)
@@ -742,6 +888,25 @@ class LayerLevels(cx.Coordinate):
   @property
   def fields(self):
     return {'layer_index': cx.wrap(np.arange(self.n_layers), self)}
+
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self:
+    dim = dims[0]
+    if dim != 'layer_index':
+      raise ValueError(f"dimension {dim!r} != 'layer_index'")
+
+    if coords['layer_index'].ndim != 1:
+      raise ValueError('layer_index coordinate is not a 1D array')
+
+    n_layers = coords.sizes['layer_index']
+    got = coords['layer_index'].data
+    if not np.array_equal(got, np.arange(n_layers)):
+      raise ValueError(
+          f'unexpected layer_index coordinate is not sequential integers: {got}'
+      )
+    return cls(n_layers=n_layers)
 
 
 #

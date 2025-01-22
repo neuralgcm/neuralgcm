@@ -1,3 +1,4 @@
+import textwrap
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -115,7 +116,7 @@ class XarrayTest(absltest.TestCase):
     ):
       coordax_xarray.field_to_data_array(field)
 
-  def test_data_array_to_field_default_matchers(self):
+  def test_data_array_to_field_default_types(self):
     data = np.arange(2 * 3).reshape((2, 3))
     data_array = xarray.DataArray(
         data=data, dims=['x', 'y'], coords={'y': [1, 2, 3]}
@@ -130,16 +131,31 @@ class XarrayTest(absltest.TestCase):
         data=data, dims=['x', 'y'], coords={'y': [1, 2, 3]}
     )
     with self.assertRaisesWithLiteralMatch(
-        ValueError, "no match found for dimensions starting with ('x', 'y')"
+        ValueError,
+        textwrap.dedent(
+            """\
+            failed to convert xarray.DataArray to coordax.Field, because no coordinate type matched the dimensions starting with ('x', 'y'):
+            <xarray.DataArray (x: 2, y: 3)> Size: 48B
+            array([[0, 1, 2],
+                   [3, 4, 5]])
+            Coordinates:
+              * y        (y) int64 24B 1 2 3
+            Dimensions without coordinates: x
+
+            Reasons why coordinate matching failed:
+            neuralgcm.experimental.coordax.core.Coordinate: from_xarray not implemented"""
+        ),
     ):
-      coordax_xarray.data_array_to_field(data_array, coord_matchers=())
+      coordax_xarray.data_array_to_field(
+          data_array, coord_types=(coordax.Coordinate,)
+      )
 
   def test_data_array_to_field_custom_matchers(self):
     data = np.arange(2 * 3).reshape((2, 3))
     data_array = xarray.DataArray(data=data, dims=['x', 'y'])
     custom_coord = AdhocCoordinate(dims=('x', 'y'), shape=(2, 3))
-    coord_matcher = lambda dims, _: custom_coord
-    actual = coordax_xarray.data_array_to_field(data_array, [coord_matcher])
+    custom_coord.from_xarray = lambda dims, _: custom_coord
+    actual = coordax_xarray.data_array_to_field(data_array, [custom_coord])
     expected = coordax.wrap(data, custom_coord)
     testing.assert_fields_equal(actual, expected)
 

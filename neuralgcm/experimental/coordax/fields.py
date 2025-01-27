@@ -43,6 +43,7 @@ Pytree: TypeAlias = Any
 Sequence = collections.abc.Sequence
 
 T = TypeVar('T')
+
 Coordinate = coordinate_systems.Coordinate
 LabeledAxis = coordinate_systems.LabeledAxis
 DummyAxis = coordinate_systems.DummyAxis
@@ -722,13 +723,9 @@ def get_coordinate(
       for idx, d in enumerate(dims)
       if (idx not in indices_to_exclude and d not in dimensions_to_exclude)
   ]
-  if not coordinate_dims:
-    return coordinate_systems.Scalar()
   if None in coordinate_dims:
     raise ValueError('Cannot extract coordinate from partially labeled field')
-  return coordinate_systems.compose_coordinates(
-      *[field.coords[d] for d in coordinate_dims]
-  )
+  return coordinate_systems.compose(*[field.coords[d] for d in coordinate_dims])
 
 
 PyTree = Any

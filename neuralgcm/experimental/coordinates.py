@@ -19,7 +19,7 @@ from __future__ import annotations
 import collections
 import dataclasses
 import math
-from typing import Any, Iterable, Self
+from typing import Any, Iterable, Self, Optional
 
 from dinosaur import coordinate_systems as dinosaur_coordinates
 from dinosaur import sigma_coordinates
@@ -857,6 +857,10 @@ class SigmaLevels(cx.Coordinate):
   def fields(self):
     return {'sigma': cx.wrap(self.sigma_levels.centers, self)}
 
+  @property
+  def centers(self):
+    return self.sigma_levels.centers
+
   def asdict(self) -> dict[str, Any]:
     return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}
 
@@ -1051,10 +1055,11 @@ class LayerLevels(cx.Coordinate):
   """Coordinates that discretize data by index of unstructured layer."""
 
   n_layers: int
+  name: str = 'layer_index'
 
   @property
   def dims(self):
-    return ('layer_index',)
+    return (self.name,)
 
   @property
   def shape(self) -> tuple[int, ...]:
@@ -1062,26 +1067,32 @@ class LayerLevels(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'layer_index': cx.wrap(np.arange(self.n_layers), self)}
+    return {self.name: cx.wrap(np.arange(self.n_layers), self)}
 
   @classmethod
   def from_xarray(
-      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+      cls,
+      dims: tuple[str, ...],
+      coords: xarray.Coordinates,
+      name: Optional[str] = None,
   ) -> Self | cx.NoCoordinateMatch:
-    dim = dims[0]
-    if dim != 'layer_index':
-      return cx.NoCoordinateMatch(f"dimension {dim!r} != 'layer_index'")
+    provided_name = dims[0]
+    if name is None:
+      name = 'layer_index'
+    if provided_name != name:
+      return cx.NoCoordinateMatch(f'dimension {provided_name!r} != {name!r}')
 
-    if coords['layer_index'].ndim != 1:
-      return cx.NoCoordinateMatch('layer_index coordinate is not a 1D array')
+    if coords[name].ndim != 1:
+      return cx.NoCoordinateMatch(f'{name} coordinate is not a 1D array')
 
-    n_layers = coords.sizes['layer_index']
-    got = coords['layer_index'].data
+    n_layers = coords.sizes[name]
+    got = coords[name].data
     if not np.array_equal(got, np.arange(n_layers)):
       return cx.NoCoordinateMatch(
-          f'unexpected layer_index coordinate is not sequential integers: {got}'
+          f'unexpected {name} coordinate is not sequential integers: {got}'
       )
-    return cls(n_layers=n_layers)
+    return cls(n_layers=n_layers, name=name)
+
 
 
 #
@@ -1243,6 +1254,7 @@ def field_from_xarray(
 ) -> cx.Field:
   """Converts an xarray.DataArray to a Field using NeuralGCM coordinates."""
   # TODO(shoyer): add DinosaurCoordinates into this list?
+  # breakpoint()
   coord_types = (
       TimeDelta,
       LonLatGrid,

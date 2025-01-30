@@ -111,10 +111,21 @@ def primitive_equations_to_uvtz(
   )
   t = dinosaur_xarray_utils.temperature_variation_to_absolute(
       to_nodal_fn(source_state.temperature_variation),
-      ref_temperature=primitive_equations.T_ref.squeeze())
+      ref_temperature=primitive_equations.T_ref.squeeze(),
+  )
   tracers = to_nodal_fn(source_state.tracers)
   vertical = input_coords.vertical
   assert isinstance(vertical, coordinates.SigmaLevels)
+  if (
+      'specific_cloud_ice_water_content' in tracers.keys()
+      and 'specific_cloud_liquid_water_content' in tracers.keys()
+  ):
+    clouds = (
+        tracers['specific_cloud_ice_water_content']
+        + tracers['specific_cloud_liquid_water_content']
+    )
+  else:
+    clouds = 0.0
   z = dinosaur_primitive_equations.get_geopotential_with_moisture(
       temperature=t,
       specific_humidity=tracers['specific_humidity'],
@@ -123,6 +134,7 @@ def primitive_equations_to_uvtz(
       gravity_acceleration=sim_units.gravity_acceleration,
       ideal_gas_constant=sim_units.ideal_gas_constant,
       water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
+      clouds=clouds,
   )
   surface_pressure = jnp.exp(to_nodal_fn(source_state.log_surface_pressure))
   u, v, t, z, tracers, surface_pressure = (
@@ -168,4 +180,141 @@ def primitive_equations_to_uvtz(
   )
   for k, v in regrid_with_constant_fn(tracers).items():
     outputs[k] = v
+  return outputs
+
+
+def sigma_to_primitive_equations(
+    source_data: dict[str, typing.Array],
+    source_coords: coordinates.DinosaurCoordinates,
+    primitive_equations: equations.PrimitiveEquations,
+    orography,
+    sim_units: units.SimUnits,
+):
+  """Converts v/u/temp/geopot from sigma levels to primitive equations state."""
+  del orography, sim_units
+
+  interpolate_fn = vertical_interpolation.vectorize_vertical_interpolation(
+      vertical_interpolation.vertical_interpolation
+  )
+
+  data_on_new_sigma = vertical_interpolation.interp_sigma_to_sigma(
+      {k: v for k, v in source_data.items() if k != 'geopotential'},
+      sigma_coords_source=source_coords.vertical,
+      sigma_coords_target=primitive_equations.coords.vertical,
+      horizontal_coords_shape=(
+          source_coords.horizontal.ylm_grid.longitude_nodes,
+          source_coords.horizontal.ylm_grid.latitude_nodes,
+      ),
+      interpolate_fn=interpolate_fn,
+  )
+
+  surface_pressure = data_on_new_sigma.pop('surface_pressure')
+  data_on_new_sigma['log_surface_pressure'] = jnp.log(surface_pressure)
+  data_on_new_sigma['temperature_variation'] = (
+      data_on_new_sigma.pop('temperature') - primitive_equations.T_ref
+  )
+  return data_on_new_sigma
+
+
+def primitive_equations_to_sigma(
+    source_state: dinosaur_primitive_equations.StateWithTime,
+    input_coords: coordinates.DinosaurCoordinates,
+    primitive_equations: equations.PrimitiveEquations,
+    orography: orographies.Orography,
+    target_coords: coordinates.DinosaurCoordinates,
+    sim_units: units.SimUnits,
+    mesh: parallelism.Mesh,
+):
+  """Converts primitive equations state to sigma level data representation."""
+  input_ylm_grid = input_coords.horizontal.ylm_grid
+  input_ylm_grid = dataclasses.replace(input_ylm_grid, spmd_mesh=mesh.spmd_mesh)
+  to_nodal_fn = input_ylm_grid.to_nodal
+  velocity_fn = functools.partial(
+      spherical_harmonic.vor_div_to_uv_nodal,
+      input_ylm_grid,
+  )
+  u, v = velocity_fn(  # returned in nodal space.
+      vorticity=source_state.vorticity, divergence=source_state.divergence
+  )
+  t = dinosaur_xarray_utils.temperature_variation_to_absolute(
+      to_nodal_fn(source_state.temperature_variation),
+      ref_temperature=primitive_equations.T_ref.squeeze(),
+  )
+  tracers = to_nodal_fn(source_state.tracers)
+  vertical = input_coords.vertical
+  assert isinstance(vertical, coordinates.SigmaLevels)
+  if (
+      'specific_cloud_ice_water_content' in tracers.keys()
+      and 'specific_cloud_liquid_water_content' in tracers.keys()
+  ):
+    clouds = (
+        tracers['specific_cloud_ice_water_content']
+        + tracers['specific_cloud_liquid_water_content']
+    )
+  else:
+    clouds = 0.0
+
+  z = dinosaur_primitive_equations.get_geopotential_with_moisture(
+      temperature=t,
+      specific_humidity=tracers['specific_humidity'],
+      nodal_orography=orography.nodal_orography,
+      coordinates=vertical.sigma_levels,
+      gravity_acceleration=sim_units.gravity_acceleration,
+      ideal_gas_constant=sim_units.ideal_gas_constant,
+      water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
+      clouds=clouds,
+  )
+
+  surface_pressure = jnp.exp(to_nodal_fn(source_state.log_surface_pressure))
+
+  u, v, t, z, tracers, surface_pressure = (
+      parallelism.with_dycore_to_physics_sharding(
+          mesh, (u, v, t, z, tracers, surface_pressure)
+      )
+  )
+
+  interpolate_with_linear_extrap_fn = (
+      vertical_interpolation.vectorize_vertical_interpolation(
+          vertical_interpolation.linear_interp_with_linear_extrap
+      )
+  )
+  vertical = primitive_equations.coords.vertical
+  assert isinstance(vertical, coordinates.SigmaLevels)
+  regrid_with_linear_fn = functools.partial(
+      vertical_interpolation.interp_sigma_to_sigma,
+      sigma_coords_source=vertical.sigma_levels,
+      sigma_coords_target=target_coords.vertical.sigma_levels,
+      horizontal_coords_shape=(
+          target_coords.horizontal.ylm_grid.longitude_nodes,
+          target_coords.horizontal.ylm_grid.latitude_nodes,
+      ),
+      interpolate_fn=interpolate_with_linear_extrap_fn,
+  )
+
+  interpolate_with_constant_extrap_fn = (
+      vertical_interpolation.vectorize_vertical_interpolation(
+          vertical_interpolation.vertical_interpolation
+      )
+  )
+  regrid_with_constant_fn = functools.partial(
+      vertical_interpolation.interp_sigma_to_sigma,
+      sigma_coords_source=vertical.sigma_levels,
+      sigma_coords_target=target_coords.vertical.sigma_levels,
+      horizontal_coords_shape=(
+          target_coords.horizontal.ylm_grid.longitude_nodes,
+          target_coords.horizontal.ylm_grid.latitude_nodes,
+      ),
+      interpolate_fn=interpolate_with_constant_extrap_fn,
+  )
+
+  outputs = dict(
+      u_component_of_wind=regrid_with_constant_fn(u),
+      v_component_of_wind=regrid_with_constant_fn(v),
+      temperature=regrid_with_linear_fn(t),
+      geopotential=regrid_with_linear_fn(z),
+  )
+  for k, v in regrid_with_constant_fn(tracers).items():
+    outputs[k] = v
+
+  outputs['surface_pressure'] = surface_pressure
   return outputs

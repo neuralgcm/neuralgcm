@@ -14,10 +14,11 @@
 
 """Utilities for converting between xarray and DataObservation objects."""
 
-from typing import cast
+from typing import cast, Hashable, Optional
 
 from dinosaur import spherical_harmonic
 from dinosaur import xarray_utils as dino_xarray_utils
+import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import coordinates
 from neuralgcm.experimental import data_specs

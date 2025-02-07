@@ -591,6 +591,14 @@ def wrap_like(array: jax.typing.ArrayLike, other: Field) -> Field:
   return Field(array, other.dims, other.coords)
 
 
+def zeros(
+    *coords: Coordinate, dtype: jax.typing.DTypeLike | None = None
+) -> Field:
+  """Returns a zero-filled Field with the given coordinates."""
+  coord = coordinate_systems.compose_coordinates(*coords)
+  return Field(jnp.zeros(coord.shape, dtype)).tag(coord)
+
+
 @utils.export
 def is_field(value) -> TypeGuard[Field]:
   """Returns True if `value` is of type `Field`."""

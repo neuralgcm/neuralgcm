@@ -244,15 +244,26 @@ class FieldTest(parameterized.TestCase):
       dict(
           testcase_name='coord_&_wrong_coord_value',
           array=np.arange(9),
-          tags=(
-              coordax.LabeledAxis(
-                  'z',
-                  np.arange(9),
-              ),
-          ),
+          tags=(coordax.LabeledAxis('z', np.arange(9)),),
           untags=(coordax.LabeledAxis('z', np.arange(9) + 1),),
           full_unwrap=False,
           should_raise_on_untag=True,
+      ),
+      dict(
+          testcase_name='scalar',
+          array=np.array(3.14, dtype=np.float32),
+          tags=(coordax.Scalar(),),
+          untags=(coordax.Scalar(),),
+          full_unwrap=True,
+          should_raise_on_untag=False,
+      ),
+      dict(
+          testcase_name='coord_&_duplicate_scalar',
+          array=np.arange(9),
+          tags=(coordax.Scalar(), coordax.LabeledAxis('z', np.arange(9)),),
+          untags=(coordax.Scalar(), coordax.Scalar()),
+          full_unwrap=False,
+          should_raise_on_untag=False,
       ),
   )
   def test_tag_then_untag_by(
@@ -463,6 +474,9 @@ class FieldTest(parameterized.TestCase):
     actual = array_2d.order_as('y', 'x')
     testing.assert_fields_equal(actual, expected)
 
+    actual = coordax.wrap_like(expected.data, expected)
+    testing.assert_fields_equal(actual, expected)
+
     array_3d = jax.tree.map(lambda x: x[jnp.newaxis, ...], array_2d)
     actual = jax.vmap(lambda x: x.order_as('y', 'x'))(array_3d).tag('z')
     expected = coordax.Field(
@@ -470,6 +484,49 @@ class FieldTest(parameterized.TestCase):
         dims=('z', 'y', 'x'),
     )
     testing.assert_fields_equal(actual, expected)
+
+  def test_extract_coordinate(self):
+    field = coordax.Field(
+        np.arange(2 * 3 * 4).reshape((2, 3, 4)),
+        dims=('x', 'y', 'z'),
+        coords={
+            'x': coordax.LabeledAxis('x', np.arange(2)),
+            'y': coordax.LabeledAxis('y', 2 + np.arange(3)),
+            'z': coordax.LabeledAxis('z', 3 * np.arange(4)),
+        },
+    )
+    with self.subTest('default'):
+      actual = coordax.extract_coordinate(field)
+      expected = coordax.compose_coordinates(
+          *[field.coords[d] for d in field.dims]
+      )
+      self.assertEqual(actual, expected)
+
+    with self.subTest('exclude_by_name'):
+      actual = coordax.extract_coordinate(field, dimensions_to_exclude=['y'])
+      expected = coordax.compose_coordinates(
+          field.coords['x'], field.coords['z']
+      )
+      self.assertEqual(actual, expected)
+
+    with self.subTest('exclude_by_index'):
+      actual = coordax.extract_coordinate(field, indices_to_exclude=[0, -1])
+      expected = field.coords['y']
+      self.assertEqual(actual, expected)
+
+    with self.subTest('exclude_by_index_and_name'):
+      actual = coordax.extract_coordinate(
+          field, indices_to_exclude=[-1], dimensions_to_exclude=['x']
+      )
+      expected = field.coords['y']
+      self.assertEqual(actual, expected)
+
+    with self.subTest('raises_on_unknown_dim'):
+      with self.assertRaisesWithLiteralMatch(
+          ValueError,
+          "unknown_dims={'unknown'} are not in field.dims=('x', 'y', 'z')",
+      ):
+        _ = coordax.extract_coordinate(field, dimensions_to_exclude=['unknown'])
 
 
 if __name__ == '__main__':

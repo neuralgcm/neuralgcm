@@ -136,6 +136,23 @@ class CoordinateSystemsTest(parameterized.TestCase):
               coordax.SelectedAxis(PRODUCT_XY, axis=0),
           ),
       ),
+      dict(
+          testcase_name='skip_scalars',
+          coordinates=(
+              coordax.SizedAxis('x', 4),
+              coordax.Scalar(),
+              coordax.Scalar(),
+              coordax.SelectedAxis(PRODUCT_XY, axis=0),
+              coordax.compose_coordinates(
+                  coordax.SizedAxis('z', 3),
+                  coordax.Scalar()),
+          ),
+          expected=(
+              coordax.SizedAxis('x', 4),
+              coordax.SelectedAxis(PRODUCT_XY, axis=0),
+              coordax.SizedAxis('z', 3),
+          ),
+      ),
   )
   def test_consolidate_coordinates(self, coordinates, expected):
     actual = coordinate_systems.consolidate_coordinates(*coordinates)
@@ -180,6 +197,22 @@ class CoordinateSystemsTest(parameterized.TestCase):
               coordax.SelectedAxis(PRODUCT_XY, axis=0),
               coordax.CartesianProduct((
                   coordax.SelectedAxis(PRODUCT_XY, axis=1),
+                  coordax.SizedAxis('z', 4),
+              )),
+          ),
+          expected=coordax.CartesianProduct((
+              coordax.SizedAxis('x', 2),
+              coordax.SizedAxis('y', 3),
+              coordax.SizedAxis('z', 4),
+          )),
+      ),
+      dict(
+          testcase_name='consolidate_over_parts_skip_scalar',
+          coordinates=(
+              coordax.SelectedAxis(PRODUCT_XY, axis=0),
+              coordax.CartesianProduct((
+                  coordax.SelectedAxis(PRODUCT_XY, axis=1),
+                  coordax.Scalar(),
                   coordax.SizedAxis('z', 4),
               )),
           ),

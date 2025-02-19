@@ -53,40 +53,65 @@ class DynamicInputSlice(DynamicInputModule):
   def __init__(
       self,
       keys_to_coords: dict[str, cx.Coordinate],
+      observation_key: str,
       time_axis: int = 0,
   ):
     self.keys_to_coords = keys_to_coords
+    self.observation_key = observation_key
     self.time_axis = time_axis
 
   def update_dynamic_inputs(self, dynamic_inputs):
-    # TODO(dkochkov): check that data aligns with expected data_specs.
-    self.times = DynamicInputValue(
-        {k: dynamic_inputs[k].timestamp for k in self.keys_to_coords.keys()}
-    )
-    self.data = DynamicInputValue(
-        {k: dynamic_inputs[k].field.data for k in self.keys_to_coords.keys()}
-    )
+    if self.observation_key not in dynamic_inputs:
+      raise ValueError(
+          f'Observation key {self.observation_key} not found in dynamic inputs'
+          f' {dynamic_inputs.keys()}'
+      )
+    inputs = dynamic_inputs[self.observation_key]
+    if 'time' not in inputs:
+      raise ValueError(
+          f'Dynamic inputs under key {self.observation_key} do not have a'
+          f' required time variable {inputs.keys()}'
+      )
+    time = inputs['time']
+    if time.ndim != 1 or time.dims[0] != 'timedelta':
+      raise ValueError(f'Expected time to be 1D timedelta, got {time.dims=}')
+    self.time = DynamicInputValue(time.data)
+    data_dict = {}
+    for k, expected_coord in self.keys_to_coords.items():
+      if k not in inputs:
+        raise ValueError(f'Key {k} not found in dynamic inputs {inputs.keys()}')
+      v = inputs[k]
+      if v.coords.get('timedelta', None) != time.coords['timedelta']:
+        raise ValueError(f'{v.coords=} does not contain {time.coords=}.')
+      data_coord = cx.compose_coordinates(
+          *[v.coords[d] for d in v.dims if d != 'timedelta']
+      )
+      if data_coord != expected_coord:
+        raise ValueError(
+            f'Coordinate mismatch for key {k}: {data_coord=} !='
+            f' {expected_coord=}'
+        )
+      data_dict[k] = v
+    self.data = DynamicInputValue(data_dict)
 
   def output_shapes(self) -> typing.Pytree:
     return {
-        k: typing.ShapeFloatStruct(v.shape)
-        for k, v in self.keys_to_coords.items()
+        k: typing.ShapeFloatStruct(coord.shape)
+        for k, coord in self.keys_to_coords.items()
     }
 
   def __call__(self, time: jdt.Datetime) -> typing.Pytree:
     """Returns covariates at the specified time."""
+    time_indices = jnp.arange(self.time.size)
+    approx_index = jdt.interp(time, self.time.value, time_indices)
+    index = jnp.round(approx_index).astype(int)
+    field_index_fn = functools.partial(
+        jax.lax.dynamic_index_in_dim,
+        index=index,
+        keepdims=False,
+    )
     outputs = {}
-    for k, times in self.times.value.items():  # pylint: disable=attribute-error
-      time_indices = jnp.arange(times.size)
-      approx_index = jdt.interp(time, times, time_indices)
-      index = jnp.round(approx_index).astype(int)
-      field_index_fn = functools.partial(
-          jax.lax.dynamic_index_in_dim,
-          index=index,
-          axis=self.time_axis,
-          keepdims=False,
-      )
-      # TODO(shoyer): use coordax.cmap instead of unwrapping the field.
-      sliced_data = field_index_fn(self.data.value[k])
-      outputs[k] = cx.wrap(sliced_data, self.keys_to_coords[k])
+    for k, v in self.data.value.items():  # pylint: disable=attribute-error
+      out_axes = {k: i for i, k in enumerate(self.keys_to_coords[k].dims)}
+      outputs[k] = cx.cmap(field_index_fn, out_axes)(v.untag('timedelta'))
     return outputs

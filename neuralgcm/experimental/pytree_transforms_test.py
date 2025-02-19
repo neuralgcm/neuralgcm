@@ -26,7 +26,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import coordinates
-from neuralgcm.experimental import data_specs
 from neuralgcm.experimental import dynamic_io
 from neuralgcm.experimental import orographies
 from neuralgcm.experimental import parallelism
@@ -330,23 +329,24 @@ class InputsFeaturesTest(parameterized.TestCase):
   def test_dynamic_input_features(self):
     grid = coordinates.LonLatGrid.T21()
     dynamic_input = dynamic_io.DynamicInputSlice(
-        keys_to_coords={'a': grid, 'b': grid, 'c': grid}
+        keys_to_coords={'a': grid, 'b': grid, 'c': grid},
+        observation_key='abc',
     )
     expand_dims = lambda x: np.expand_dims(x, axis=(1, 2))
     data = {
-        'a': expand_dims(np.arange(2)) * np.ones(grid.shape),
-        'b': expand_dims(np.arange(2)) * np.zeros(grid.shape),
-        'c': expand_dims(np.arange(2)) * np.ones(grid.shape),
+        'abc': {
+            'a': expand_dims(np.arange(2)) * np.ones(grid.shape),
+            'b': expand_dims(np.arange(2)) * np.zeros(grid.shape),
+            'c': expand_dims(np.arange(2)) * np.ones(grid.shape),
+        }
     }
     timedelta = coordinates.TimeDelta(np.arange(2, dtype='timedelta64[h]'))
     grid_trajectory = cx.compose_coordinates(timedelta, grid)
     time = jdt.to_datetime('2000-01-01') + jdt.to_timedelta(
         12, 'h'
     ) * np.arange(timedelta.shape[0])
-    in_data = {
-        k: data_specs.TimedField(cx.wrap(v, grid_trajectory), time)
-        for k, v in data.items()
-    }
+    in_data = jax.tree.map(lambda x: cx.wrap(x, grid_trajectory), data)
+    in_data['abc']['time'] = cx.wrap(time, timedelta)
     dynamic_input.update_dynamic_inputs(in_data)
     with self.subTest('two_keys'):
       dynamic_input_features = pytree_transforms.DynamicInputFeatures(
@@ -356,6 +356,42 @@ class InputsFeaturesTest(parameterized.TestCase):
           dynamic_input_features,
           {'time': jdt.to_datetime('2000-01-01T06')},
       )
+
+  def test_dynamic_input_features_inder_jit(self):
+    grid = coordinates.LonLatGrid.T21()
+    dynamic_input = dynamic_io.DynamicInputSlice(
+        keys_to_coords={'a': grid, 'b': grid, 'c': grid},
+        observation_key='abc',
+    )
+    expand_dims = lambda x: np.expand_dims(x, axis=(1, 2))
+    data = {
+        'abc': {
+            'a': expand_dims(np.arange(2)) * np.ones(grid.shape),
+            'b': expand_dims(np.arange(2)) * np.zeros(grid.shape),
+            'c': expand_dims(np.arange(2)) * np.ones(grid.shape),
+        }
+    }
+    timedelta = coordinates.TimeDelta(np.arange(2, dtype='timedelta64[h]'))
+    grid_trajectory = cx.compose_coordinates(timedelta, grid)
+    time = jdt.to_datetime('2000-01-01') + jdt.to_timedelta(
+        12, 'h'
+    ) * np.arange(timedelta.shape[0])
+    in_data = jax.tree.map(lambda x: cx.wrap(x, grid_trajectory), data)
+    in_data['abc']['time'] = cx.wrap(time, timedelta)
+
+    @nnx.jit
+    def run(module, inputs, dynamic_inputs):
+      module.dynamic_input_module.update_dynamic_inputs(dynamic_inputs)
+      return module(inputs)
+
+    dynamic_input_features = pytree_transforms.DynamicInputFeatures(
+        ('a', 'b'), dynamic_input
+    )
+    run(
+        dynamic_input_features,
+        {'time': jdt.to_datetime('2000-01-01T06')},
+        in_data,
+    )
 
   def test_spatial_surface_features(self):
     feature_sizes = {

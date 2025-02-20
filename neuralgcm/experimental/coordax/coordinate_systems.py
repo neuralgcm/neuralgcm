@@ -155,6 +155,25 @@ class ArrayKey:
 @utils.export
 @jax.tree_util.register_static
 @dataclasses.dataclass(frozen=True)
+class Scalar(Coordinate):
+  """Zero dimensional sentinel coordinate used to label stand alone scalars."""
+
+  @property
+  def dims(self) -> tuple[str, ...]:
+    return ()
+
+  @property
+  def shape(self) -> tuple[int, ...]:
+    return ()
+
+  @property
+  def fields(self) -> dict[str, fields.Field]:
+    return {}
+
+
+@utils.export
+@jax.tree_util.register_static
+@dataclasses.dataclass(frozen=True)
 class SelectedAxis(Coordinate):
   """Coordinate that exposes one dimension of a multidimensional coordinate."""
 
@@ -209,6 +228,8 @@ def consolidate_coordinates(*coordinates: Coordinate) -> tuple[Coordinate, ...]:
       axes[:] = []
 
   for c in coordinates:
+    if isinstance(c, Scalar):
+      continue
     if isinstance(c, SelectedAxis) and c.axis == 0:
       # new SelectedAxis to consider consolidating
       reset_axes()

@@ -46,6 +46,7 @@ T = TypeVar('T')
 Coordinate = coordinate_systems.Coordinate
 
 Array = jax.Array | ndarrays.NDArray
+ArrayLike = jax.typing.ArrayLike | ndarrays.NDArray
 
 
 def _dimension_names(*names: str | Coordinate) -> tuple[str, ...]:
@@ -56,6 +57,7 @@ def _dimension_names(*names: str | Coordinate) -> tuple[str, ...]:
 
 def _coordinate_attrs(field: Field) -> str:
   """Returns a string representation of the coordinate attributes."""
+
   def _coord_name(c: coordinate_systems.Coordinate):
     if isinstance(c, coordinate_systems.SelectedAxis):
       return f'SelectedAxis({c.coordinate.__class__.__name__}, axis={c.axis})'
@@ -193,7 +195,7 @@ class Field:
 
   def __init__(
       self,
-      data: jax.typing.ArrayLike,
+      data: ArrayLike,
       dims: tuple[str | None, ...] | None = None,
       coords: dict[str, Coordinate] | None = None,
   ):
@@ -562,6 +564,7 @@ class Field:
 
   def __treescope_ndarray_adapter__(self):
     """Treescope handler for named arrays."""
+
     def _summary_fn(field, inspect_data):
       attrs, array_summary, data_type = named_axes.attrs_summary_type(
           field.named_array, inspect_data
@@ -569,6 +572,7 @@ class Field:
       coord_attrs = _coordinate_attrs(field)
       attrs = ', '.join([attrs, f'coords={coord_attrs}'])
       return attrs, array_summary, data_type
+
     return named_axes.NamedArrayAdapter(_summary_fn)
 
   # Convenience wrappers: Elementwise infix operators.
@@ -651,7 +655,7 @@ class Field:
 
 
 @utils.export
-def wrap(array: jax.typing.ArrayLike, *names: str | Coordinate | None) -> Field:
+def wrap(array: ArrayLike, *names: str | Coordinate | None) -> Field:
   """Wraps a positional array as a ``Field``."""
   field = Field(array)
   if names:
@@ -660,9 +664,10 @@ def wrap(array: jax.typing.ArrayLike, *names: str | Coordinate | None) -> Field:
 
 
 @utils.export
-def wrap_like(array: jax.typing.ArrayLike, other: Field) -> Field:
+def wrap_like(array: ArrayLike, other: Field) -> Field:
   """Wraps `array` with the same coordinates as `other`."""
-  array = jnp.asarray(array)
+  if isinstance(array, jax.typing.ArrayLike):
+    array = jnp.asarray(array)
   if array.shape != other.shape:
     raise ValueError(f'{array.shape=} and {other.shape=} must be equal')
   return Field(array, other.dims, other.coords)
@@ -672,6 +677,52 @@ def wrap_like(array: jax.typing.ArrayLike, other: Field) -> Field:
 def is_field(value) -> TypeGuard[Field]:
   """Returns True if `value` is of type `Field`."""
   return isinstance(value, Field)
+
+
+def extract_coordinate(
+    field: Field,
+    indices_to_exclude: Sequence[int] = (),
+    dimensions_to_exclude: Sequence[str] = (),
+    check_excluded_dims: bool = True,
+) -> Coordinate:
+  """Returns a single coordinate for a field with excluded axes.
+
+  Args:
+    field: coordax.Field from which the coordinate will be extracted.
+    indices_to_exclude: indices corresponding to axes to be excluded.
+    dimensions_to_exclude: dimension names corresponding to axes to be excluded.
+    check_excluded_dims: whether to check that all excluded dimensions are
+      present on the field.
+
+  Returns:
+    Coordinate associated with the non-excluded axes of the `field`.
+  """
+  ndim = field.ndim
+  dims = field.dims
+  for axis in indices_to_exclude:
+    if axis < -ndim or axis >= ndim:
+      raise ValueError(f'invalid axis {axis} for ndim {ndim}')
+  normalize_idx = lambda idx: idx if idx >= 0 else idx + ndim
+  indices_to_exclude = [normalize_idx(i) for i in indices_to_exclude]
+  if not set(indices_to_exclude).issubset(set(range(ndim))):
+    raise ValueError(
+        f'{indices_to_exclude=} must be in [{-ndim}, {ndim})'
+    )
+  if check_excluded_dims and not set(dimensions_to_exclude).issubset(set(dims)):
+    unknown_dims = set(dimensions_to_exclude).difference(set(dims))
+    raise ValueError(f'{unknown_dims=} are not in {field.dims=}')
+  coordinate_dims = [
+      d
+      for idx, d in enumerate(dims)
+      if (idx not in indices_to_exclude and d not in dimensions_to_exclude)
+  ]
+  if not coordinate_dims:
+    return coordinate_systems.Scalar()
+  if None in coordinate_dims:
+    raise ValueError('Cannot extract coordinate from partially labeled field')
+  return coordinate_systems.compose_coordinates(
+      *[field.coords[d] for d in coordinate_dims]
+  )
 
 
 PyTree = Any

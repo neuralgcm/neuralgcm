@@ -44,6 +44,8 @@ Sequence = collections.abc.Sequence
 
 T = TypeVar('T')
 Coordinate = coordinate_systems.Coordinate
+LabeledAxis = coordinate_systems.LabeledAxis
+DummyAxis = coordinate_systems.DummyAxis
 
 Array = jax.Array | ndarrays.NDArray
 
@@ -56,6 +58,7 @@ def _dimension_names(*names: str | Coordinate) -> tuple[str, ...]:
 
 def _coordinate_attrs(field: Field) -> str:
   """Returns a string representation of the coordinate attributes."""
+
   def _coord_name(c: coordinate_systems.Coordinate):
     if isinstance(c, coordinate_systems.SelectedAxis):
       return f'SelectedAxis({c.coordinate.__class__.__name__}, axis={c.axis})'
@@ -216,6 +219,7 @@ class Field:
     self._named_array = named_array
     self._coords = coords
     self._check_valid()
+    self._remove_dummy_axes()
 
   def _check_valid(self) -> None:
     """Checks that the field coordinates and dimension names are consistent."""
@@ -251,6 +255,12 @@ class Field:
             f'named array vs coordinate:\n{self.named_array}\n{coord}'
         )
 
+  def _remove_dummy_axes(self) -> None:
+    """Removes dummy axes from the field."""
+    self._coords = {
+        k: v for k, v in self._coords.items() if not isinstance(v, DummyAxis)
+    }
+
   @classmethod
   def from_namedarray(
       cls,
@@ -264,10 +274,7 @@ class Field:
   def from_xarray(
       cls,
       data_array: xarray.DataArray,
-      coord_types: Sequence[type[Coordinate]] = (
-          coordinate_systems.LabeledAxis,
-          coordinate_systems.DummyAxis,
-      ),
+      coord_types: Sequence[type[Coordinate]] = (LabeledAxis, DummyAxis),
   ) -> Self:
     """Converts an xarray.DataArray into a coordax.Field.
 
@@ -314,11 +321,7 @@ class Field:
 
     while dims:
       coord = get_next_match()
-      coords.append(
-          coord.name
-          if isinstance(coord, coordinate_systems.DummyAxis)
-          else coord
-      )
+      coords.append(coord)
       assert coord.ndim > 0  # dimensions will shrink by at least one
       dims = dims[coord.ndim :]
 
@@ -562,6 +565,7 @@ class Field:
 
   def __treescope_ndarray_adapter__(self):
     """Treescope handler for named arrays."""
+
     def _summary_fn(field, inspect_data):
       attrs, array_summary, data_type = named_axes.attrs_summary_type(
           field.named_array, inspect_data
@@ -569,6 +573,7 @@ class Field:
       coord_attrs = _coordinate_attrs(field)
       attrs = ', '.join([attrs, f'coords={coord_attrs}'])
       return attrs, array_summary, data_type
+
     return named_axes.NamedArrayAdapter(_summary_fn)
 
   # Convenience wrappers: Elementwise infix operators.

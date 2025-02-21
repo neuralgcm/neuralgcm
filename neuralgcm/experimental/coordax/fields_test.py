@@ -404,6 +404,50 @@ class FieldTest(parameterized.TestCase):
     untagged = coordax.untag(tagged, 'x', 'y')
     jax.tree.map(np.testing.assert_array_equal, untagged, inputs)
 
+  def test_dummy_axis_named(self):
+    axis = coordax.DummyAxis(name='x', size=5)
+    expected = coordax.Field(np.arange(5), dims=('x',))
+
+    actual = coordax.Field(np.arange(5)).tag(axis)
+    testing.assert_fields_equal(actual, expected)
+
+    actual = coordax.Field(np.arange(5), dims=('x',), coords={'x': axis})
+    testing.assert_fields_equal(actual, expected)
+
+  def test_dummy_axis_unnamed(self):
+    axis = coordax.DummyAxis(name=None, size=5)
+    expected = coordax.Field(np.arange(5), dims=(None,))
+    actual = coordax.Field(np.arange(5)).tag(axis)
+    testing.assert_fields_equal(actual, expected)
+
+  def test_dummy_axis_cartesian_product(self):
+    x = coordax.DummyAxis(name='x', size=2)
+    y = coordax.DummyAxis(name=None, size=3)
+    z = coordax.SizedAxis('z', 4)
+    product = coordax.CartesianProduct((x, y, z))
+    expected = coordax.Field(
+        np.zeros((2, 3, 4)), dims=('x', None, 'z'), coords={'z': z}
+    )
+    actual = coordax.Field(np.zeros((2, 3, 4))).tag(product)
+    testing.assert_fields_equal(actual, expected)
+
+  def test_dummy_axis_error_handling(self):
+    axis = coordax.DummyAxis(name='x', size=5)
+
+    expected_messsage = textwrap.dedent("""\
+        inconsistent size for dimension 'x' between data and coordinates: 4 vs 5 on named array vs coordinate:
+        NamedArray(
+            data=Array([0, 1, 2, 3], dtype=int32),
+            dims=('x',),
+        )
+        coordax.DummyAxis('x')""")
+
+    with self.assertRaisesWithLiteralMatch(ValueError, expected_messsage):
+      coordax.Field(np.arange(4)).tag(axis)
+
+    with self.assertRaisesWithLiteralMatch(ValueError, expected_messsage):
+      coordax.Field(np.arange(4), dims=('x',), coords={'x': axis})
+
   def test_duckarray(self):
 
     @jax.tree_util.register_dataclass

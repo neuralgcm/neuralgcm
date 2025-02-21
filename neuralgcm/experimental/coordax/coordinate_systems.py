@@ -23,7 +23,7 @@ import collections
 import dataclasses
 import functools
 import operator
-from typing import Any, Self, TypeAlias, TYPE_CHECKING
+from typing import Any, Self, TYPE_CHECKING, TypeAlias
 
 import jax
 from neuralgcm.experimental.coordax import utils
@@ -70,7 +70,7 @@ class Coordinate(abc.ABC):
 
   @property
   @abc.abstractmethod
-  def dims(self) -> tuple[str, ...]:
+  def dims(self) -> tuple[str | None, ...]:
     """Dimension names of the coordinate."""
     raise NotImplementedError()
 
@@ -88,7 +88,9 @@ class Coordinate(abc.ABC):
   @property
   def sizes(self) -> dict[str, int]:
     """Sizes of all dimensions on this coordinate."""
-    return dict(zip(self.dims, self.shape))
+    return {
+        dim: size for dim, size in zip(self.dims, self.shape) if dim is not None
+    }
 
   @property
   def ndim(self) -> int:
@@ -106,7 +108,7 @@ class Coordinate(abc.ABC):
   def to_xarray(self) -> dict[str, xarray.Variable]:
     """Convert this coordinate into xarray variables."""
     variables = {}
-    dims_set = set(self.dims)
+    dims_set = {dim for dim in self.dims if dim is not None}
     for name, coord_field in self.fields.items():
       if set(coord_field.dims) <= dims_set:
         # xarray.DataArray coordinate dimensions must be a subset of the
@@ -166,11 +168,17 @@ class SelectedAxis(Coordinate):
       raise ValueError(
           f'Dimension {self.axis=} of {self.coordinate=} is out of bounds'
       )
+    if self.coordinate.dims[self.axis] is None:
+      raise ValueError(
+          f'dimension {self.axis=} of {self.coordinate=} is not named'
+      )
 
   @property
   def dims(self) -> tuple[str, ...]:
     """Dimension names of the coordinate."""
-    return (self.coordinate.dims[self.axis],)
+    dim = self.coordinate.dims[self.axis]
+    assert dim is not None
+    return (dim,)
 
   @property
   def shape(self) -> tuple[int, ...]:
@@ -335,23 +343,22 @@ class SizedAxis(Coordinate):
 class DummyAxis(Coordinate):
   """Dummy coordinate for dimensions without associated coordinate values.
 
-  DummyAxis objects cannot be instantiated, but this class can be used in the
-  `coord_types` argument to `Field.from_xarray` to match dimensions that do not
-  have associated coordinate values.
+  DummyAxis are placeholders for dimensions that do not have associated
+  coordinate values. They are automatically dropped from the Field constructor,
+  but are useful for specifying how to construct fields with missing dimension
+  names and/or coordinates.
   """
 
-  name: str
-
-  def __post_init__(self):
-    raise TypeError('DummyAxis cannot be instantiated')
+  name: str | None
+  size: int
 
   @property
-  def dims(self) -> tuple[str, ...]:
+  def dims(self) -> tuple[str | None, ...]:
     return (self.name,)
 
   @property
   def shape(self) -> tuple[int, ...]:
-    return (0,)
+    return (self.size,)
 
   @property
   def fields(self) -> dict[str, fields.Field]:
@@ -371,9 +378,7 @@ class DummyAxis(Coordinate):
             f'cannot omit a Coordinate object for dimension {dim!r}'
             f' because it is used by at least one coordinate variable: {name!r}'
         )
-    result = object.__new__(cls)
-    object.__setattr__(result, 'name', dim)
-    return result
+    return cls(name=dim, size=coords.sizes[dim])
 
 
 # TODO(dkochkov): consider storing tuple values instead of np.ndarray (which
@@ -404,6 +409,7 @@ class LabeledAxis(Coordinate):
   def fields(self) -> dict[str, fields.Field]:
     # needs local import to avoid circular dependency
     from neuralgcm.experimental.coordax import fields  # pylint: disable=g-import-not-at-top
+
     return {self.name: fields.wrap(self.ticks, self)}
 
   def _components(self):

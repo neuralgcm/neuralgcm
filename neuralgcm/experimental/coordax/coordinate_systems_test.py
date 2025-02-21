@@ -195,10 +195,29 @@ class CoordinateSystemsTest(parameterized.TestCase):
     self.assertEqual(actual, expected)
 
   def test_dummy_axis(self):
-    with self.assertRaisesWithLiteralMatch(
-        TypeError, 'DummyAxis cannot be instantiated'
-    ):
-      coordax.DummyAxis('x')
+    axis = coordax.DummyAxis(name='x', size=0)
+    self.assertEqual(axis.dims, ('x',))
+    self.assertEqual(axis.shape, (0,))
+    self.assertEqual(axis.sizes, {'x': 0})
+    self.assertEqual(axis.fields, {})
+    self.assertEqual(axis.to_xarray(), {})
+
+    axis = coordax.DummyAxis(name=None, size=10)
+    self.assertEqual(axis.dims, (None,))
+    self.assertEqual(axis.shape, (10,))
+    self.assertEqual(axis.sizes, {})
+    self.assertEqual(axis.fields, {})
+    self.assertEqual(axis.to_xarray(), {})
+
+
+  def test_dummy_axis_cartesian_product(self):
+    x = coordax.DummyAxis(name='x', size=2)
+    y = coordax.DummyAxis(name=None, size=3)
+    z = coordax.SizedAxis('z', 4)
+    product = coordax.CartesianProduct((x, y, z))
+    self.assertEqual(product.dims, ('x', None, 'z'))
+    self.assertEqual(product.shape, (2, 3, 4))
+    self.assertEqual(product.sizes, {'x': 2, 'z': 4})
 
 
 if __name__ == '__main__':

@@ -38,8 +38,8 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import coordinates
-from neuralgcm.experimental import data_specs
 from neuralgcm.experimental import dynamic_io
+from neuralgcm.experimental import jax_datetime as jdt
 from neuralgcm.experimental import jax_solar
 from neuralgcm.experimental import nnx_compat
 from neuralgcm.experimental import normalizations
@@ -596,7 +596,9 @@ class Nondimensionalize(TransformABC):
     self.inputs_to_units_mapping = inputs_to_units_mapping
     self.sim_units = sim_units
 
-  def _nondim_numeric(self, x: typing.Numeric, k: str):
+  def _nondim_numeric(self, x: typing.Numeric | jdt.Datetime, k: str):
+    if isinstance(x, jdt.Datetime):
+      return x  # Datetime is always in days/seconds units.
     if k not in self.inputs_to_units_mapping:
       raise ValueError(
           f'Key {k!r} not found in {self.inputs_to_units_mapping=}'
@@ -604,30 +606,17 @@ class Nondimensionalize(TransformABC):
     quantity = typing.Quantity(self.inputs_to_units_mapping[k])
     return self.sim_units.nondimensionalize(quantity * x)
 
-  def _nondim_timed_field(self, x: data_specs.TimedField[cx.Field], k: str):
-    nondim_value = self._nondim_numeric(x.field.data, k)
-    return dataclasses.replace(x, field=cx.wrap_like(nondim_value, x.field))
-
-  def _nondim_timed_observations(
-      self, x: data_specs.TimedObservations[cx.Field]
-  ) -> data_specs.TimedObservations:
-    nondim_values = {
-        k: self._nondim_numeric(v.data, k) for k, v in x.fields.items()
-    }
-    nondim_fields = {
-        k: cx.wrap_like(v, x.fields[k]) for k, v in nondim_values.items()
-    }
-    return dataclasses.replace(x, fields=nondim_fields)
+  def _nondim_field(self, x: cx.Field, k: str):
+    nondim_value = self._nondim_numeric(x.data, k)
+    return cx.wrap_like(nondim_value, x)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     inputs, from_dict_fn = pytree_utils.as_dict(inputs)
     # here we handle different DataObservation types separately for now.
     result = {}
     for k, v in inputs.items():
-      if isinstance(v, data_specs.TimedField):
-        result[k] = self._nondim_timed_field(v, k)
-      elif isinstance(v, data_specs.TimedObservations):
-        result[k] = self._nondim_timed_observations(v)
+      if cx.is_field(v):
+        result[k] = self._nondim_field(v, k)
       elif isinstance(v, typing.Numeric):
         result[k] = self._nondim_numeric(v, k)
       else:
@@ -646,36 +635,25 @@ class Redimensionalize(TransformABC):
     self.inputs_to_units_mapping = inputs_to_units_mapping
     self.sim_units = sim_units
 
-  def _redim_numeric(self, x: typing.Numeric, k: str):
+  def _redim_numeric(self, x: typing.Numeric | jdt.Datetime, k: str):
+    if isinstance(x, jdt.Datetime):
+      return x  # Datetime is always in days/seconds units.
     if k not in self.inputs_to_units_mapping:
       raise ValueError(f'Key {k} not found in {self.inputs_to_units_mapping=}')
     unit = typing.Quantity(self.inputs_to_units_mapping[k])
     return self.sim_units.dimensionalize(x, unit, as_quantity=False)
 
-  def _redim_timed_field(self, x: data_specs.TimedField[cx.Field], k: str):
-    dim_value = self._redim_numeric(x.field.data, k)
-    return dataclasses.replace(x, field=cx.wrap_like(dim_value, x.field))
-
-  def _redim_timed_observations(
-      self, x: data_specs.TimedObservations[cx.Field]
-  ) -> data_specs.TimedObservations:
-    redim_values = {
-        k: self._redim_numeric(v.data, k) for k, v in x.fields.items()
-    }
-    redim_fields = {
-        k: cx.wrap_like(v, x.fields[k]) for k, v in redim_values.items()
-    }
-    return dataclasses.replace(x, fields=redim_fields)
+  def _redim_field(self, x: cx.Field, k: str):
+    dim_value = self._redim_numeric(x.data, k)
+    return cx.wrap_like(dim_value, x)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     inputs, from_dict_fn = pytree_utils.as_dict(inputs)
     # here we handle different DataObservation types separately for now.
     result = {}
     for k, v in inputs.items():
-      if isinstance(v, data_specs.TimedField):
-        result[k] = self._redim_timed_field(v, k)
-      elif isinstance(v, data_specs.TimedObservations):
-        result[k] = self._redim_timed_observations(v)
+      if cx.is_field(v):
+        result[k] = self._redim_field(v, k)
       elif isinstance(v, typing.Numeric):
         result[k] = self._redim_numeric(v, k)
       else:

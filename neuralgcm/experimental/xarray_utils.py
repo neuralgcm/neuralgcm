@@ -20,7 +20,6 @@ from dinosaur import spherical_harmonic
 from dinosaur import xarray_utils as dino_xarray_utils
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import coordinates
-from neuralgcm.experimental import data_specs
 from neuralgcm.experimental import scales
 from neuralgcm.experimental import typing
 from neuralgcm.experimental import units
@@ -97,13 +96,11 @@ def swap_time_to_timedelta(ds: xarray.Dataset) -> xarray.Dataset:
   return ds
 
 
-def xarray_to_timed_fields(
+def xarray_to_fields_with_time(
     ds: xarray.Dataset,
     additional_coord_types: tuple[cx.Coordinate, ...] = (),
-) -> dict[str, data_specs.TimedField[cx.Field]]:
-  """Converts an xarray dataset to TimedField objects.
-
-  The xarray dataset must have a 'time' coordinate variable.
+) -> dict[str, cx.Field]:
+  """Converts an xarray dataset to a dictionary of coordax.Field objects.
 
   Args:
     ds: dataset to convert.
@@ -111,31 +108,26 @@ def xarray_to_timed_fields(
       coordinates from the dataset.
 
   Returns:
-    A dictionary mapping variable names, excluding 'time', to TimedField
-    objects.
+    A dictionary mapping variable names to coordax fields.
   """
   variables = cast(dict[str, xarray.DataArray], dict(ds))
+  fields = {
+      k: coordinates.field_from_xarray(v, additional_coord_types)
+      for k, v in variables.items()
+  }
   time = variables.pop('time', None)
+  # TODO(dkochkov): consider breaking this into a separate function.
   if time is None:
     # Fall back to getting 'time' from coordinates
     time = ds.coords['time']
-  time = jdt.to_datetime(time.data)
-  return {
-      k: data_specs.TimedField(
-          coordinates.field_from_xarray(v, additional_coord_types), time
-      )
-      for k, v in variables.items()
-  }
+    timedelta = coordinates.TimeDelta.from_xarray(('timedelta',), ds.coords)
+    fields['time'] = cx.wrap(jdt.to_datetime(time.data), timedelta)
+  return fields
 
 
-def timed_field_to_xarray(
-    fields: dict[str, data_specs.TimedField[cx.Field]],
+def fields_to_xarray(
+    fields: dict[str, cx.Field],
 ) -> xarray.Dataset:
-  """Converts a TimedField dictionary to an xarray dataset."""
-  ds = xarray.Dataset({k: v.field.to_xarray() for k, v in fields.items()})
-  sample_obs = next(iter(fields.values()))
-  if sample_obs.timestamp is None:
-    raise ValueError(f'observations do not have timestamps: {sample_obs}')
-  time = sample_obs.timestamp.to_datetime64()
-  ds['time'] = (('timedelta',), time)
+  """Converts a coordax.Field dictionary to an xarray dataset."""
+  ds = xarray.Dataset({k: v.to_xarray() for k, v in fields.items()})
   return ds

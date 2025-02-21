@@ -17,7 +17,6 @@
 from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
-from neuralgcm.experimental import data_specs
 from neuralgcm.experimental import nnx_compat
 from neuralgcm.experimental import typing
 import neuralgcm.experimental.jax_datetime as jdt
@@ -61,9 +60,8 @@ class CumulativeDiagnostic(DiagnosticModule):
 
   def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
     return {
-        self.diagnostic_name: data_specs.TimedField(
-            cx.wrap(self.cumulative.value, self.coords), time
-        )
+        self.diagnostic_name: cx.wrap(self.cumulative.value, self.coords),
+        f'{self.diagnostic_name}_time': cx.wrap(time),
     }
 
   def __call__(self, inputs, *args, **kwargs):
@@ -88,9 +86,8 @@ class InstantDiagnostic(DiagnosticModule):
 
   def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
     return {
-        self.diagnostic_name: data_specs.TimedField(
-            cx.wrap(self.instant.value, self.coords), time
-        )
+        self.diagnostic_name: cx.wrap(self.instant.value, self.coords),
+        f'{self.diagnostic_name}_time': cx.wrap(time),
     }
 
   def __call__(self, inputs, *args, **kwargs):
@@ -128,10 +125,10 @@ class IntervalDiagnostic(DiagnosticModule):
   def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
     interval_values = self.interval_values.value
     return {
-        self.diagnostic_name: data_specs.TimedField(
-            cx.wrap(self.cumulative.value - interval_values[0], self.coords),
-            time,
-        )
+        self.diagnostic_name: cx.wrap(
+            self.cumulative.value - interval_values[0], self.coords
+        ),
+        f'{self.diagnostic_name}_time': cx.wrap(time),
     }
 
   def __call__(self, inputs, *args, **kwargs):

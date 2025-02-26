@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pickle
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
-import grain.python as grain
 import neuralgcm.experimental.jax_datetime as jdt
 from neuralgcm.experimental.xreader import reader
 import numpy as np
@@ -342,6 +343,15 @@ class ReaderTest(parameterized.TestCase):
     np.testing.assert_equal(np.sort(actual_2x[:100]), expected)
     np.testing.assert_equal(np.sort(actual_2x[100:]), expected)
     self.assertFalse((actual_2x[:100] == actual_2x[100:]).all())
+
+  def test_read_shuffled_shard_pickle(self):
+    source = xarray.Dataset({'x': ('time', np.arange(100))})
+    sampler = reader.Windower(example_size=5, stride_between_windows=5)
+    data = reader.read_shuffled_shard(source, sampler)
+    restored = pickle.loads(pickle.dumps(data))
+    expected = np.arange(100)
+    actual = np.sort(np.concatenate([x['x'] for x in restored]))
+    np.testing.assert_equal(actual, expected)
 
   def test_read_timeseries_with_datetime(self):
     times = np.arange(

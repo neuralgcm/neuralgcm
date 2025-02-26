@@ -294,14 +294,35 @@ def to_cpu_array(data: np.ndarray) -> np.ndarray | jdt.Datetime | jdt.Timedelta:
 T = TypeVar('T')
 
 
+def _leaves_to_dict(names, arrays):
+  assert len(arrays) == len(names)
+  return dict(zip(names, arrays))
+
+
+def _default_leaf_wrapper(
+    source: xarray.Dataset,
+) -> Callable[[list[T]], dict[str, T]]:
+
+  names = list(source.keys())
+  return functools.partial(_leaves_to_dict, names)
+
+
 @dataclasses.dataclass(repr=False, eq=False)
 class _XarrayBlockSource(grain.RandomAccessDataSource[T]):
   """Grain data source for reading blocks from an xarray.Dataset."""
 
   source: xarray.Dataset
   blocks: list[slice]
-  loader: Callable[[xarray.Dataset], xarray.Dataset]
   leaf_wrapper: Callable[[list[Any]], T]
+
+  @functools.cached_property
+  def loader(self) -> Callable[[xarray.Dataset], xarray.Dataset]:
+    # In principle, it could make sense to support passing alternative
+    # loaders, such as xarray_tensorstore.read() or a dask loader that calls
+    # .compute(). We don't yet have any use cases where this seems to make a
+    # difference, though. (The thread pool loader works as well as
+    # xarray_tensorstore.read.)
+    return _thread_pool_loader()
 
   def __getitem__(self, index):
     selection = self.source.isel(time=self.blocks[index])
@@ -312,18 +333,13 @@ class _XarrayBlockSource(grain.RandomAccessDataSource[T]):
   def __len__(self):
     return len(self.blocks)
 
-
-def _default_leaf_wrapper(
-    source: xarray.Dataset,
-) -> Callable[[list[T]], dict[str, T]]:
-
-  names = list(source.keys())
-
-  def wrap_leaves(arrays):
-    assert len(arrays) == len(names)
-    return dict(zip(names, arrays))
-
-  return wrap_leaves
+  def __getstate__(self):
+    # Cannot pickle the loader because it includes a thread pool.
+    return {
+        'source': self.source,
+        'blocks': self.blocks,
+        'leaf_wrapper': self.leaf_wrapper,
+    }
 
 
 def _prepare_source(source: xarray.Dataset, sample_dim: str) -> xarray.Dataset:
@@ -363,18 +379,9 @@ class _Reader:
       *,
       sample_dim: str = 'time',
       block_size_in_bytes: float = 1e8,
-      dataset_loader: Callable[[xarray.Dataset], xarray.Dataset] | None = None,
       leaf_wrapper: Callable[[list[np.ndarray]], PyTree] | None = None,
   ):
     source = _prepare_source(source, sample_dim)
-
-    if dataset_loader is None:
-      # In principle, it could make sense to support passing alternative
-      # loaders, such as xarray_tensorstore.read() or a dask loader that calls
-      # .compute(). We don't yet have any use cases where this seems to make a
-      # difference, though. (The thread pool loader works as well as
-      # xarray_tensorstore.read.)
-      dataset_loader = _thread_pool_loader()
 
     if leaf_wrapper is None:
       leaf_wrapper = _default_leaf_wrapper(source)
@@ -408,7 +415,6 @@ class _Reader:
     self.block_source = _XarrayBlockSource(
         source=source,
         blocks=block_slices,
-        loader=dataset_loader,
         leaf_wrapper=leaf_wrapper,
     )
 

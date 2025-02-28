@@ -33,6 +33,7 @@ from neuralgcm.experimental.coordax.fields import (
     get_coordinate as get_coordinate,
     wrap_like as wrap_like,
     wrap as wrap,
+    zeros as zeros,
     tag as tag,
     untag as untag,
 )

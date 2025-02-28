@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-from typing import Any, Callable, Type, TypeGuard
+from typing import Any, Callable, TypeGuard
 
 from etils import epath
 import fiddle as fdl
@@ -44,7 +44,7 @@ import pandas as pd
 import xarray
 
 
-MeshType = Type[parallelism.Mesh]
+MeshType = type[parallelism.Mesh]
 TagOrMeshType = tagging.TagType | MeshType
 
 
@@ -66,6 +66,11 @@ def calculate_sub_steps(
 class ForecastSystem(nnx.Module, abc.ABC):
   """Base class for forecast systems."""
 
+  # TODO(shoyer): consider switching to a nested dict to more obviously
+  # indicate components loaded from different data sources.
+  inputs_spec: dict[str, cx.Coordinate]
+  forcings_spec: dict[str, cx.Coordinate]
+  outputs_spec: dict[str, cx.Coordinate]
   _metadata: dict = dataclasses.field(default_factory=dict, kw_only=True)  # pylint: disable=g-bare-generic
   mesh: parallelism.Mesh = dataclasses.field(
       default_factory=parallelism.Mesh, kw_only=True
@@ -284,7 +289,7 @@ class ForecastSystem(nnx.Module, abc.ABC):
     def _is_tag(key: TagOrMeshType) -> TypeGuard[tagging.TagType]:
       return isinstance(key, fdl.Tag)
 
-    def _is_mesh(key: TagOrMeshType) -> TypeGuard[Type[parallelism.Mesh]]:
+    def _is_mesh(key: TagOrMeshType) -> TypeGuard[type[parallelism.Mesh]]:
       return issubclass(key, parallelism.Mesh)
 
     for key, spmd_mesh in spmd_mesh_updates.items():

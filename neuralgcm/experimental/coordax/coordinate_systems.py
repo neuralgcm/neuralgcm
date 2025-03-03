@@ -22,7 +22,9 @@ import abc
 import collections
 import dataclasses
 import functools
+import itertools
 import operator
+import typing
 from typing import Any, Self, TYPE_CHECKING, TypeAlias
 
 import jax
@@ -223,8 +225,21 @@ class SelectedAxis(Coordinate):
     return self.coordinate.to_xarray()
 
 
-def consolidate_coordinates(*coordinates: Coordinate) -> tuple[Coordinate, ...]:
-  """Consolidates coordinates without SelectedAxis objects, if possible."""
+def _expand_coordinates(*coordinates: Coordinate) -> tuple[Coordinate, ...]:
+  """Expands coordinates, removing CartesianProducts and Scalars."""
+  expanded = []
+  for c in coordinates:
+    if isinstance(c, CartesianProduct):
+      expanded.extend(c.coordinates)
+    elif isinstance(c, Scalar):
+      pass
+    else:
+      expanded.append(c)
+  return tuple(expanded)
+
+
+def _consolidate_coordinates(*coordinates: Coordinate) -> tuple[Coordinate, ...]:
+  """Consolidates coordinates, removing SelectedAxes when possible."""
   axes = []
   result = []
 
@@ -240,8 +255,6 @@ def consolidate_coordinates(*coordinates: Coordinate) -> tuple[Coordinate, ...]:
       axes[:] = []
 
   for c in coordinates:
-    if isinstance(c, Scalar):
-      continue
     if isinstance(c, SelectedAxis) and c.axis == 0:
       # new SelectedAxis to consider consolidating
       reset_axes()
@@ -264,6 +277,13 @@ def consolidate_coordinates(*coordinates: Coordinate) -> tuple[Coordinate, ...]:
   return tuple(result)
 
 
+def canonicalize(*coordinates: Coordinate) -> tuple[Coordinate, ...]:
+  """Canonicalize coordinates into a minimum equivalent collection."""
+  coordinates = _expand_coordinates(*coordinates)
+  coordinates = _consolidate_coordinates(*coordinates)
+  return coordinates
+
+
 @utils.export
 @jax.tree_util.register_static
 @dataclasses.dataclass(frozen=True)
@@ -273,49 +293,41 @@ class CartesianProduct(Coordinate):
   coordinates: tuple[Coordinate, ...]
 
   def __post_init__(self):
-    new_coordinates = []
-    for c in self.coordinates:
-      new_coordinates.extend(c.axes)
-    combined_coordinates = consolidate_coordinates(*new_coordinates)
-    if len(combined_coordinates) <= 1:
-      raise ValueError('CartesianProduct must contain more than 1 component')
+    coordinates = canonicalize(*self.coordinates)
     existing_dims = collections.Counter()
-    for c in new_coordinates:
+    for c in coordinates:
       existing_dims.update(c.dims)
     repeated_dims = [dim for dim, count in existing_dims.items() if count > 1]
     if repeated_dims:
       raise ValueError(f'CartesianProduct components contain {repeated_dims=}')
-    object.__setattr__(self, 'coordinates', tuple(new_coordinates))
+    object.__setattr__(self, 'coordinates', coordinates)
 
   def __eq__(self, other):
     # TODO(shoyer): require exact equality of coordinate types?
     if not isinstance(other, CartesianProduct):
       return len(self.coordinates) == 1 and self.coordinates[0] == other
-    return isinstance(other, CartesianProduct) and all(
-        self.coordinates[i] == other.coordinates[i]
-        for i in range(len(self.coordinates))
-    )
+    return isinstance(other, CartesianProduct) and self.axes == other.axes
 
   @property
   def dims(self):
-    return sum([c.dims for c in self.coordinates], start=tuple())
+    return tuple(itertools.chain(*(c.dims for c in self.coordinates)))
 
   @property
   def shape(self) -> tuple[int, ...]:
     """Returns the shape of the coordinate axes."""
-    return sum([c.shape for c in self.coordinates], start=tuple())
+    return tuple(itertools.chain(*(c.shape for c in self.coordinates)))
 
   @property
   def fields(self) -> dict[str, fields.Field]:
     """Returns a mapping from field names to their values."""
     return functools.reduce(
-        operator.or_, [c.fields for c in self.coordinates], {}
+        operator.or_, (c.fields for c in self.coordinates), {}
     )
 
   @property
   def axes(self) -> tuple[Coordinate, ...]:
     """Returns a tuple of Axis objects for each dimension."""
-    return self.coordinates
+    return tuple(itertools.chain(*(c.axes for c in self.coordinates)))
 
 
 @utils.export
@@ -467,17 +479,69 @@ class LabeledAxis(Coordinate):
 
 
 @utils.export
-def compose_coordinates(*coordinates: Coordinate) -> Coordinate:
-  """Composes `coords` into a single coordinate system by cartesian product."""
-  if not coordinates:
-    raise ValueError('No coordinates provided.')
-  coordinate_axes = []
-  for c in coordinates:
-    if isinstance(c, CartesianProduct):
-      coordinate_axes.extend(c.coordinates)
-    else:
-      coordinate_axes.append(c)
-  coordinates = consolidate_coordinates(*coordinate_axes)
-  if len(coordinates) == 1:
-    return coordinates[0]
-  return CartesianProduct(coordinates)
+def compose(*coordinates: Coordinate) -> Coordinate:
+  """Compose coordinates into a unified coordinate system."""
+  product = CartesianProduct(coordinates)
+  match len(product.coordinates):
+    case 0:
+      return Scalar()
+    case 1:
+      return product.coordinates[0]
+    case _:
+      return product
+
+
+def from_xarray(
+    data_array: xarray.DataArray,
+    coord_types: Sequence[type[Coordinate]] = (LabeledAxis, DummyAxis),
+) -> Coordinate:
+  """Convert the coordinates of an xarray.DataArray into a coordax.Coordinate.
+
+  Args:
+    data_array: xarray.DataArray whose coordinates should be converted.
+    coord_types: sequence of coordax.Coordinate subclasses with `from_xarray`
+      methods defined. The first coordinate class that returns a coordinate
+      object (indicating a match) will be used. By default, coordinates will
+      use only generic coordax.LabeledAxis objects.
+
+  Returns:
+    A coordax.Coordinate object representing the coordinates of the input
+    DataArray.
+  """
+  dims = data_array.dims
+  coords = []
+
+  if not all(isinstance(dim, str) for dim in dims):
+    raise TypeError(
+        'can only convert DataArray objects with string dimensions to Field'
+    )
+  dims = typing.cast(tuple[str, ...], dims)
+
+  if not coord_types:
+    raise ValueError('coord_types must be non-empty')
+
+  def get_next_match():
+    reasons = []
+    for coord_type in coord_types:
+      result = coord_type.from_xarray(dims, data_array.coords)
+      if isinstance(result, Coordinate):
+        return result
+      assert isinstance(result, NoCoordinateMatch)
+      coord_name = coord_type.__module__ + '.' + coord_type.__name__
+      reasons.append(f'{coord_name}: {result.reason}')
+
+    reasons_str = '\n'.join(reasons)
+    raise ValueError(
+        'failed to convert xarray.DataArray to coordax.Field, because no '
+        f'coordinate type matched the dimensions starting with {dims}:\n'
+        f'{data_array}\n\n'
+        f'Reasons why coordinate matching failed:\n{reasons_str}'
+    )
+
+  while dims:
+    coord = get_next_match()
+    coords.append(coord)
+    assert coord.ndim > 0  # dimensions will shrink by at least one
+    dims = dims[coord.ndim :]
+
+  return compose(*coords)

@@ -17,6 +17,7 @@ import pickle
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+from neuralgcm.experimental import coordax
 import neuralgcm.experimental.jax_datetime as jdt
 from neuralgcm.experimental.xreader import reader
 import numpy as np
@@ -359,7 +360,7 @@ class ReaderTest(parameterized.TestCase):
         np.datetime64('2000-01-04'),
         np.timedelta64(1, 'D'),
     )
-    source = xarray.Dataset({'time': ('time', times)})
+    source = xarray.Dataset(coords={'time': ('time', times)})
     sampler = reader.Windower(example_size=1)
     data = reader.read_timeseries(source, sampler)
     actual = [item for item in data]
@@ -376,7 +377,7 @@ class ReaderTest(parameterized.TestCase):
         np.timedelta64(4, 'D'),
         np.timedelta64(1, 'D'),
     )
-    source = xarray.Dataset({'time': ('time', times)})
+    source = xarray.Dataset(coords={'time': ('time', times)})
     sampler = reader.Windower(example_size=1)
     data = reader.read_timeseries(source, sampler)
     actual = [item for item in data]
@@ -384,6 +385,20 @@ class ReaderTest(parameterized.TestCase):
         {'time': jdt.to_timedelta(times[0])},
         {'time': jdt.to_timedelta(times[1])},
         {'time': jdt.to_timedelta(times[2])},
+    ]
+    chex.assert_trees_all_equal(actual, expected)
+
+  def test_coordax_unflattener(self):
+    source = xarray.Dataset({
+        'foo': (('time', 'x'), np.array([[1, 2], [3, 4], [5, 6]])),
+    })
+    sampler = reader.Windower(example_size=2)
+    unflattener = reader.CoordaxUnflattener()
+    data = reader.read_timeseries(source, sampler, unflattener=unflattener)
+    actual = [item for item in data]
+    expected = [
+        {'foo': coordax.Field(np.array([[1, 2], [3, 4]]), dims=(None, 'x'))},
+        {'foo': coordax.Field(np.array([[3, 4], [5, 6]]), dims=(None, 'x'))},
     ]
     chex.assert_trees_all_equal(actual, expected)
 

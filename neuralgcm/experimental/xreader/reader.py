@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import abc
+from collections.abc import Sequence
 import concurrent.futures
 import dataclasses
 import functools
@@ -30,6 +31,7 @@ import xarray
 
 if TYPE_CHECKING:
   # pylint: disable=g-import-not-at-top,g-bad-import-order
+  from neuralgcm.experimental import coordax
   import neuralgcm.experimental.jax_datetime as jdt
 
 # pylint: disable=logging-fstring-interpolation
@@ -42,6 +44,9 @@ if not hasattr(grain.experimental, 'WindowShuffleIterDataset'):
   from grain._src.python.dataset.transformations import shuffle  # pylint: disable=protected-access
 
   grain.experimental.WindowShuffleIterDataset = shuffle.WindowShuffleIterDataset
+
+
+T = TypeVar('T')
 
 
 def _xarray_bytes_per_element(
@@ -291,20 +296,64 @@ def to_cpu_array(data: np.ndarray) -> np.ndarray | jdt.Datetime | jdt.Timedelta:
   return converter(data)
 
 
-T = TypeVar('T')
+class Unflattener:
+  """Converts a list of arrays into a pytree of arrays."""
+
+  def build(self, source: xarray.Dataset) -> Callable[[list[Any]], PyTree]:
+    """Returns a function that unflattens a list of arrays into a pytree."""
+    raise NotImplementedError
 
 
-def _leaves_to_dict(names, arrays):
+def _unflatten_arrays(names: list[str], arrays: list[Any]) -> dict[str, Any]:
   assert len(arrays) == len(names)
   return dict(zip(names, arrays))
 
 
-def _default_leaf_wrapper(
-    source: xarray.Dataset,
-) -> Callable[[list[T]], dict[str, T]]:
+class ArrayUnflattener(Unflattener):
+  """Unflatten into a dict of arrays."""
 
-  names = list(source.keys())
-  return functools.partial(_leaves_to_dict, names)
+  def build(self, source: xarray.Dataset) -> Callable[[list[Any]], PyTree]:
+    names = list(source.keys())
+    return functools.partial(_unflatten_arrays, names)
+
+
+def _unflatten_fields(
+    sample_dim: str, coords: dict[str, coordax.Coordinate], arrays: list[Any]
+) -> dict[str, coordax.Field]:
+  from neuralgcm.experimental import coordax  # pylint: disable=g-import-not-at-top
+
+  # TODO(shoyer): consider removing sample_dim from coords, rather than tagging
+  # followed by untagging.
+  return {
+      name: coordax.Field(array).tag(coord).untag(sample_dim)
+      for (name, coord), array in zip(coords.items(), arrays)
+  }
+
+
+@dataclasses.dataclass
+class CoordaxUnflattener(Unflattener):
+  """Unflatten into a dict of coordax.Field objects."""
+
+  coord_types: Sequence[type[coordax.Coordinate]] | None = None
+
+  def build(self, source: xarray.Dataset) -> Callable[[list[Any]], PyTree]:
+    from neuralgcm.experimental import coordax  # pylint: disable=g-import-not-at-top
+
+    # sample_dim is moved to the front via transpose in _prepare_source.
+    sample_dim = next(iter(source.values())).dims[0]
+
+    # Coordax is an optional depdenncy for Xreader, so define default values for
+    # coord_types here instead of on the dataclass field.
+    coord_types = (
+        (coordax.LabeledAxis, coordax.DummyAxis)
+        if self.coord_types is None
+        else self.coord_types
+    )
+    coords = {}
+    for k, data_array in source.items():
+      coords[k] = coordax.coordinates_from_xarray(data_array, coord_types)
+
+    return functools.partial(_unflatten_fields, sample_dim, coords)
 
 
 @dataclasses.dataclass(repr=False, eq=False)
@@ -313,7 +362,7 @@ class _XarrayBlockSource(grain.RandomAccessDataSource[T]):
 
   source: xarray.Dataset
   blocks: list[slice]
-  leaf_wrapper: Callable[[list[Any]], T]
+  unflatten: Callable[[list[Any]], T]
 
   @functools.cached_property
   def loader(self) -> Callable[[xarray.Dataset], xarray.Dataset]:
@@ -328,7 +377,7 @@ class _XarrayBlockSource(grain.RandomAccessDataSource[T]):
     selection = self.source.isel(time=self.blocks[index])
     loaded = self.loader(selection)
     arrays = [to_cpu_array(x.values) for x in loaded.values()]
-    return self.leaf_wrapper(arrays)
+    return self.unflatten(arrays)
 
   def __len__(self):
     return len(self.blocks)
@@ -338,7 +387,7 @@ class _XarrayBlockSource(grain.RandomAccessDataSource[T]):
     return {
         'source': self.source,
         'blocks': self.blocks,
-        'leaf_wrapper': self.leaf_wrapper,
+        'unflatten': self.unflatten,
     }
 
 
@@ -379,12 +428,10 @@ class _Reader:
       *,
       sample_dim: str = 'time',
       block_size_in_bytes: float = 1e8,
-      leaf_wrapper: Callable[[list[np.ndarray]], PyTree] | None = None,
+      unflattener: Unflattener = ArrayUnflattener(),
   ):
     source = _prepare_source(source, sample_dim)
-
-    if leaf_wrapper is None:
-      leaf_wrapper = _default_leaf_wrapper(source)
+    unflatten = unflattener.build(source)
 
     block_size = _calculate_block_size(
         source,
@@ -415,7 +462,7 @@ class _Reader:
     self.block_source = _XarrayBlockSource(
         source=source,
         blocks=block_slices,
-        leaf_wrapper=leaf_wrapper,
+        unflatten=unflatten,
     )
 
 
@@ -425,7 +472,7 @@ def read_timeseries(
     *,
     sample_dim: str = 'time',
     num_epochs: int | None = 1,
-    leaf_wrapper: Callable[[list[Any]], PyTree] | None = None,
+    unflattener: Unflattener = ArrayUnflattener(),
     block_size_in_bytes: float = 1e8,
     read_options: grain.ReadOptions | None = None,
 ) -> grain.IterDataset:
@@ -441,8 +488,7 @@ def read_timeseries(
     sample_dim: name of the dimension to sample along.
     num_epochs: number of epoch for which to read the dataset, or `None` to read
       indefinitely.
-    leaf_wrapper: function that wraps the leaves of the source dataset into a
-      PyTree.
+    unflattener: defines how to convert a list of arrays into a pytree.
     block_size_in_bytes: number of bytes to use for each reading a "block" of
       data from the source data. Larger block sizes are more efficient.
     read_options: options to use for reading the Grain dataset. Buffer size here
@@ -460,7 +506,7 @@ def read_timeseries(
       sampler=sampler,
       sample_dim=sample_dim,
       block_size_in_bytes=block_size_in_bytes,
-      leaf_wrapper=leaf_wrapper,
+      unflattener=unflattener,
   )
   # Our strategy of emitting multiple examples per block means that we need to
   # drop into Grain's lower-level Dataset API.
@@ -483,7 +529,7 @@ def read_shuffled_shard(
     *,
     sample_dim: str = 'time',
     num_epochs: int | None = 1,
-    leaf_wrapper: Callable[[list[Any]], PyTree] | None = None,
+    unflattener: Unflattener = ArrayUnflattener(),
     block_size_in_bytes: float = 1e8,
     buffer_size_in_bytes: float = 1e10,
     min_buffer_blocks: float = 10,
@@ -504,8 +550,7 @@ def read_shuffled_shard(
     sample_dim: name of the dimension to sample along.
     num_epochs: number of epoch for which to read the dataset, or `None` to read
       indefinitely.
-    leaf_wrapper: function that wraps the leaves of the source dataset into a
-      PyTree.
+    unflattener: defines how to convert a list of arrays into a pytree.
     block_size_in_bytes: number of bytes to use for each reading a "block" of
       data from the source data. Larger block sizes are more efficient.
     buffer_size_in_bytes: number of bytes to use in the shuffle window.
@@ -537,7 +582,7 @@ def read_shuffled_shard(
         sampler=sampler,
         sample_dim=sample_dim,
         block_size_in_bytes=block_size_in_bytes,
-        leaf_wrapper=leaf_wrapper,
+        unflattener=unflattener,
     )
     shuffle_window = round(buffer_size_in_bytes / reader.bytes_per_example)
     logging.info(

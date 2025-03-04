@@ -17,12 +17,10 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-from typing import Any, Callable, Type, TypeGuard
+from typing import Any, Callable
 
 from etils import epath
 import fiddle as fdl
-from fiddle import selectors
-from fiddle import tagging
 from flax import nnx
 import jax
 from neuralgcm.experimental import checkpointing  # pylint: disable=unused-import
@@ -42,10 +40,6 @@ import numpy as np
 import orbax.checkpoint as ocp
 import pandas as pd
 import xarray
-
-
-MeshType = Type[parallelism.Mesh]
-TagOrMeshType = tagging.TagType | MeshType
 
 
 def calculate_sub_steps(
@@ -260,59 +254,27 @@ class ForecastSystem(nnx.Module, abc.ABC):
       cls,
       config: fdl.Config[ForecastSystem],
       spmd_mesh_updates: (
-          dict[TagOrMeshType, jax.sharding.Mesh | None] | None
+          dict[parallelism.TagOrMeshType, jax.sharding.Mesh | None] | None
       ) = None,
       array_partitions_updates: (
-          dict[TagOrMeshType, parallelism.ArrayPartitions] | None
+          dict[parallelism.TagOrMeshType, parallelism.ArrayPartitions] | None
       ) = None,
       field_partitions_updates: (
-          dict[TagOrMeshType, parallelism.FieldPartitions] | None
+          dict[parallelism.TagOrMeshType, parallelism.FieldPartitions] | None
       ) = None,
   ):
     """Builds a model from a fiddle config with updated mesh properties."""
-    model_config = fdl.deepcopy_with(config)  # don't modify the original.
-    if not issubclass(model_config.__fn_or_cls__, ForecastSystem):
+    if not issubclass(config.__fn_or_cls__, ForecastSystem):
       raise ValueError(
           f'Fiddle config defines {config.__fn_or_cls__} '
           'which does not inherit from the ForecastSystem class'
       )
-    # Update spmd_mesh via selectors of tags or mesh subclasses.
-    spmd_mesh_updates = spmd_mesh_updates or {}
-    array_partitions_updates = array_partitions_updates or {}
-    field_partitions_updates = field_partitions_updates or {}
-
-    def _is_tag(key: TagOrMeshType) -> TypeGuard[tagging.TagType]:
-      return isinstance(key, fdl.Tag)
-
-    def _is_mesh(key: TagOrMeshType) -> TypeGuard[Type[parallelism.Mesh]]:
-      return issubclass(key, parallelism.Mesh)
-
-    for key, spmd_mesh in spmd_mesh_updates.items():
-      if _is_tag(key):
-        for mesh in selectors.select(model_config, tag=key):
-          mesh.spmd_mesh = spmd_mesh
-      elif _is_mesh(key):
-        for mesh in selectors.select(model_config, key):
-          mesh.spmd_mesh = spmd_mesh
-
-    # Update array_partitions via selectors of tags or mesh subclasses.
-    for key, partition in array_partitions_updates.items():
-      if _is_tag(key):
-        for mesh in selectors.select(model_config, tag=key):
-          mesh.array_partitions = partition
-      elif _is_mesh(key):
-        for mesh in selectors.select(model_config, key):
-          mesh.array_partitions = partition
-
-    # Update field_partitions via selectors of tags or mesh subclasses.
-    for key, partition in field_partitions_updates.items():
-      if _is_tag(key):
-        for mesh in selectors.select(model_config, tag=key):
-          mesh.field_partitions = partition
-      elif _is_mesh(key):
-        for mesh in selectors.select(model_config, key):
-          mesh.field_partitions = partition
-
+    model_config = parallelism.update_mesh_properties(
+        config,
+        spmd_mesh_updates=spmd_mesh_updates,
+        array_partitions_updates=array_partitions_updates,
+        field_partitions_updates=field_partitions_updates,
+    )
     return fdl.build(model_config)
 
   @classmethod
@@ -321,13 +283,13 @@ class ForecastSystem(nnx.Module, abc.ABC):
       path: str | epath.PathLike,
       checkpointer: ocp.Checkpointer | None = None,
       spmd_mesh_updates: (
-          dict[TagOrMeshType, jax.sharding.Mesh | None] | None
+          dict[parallelism.TagOrMeshType, jax.sharding.Mesh | None] | None
       ) = None,
       array_partitions_updates: (
-          dict[TagOrMeshType, parallelism.ArrayPartitions] | None
+          dict[parallelism.TagOrMeshType, parallelism.ArrayPartitions] | None
       ) = None,
       field_partitions_updates: (
-          dict[TagOrMeshType, parallelism.FieldPartitions] | None
+          dict[parallelism.TagOrMeshType, parallelism.FieldPartitions] | None
       ) = None,
   ) -> tuple[ForecastSystem, nnx.State]:
     checkpoint_args = cls.checkpoint_args('restore')

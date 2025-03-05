@@ -1235,6 +1235,14 @@ class CoordinateShard(cx.Coordinate):
     """A maps from field names to their values."""
     return {}
 
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self | cx.NoCoordinateMatch:
+    return cx.NoCoordinateMatch(
+        'CoordinateShard cannot be deterministically inferred from xarray.'
+    )
+
 
 #
 # Helper functions.

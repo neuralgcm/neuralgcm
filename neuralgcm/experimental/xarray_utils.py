@@ -14,12 +14,17 @@
 
 """Utilities for converting between xarray and DataObservation objects."""
 
+import collections
+import functools
+import operator
 from typing import cast
 
 from dinosaur import spherical_harmonic
 from dinosaur import xarray_utils as dino_xarray_utils
+import jax
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental import coordinates
+from neuralgcm.experimental import parallelism
 from neuralgcm.experimental import scales
 from neuralgcm.experimental import typing
 from neuralgcm.experimental import units
@@ -123,6 +128,92 @@ def xarray_to_fields_with_time(
     timedelta = coordinates.TimeDelta.from_xarray(('timedelta',), ds.coords)
     fields['time'] = cx.wrap(jdt.to_datetime(time.data), timedelta)
   return fields
+
+
+def read_fields_from_xarray(
+    dataset: xarray.Dataset,
+    input_specs: dict[str, dict[str, cx.Coordinate]],
+    strict_matches: bool = True,
+) -> dict[str, dict[str, cx.Field]]:
+  """Returns a `specs`-like structure of coordax.Fields from a `dataset`.
+
+  Args:
+    dataset: xarray dataset to read data from.
+    input_specs: nested dictionary that associates variable with coordinates.
+    strict_matches: whether to require exact coordinate matches.
+
+  Returns:
+    A dictionary of dictionaries of coordax.Fields.
+  """
+  # TODO(dkochkov): Generalize this to work with xarray.DataTree and a
+  # a dict of arrays to be compatible with the new xreader.
+  requested_var_names = functools.reduce(
+      operator.or_, [d.keys() for d in input_specs.values()], set()
+  )
+  if not all(k in dataset for k in requested_var_names):
+    missing_vars = set(requested_var_names).difference(set(dataset))
+    raise ValueError(f'specs contains {missing_vars=} that are not in dataset')
+  dataset = dataset[requested_var_names]
+  variables = cast(dict[str, xarray.DataArray], dict(dataset))
+  is_coordinate = lambda x: isinstance(x, cx.Coordinate)
+  input_spec_coords = jax.tree.leaves(input_specs, is_leaf=is_coordinate)
+  additional_coord_types = [type(x) for x in input_spec_coords]
+  if not strict_matches:
+    # including labeled axis ensures that we can match coordinates that do not
+    # support from_xarray reconstruction. LabelAxis will be retagged with the
+    # coordinate specified in the specs.
+    additional_coord_types += [cx.LabeledAxis]
+  fields = {
+      k: coordinates.field_from_xarray(v, tuple(additional_coord_types))
+      for k, v in variables.items()
+  }
+  result = {}
+  for observation_key, observation_specs in input_specs.items():
+    result[observation_key] = {}
+    for k, v in observation_specs.items():
+      if strict_matches:
+        result[observation_key][k] = fields[k].untag(v).tag(v)
+      else:
+        result[observation_key][k] = fields[k].untag(*v.dims).tag(v)
+  return result
+
+
+def read_sharded_fields_from_xarray(
+    dataset: xarray.Dataset,
+    input_specs: dict[str, dict[str, cx.Coordinate]],
+    mesh_shape: collections.OrderedDict[str, int],
+    dim_partitions: parallelism.DimPartitions,
+) -> dict[str, dict[str, cx.Field]]:
+  """Returns a `specs`-like structure of coordax.Fields from a `dataset` shard.
+
+  This is a helpful function for annotating coordax.Field with full coordinates
+  while reading shards of dataset in a distributed setting. By providing the
+  mesh shape and how different dimensions are partitioned we can include full
+  coordinate information by tagging the data with CoordinateShard objects. This
+  can later be dropped once the data is converted to jax arrays and sharded
+  across devices.
+
+  Args:
+    dataset: xarray dataset to read data from.
+    input_specs: nested dictionary that associates variable with coordinates.
+    mesh_shape: shape of the sharding mesh indicating number of devices in each
+      axis.
+    dim_partitions: mapping from dimension names to labels of device axes that
+      the dimension is partitioned across.
+
+  Returns:
+    A dictionary of dictionaries of coordax.Fields tagged with CoordinateShard
+    coordinates.
+  """
+
+  def wrap_coordinate_shard(coord: cx.Coordinate) -> cx.Coordinate:
+    return coordinates.CoordinateShard(coord, mesh_shape, dim_partitions)
+
+  is_coordinate = lambda x: isinstance(x, cx.Coordinate)
+  shard_specs = jax.tree.map(
+      wrap_coordinate_shard, input_specs, is_leaf=is_coordinate
+  )
+  return read_fields_from_xarray(dataset, shard_specs, strict_matches=False)
 
 
 def fields_to_xarray(

@@ -15,7 +15,10 @@
 
 import collections
 import dataclasses
-from flax import nnx
+from typing import Type, TypeGuard
+import fiddle as fdl
+from fiddle import selectors
+from fiddle import tagging
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
@@ -77,9 +80,9 @@ class Mesh:
   Attributes:
     spmd_mesh: Jax sharding mesh object.
     array_partitions: Schemas for partitioning arrays. An array partition
-      specifies how to partition a an array of a specific rank. For example,
-      to partition a 3d array across a device mesh `('x', 'y')`, along the
-      first dimension, we would use a `(('x', 'y'), None, None)` schema.
+      specifies how to partition a an array of a specific rank. For example, to
+      partition a 3d array across a device mesh `('x', 'y')`, along the first
+      dimension, we would use a `(('x', 'y'), None, None)` schema.
     field_partitions: Schemas for partitioning cx.Field. Each schema provides
       partitioning rules for array axes specified by the dimension names. For
       example, schema `{'vertical': {'level': ('z', 'x', 'y'), 'layer': 'z'}}`
@@ -196,6 +199,7 @@ def with_dycore_sharding(
     inputs: typing.PyTreeState,
 ) -> typing.PyTreeState:
   """Applies even sharding variants to inputs depending on input shape."""
+
   def f(y: jax.Array) -> jax.Array:
     assert isinstance(mesh, Mesh)  # make pytype happy.
     if y.ndim == 1 and y.dtype == jnp.uint32:
@@ -219,6 +223,7 @@ def with_physics_sharding(
     inputs: typing.PyTreeState,
 ) -> typing.PyTreeState:
   """Applies horizontal sharding variants depending on input shape."""
+
   def f(y: jax.Array) -> jax.Array:
     assert isinstance(mesh, Mesh)  # make pytype happy.
     if y.ndim == 1 and y.dtype == jnp.uint32:
@@ -249,3 +254,79 @@ def with_physics_to_dycore_sharding(
 ) -> typing.PyTreeState:
   """Applies physics sharding followed by dycore sharding constraints."""
   return with_dycore_sharding(mesh, with_physics_sharding(mesh, inputs))
+
+
+#
+# Helper functions for updating Fiddle configs with new parallelism options.
+#
+
+
+MeshType = Type[Mesh]
+TagOrMeshType = tagging.TagType | MeshType
+
+
+def update_mesh_properties(
+    fiddle_config: fdl.Config,
+    spmd_mesh_updates: (
+        dict[TagOrMeshType, jax.sharding.Mesh | None] | None
+    ) = None,
+    array_partitions_updates: (
+        dict[TagOrMeshType, ArrayPartitions] | None
+    ) = None,
+    field_partitions_updates: (
+        dict[TagOrMeshType, FieldPartitions] | None
+    ) = None,
+) -> fdl.Config:
+  """Returns a copy of the Fiddle config with updated mesh properties.
+
+  Args:
+    fiddle_config: input configuration that will be copied and updated.
+    spmd_mesh_updates: mapping indicating how to update `spmd_mesh`
+      attributes on Mesh configurations in `fiddle_config`. Keys specify the
+      selector of Mesh objects either via tags or mesh types and values indicate
+      the jax sharding mesh to use for the `spmd_mesh` attribute.
+    array_partitions_updates: same as `spmd_mesh_updates` but for
+      `array_partitions` attribute.
+    field_partitions_updates: same as `spmd_mesh_updates` but for
+      `field_partitions` attribute.
+
+  Returns:
+    A copy of `fiddle_config` with updated mesh properties.
+  """
+  # Update spmd_mesh via selectors of tags or mesh subclasses.
+  spmd_mesh_updates = spmd_mesh_updates or {}
+  array_partitions_updates = array_partitions_updates or {}
+  field_partitions_updates = field_partitions_updates or {}
+
+  def _is_tag(key: TagOrMeshType) -> TypeGuard[tagging.TagType]:
+    return isinstance(key, fdl.Tag)
+
+  def _is_mesh(key: TagOrMeshType) -> TypeGuard[Type[Mesh]]:
+    return issubclass(key, Mesh)
+
+  for key, spmd_mesh in spmd_mesh_updates.items():
+    if _is_tag(key):
+      for mesh in selectors.select(fiddle_config, tag=key):
+        mesh.spmd_mesh = spmd_mesh
+    elif _is_mesh(key):
+      for mesh in selectors.select(fiddle_config, key):
+        mesh.spmd_mesh = spmd_mesh
+
+  # Update array_partitions via selectors of tags or mesh subclasses.
+  for key, partition in array_partitions_updates.items():
+    if _is_tag(key):
+      for mesh in selectors.select(fiddle_config, tag=key):
+        mesh.array_partitions = partition
+    elif _is_mesh(key):
+      for mesh in selectors.select(fiddle_config, key):
+        mesh.array_partitions = partition
+
+  # Update field_partitions via selectors of tags or mesh subclasses.
+  for key, partition in field_partitions_updates.items():
+    if _is_tag(key):
+      for mesh in selectors.select(fiddle_config, tag=key):
+        mesh.field_partitions = partition
+    elif _is_mesh(key):
+      for mesh in selectors.select(fiddle_config, key):
+        mesh.field_partitions = partition
+  return fiddle_config

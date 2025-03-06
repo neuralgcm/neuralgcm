@@ -78,9 +78,7 @@ class ModalOrography(nnx.Module):
         nodal_orography, sim_units
     )
     nodal_orography = coordinates.field_from_xarray(nodal_orography)
-    data_grid = cx.compose_coordinates(
-        *(nodal_orography.coords[d] for d in nodal_orography.dims)
-    )
+    data_grid = cx.get_coordinate(nodal_orography)
     # TODO(dkochkov) Introduce objects for specifying nodal-modal conversions.
     ylm_grid = dino_xarray_utils.LINEAR_SHAPE_TO_GRID_DICT[data_grid.shape](
         spherical_harmonics_impl=self.grid.spherical_harmonics_impl
@@ -168,9 +166,7 @@ class Orography(nnx.Module):
         nodal_orography, sim_units
     )
     nodal_orography = coordinates.field_from_xarray(nodal_orography)
-    data_grid = cx.compose_coordinates(
-        *(nodal_orography.coords[d] for d in nodal_orography.dims)
-    )
+    data_grid = cx.get_coordinate(nodal_orography)
     # TODO(dkochkov) Introduce objects for specifying nodal-modal conversions.
     ylm_grid = dino_xarray_utils.LINEAR_SHAPE_TO_GRID_DICT[data_grid.shape](
         spherical_harmonics_impl=self.grid.spherical_harmonics_impl

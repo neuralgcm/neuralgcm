@@ -81,10 +81,10 @@ class DynamicInputSlice(DynamicInputModule):
       if k not in inputs:
         raise ValueError(f'Key {k} not found in dynamic inputs {inputs.keys()}')
       v = inputs[k]
-      if v.coords.get('timedelta', None) != time.coords['timedelta']:
-        raise ValueError(f'{v.coords=} does not contain {time.coords=}.')
+      if v.axes.get('timedelta', None) != time.axes['timedelta']:
+        raise ValueError(f'{v.axes=} does not contain {time.axes=}.')
       data_coord = cx.compose_coordinates(
-          *[v.coords[d] for d in v.dims if d != 'timedelta']
+          *[v.axes[d] for d in v.dims if d != 'timedelta']
       )
       if data_coord != expected_coord:
         raise ValueError(

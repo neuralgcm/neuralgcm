@@ -78,7 +78,7 @@ class FieldTest(parameterized.TestCase):
   def test_field_constructor_default_coords(self):
     field = coordax.Field(np.zeros((2, 3, 4)), dims=('x', None, 'z'))
     expected_coords = {}
-    self.assertEqual(field.coords, expected_coords)
+    self.assertEqual(field.axes, expected_coords)
 
   def test_field_constructor_invalid(self):
     product_xy = coordax.CartesianProduct(
@@ -86,22 +86,22 @@ class FieldTest(parameterized.TestCase):
     )
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        'all coordinates in the coords dict must be 1D, got'
+        'all coordinates in the axes dict must be 1D, got'
         " CartesianProduct(coordinates=(coordax.SizedAxis('x', size=2),"
         " coordax.SizedAxis('y', size=3))) for dimension x. Consider using"
         ' Field.tag() instead to associate multi-dimensional coordinates.',
     ):
-      coordax.Field(np.zeros(3), coords={'x': product_xy})
+      coordax.Field(np.zeros(3), axes={'x': product_xy})
 
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        "coordinate under key 'x' in the coords dict must have dims=('x',) but"
+        "coordinate under key 'x' in the axes dict must have dims=('x',) but"
         " got coord.dims=('y',)",
     ):
       coordax.Field(
           np.zeros((2, 3)),
           dims=('x', 'y'),
-          coords={
+          axes={
               'x': coordax.SizedAxis('y', 2),
               'y': coordax.SizedAxis('x', 3),
           },
@@ -109,12 +109,12 @@ class FieldTest(parameterized.TestCase):
 
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        'coordinate keys must be a subset of the named dimensions of the'
-        " underlying named array, got coordinate keys {'y'} vs data"
+        'axis keys must be a subset of the named dimensions of the'
+        " underlying named array, got axis keys {'y'} vs data"
         " dimensions {'x'}",
     ):
       coordax.Field(
-          np.zeros(3), dims=('x',), coords={'y': coordax.SizedAxis('y', 3)}
+          np.zeros(3), dims=('x',), axes={'y': coordax.SizedAxis('y', 3)}
       )
 
     with self.assertRaisesWithLiteralMatch(
@@ -128,7 +128,7 @@ class FieldTest(parameterized.TestCase):
             coordax.SizedAxis('x', size=4)"""),
     ):
       coordax.Field(
-          np.zeros(3), dims=('x',), coords={'x': coordax.SizedAxis('x', 4)}
+          np.zeros(3), dims=('x',), axes={'x': coordax.SizedAxis('x', 4)}
       )
 
   def test_field_binary_op_sum_simple(self):
@@ -160,7 +160,7 @@ class FieldTest(parameterized.TestCase):
             data=array([[1, 2, 3],
                         [4, 5, 6]]),
             dims=('x', 'y'),
-            coords={
+            axes={
                 'y': coordax.LabeledAxis('y', ticks=array([7, 8, 9])),
             },
         )""")
@@ -422,7 +422,7 @@ class FieldTest(parameterized.TestCase):
     actual = coordax.Field(np.arange(5)).tag(axis)
     testing.assert_fields_equal(actual, expected)
 
-    actual = coordax.Field(np.arange(5), dims=('x',), coords={'x': axis})
+    actual = coordax.Field(np.arange(5), dims=('x',), axes={'x': axis})
     testing.assert_fields_equal(actual, expected)
 
   def test_dummy_axis_unnamed(self):
@@ -437,7 +437,7 @@ class FieldTest(parameterized.TestCase):
     z = coordax.SizedAxis('z', 4)
     product = coordax.CartesianProduct((x, y, z))
     expected = coordax.Field(
-        np.zeros((2, 3, 4)), dims=('x', None, 'z'), coords={'z': z}
+        np.zeros((2, 3, 4)), dims=('x', None, 'z'), axes={'z': z}
     )
     actual = coordax.Field(np.zeros((2, 3, 4))).tag(product)
     testing.assert_fields_equal(actual, expected)
@@ -457,7 +457,7 @@ class FieldTest(parameterized.TestCase):
       coordax.Field(np.arange(4)).tag(axis)
 
     with self.assertRaisesWithLiteralMatch(ValueError, expected_messsage):
-      coordax.Field(np.arange(4), dims=('x',), coords={'x': axis})
+      coordax.Field(np.arange(4), dims=('x',), axes={'x': axis})
 
   def test_duckarray(self):
 
@@ -533,7 +533,7 @@ class FieldTest(parameterized.TestCase):
     field = coordax.Field(
         np.arange(2 * 3 * 4).reshape((2, 3, 4)),
         dims=('x', 'y', 'z'),
-        coords={
+        axes={
             'x': coordax.LabeledAxis('x', np.arange(2)),
             'y': coordax.LabeledAxis('y', 2 + np.arange(3)),
             'z': coordax.LabeledAxis('z', 3 * np.arange(4)),
@@ -542,27 +542,27 @@ class FieldTest(parameterized.TestCase):
     with self.subTest('default'):
       actual = coordax.get_coordinate(field)
       expected = coordax.compose_coordinates(
-          *[field.coords[d] for d in field.dims]
+          *[field.axes[d] for d in field.dims]
       )
       self.assertEqual(actual, expected)
 
     with self.subTest('exclude_by_name'):
       actual = coordax.get_coordinate(field, dimensions_to_exclude=['y'])
       expected = coordax.compose_coordinates(
-          field.coords['x'], field.coords['z']
+          field.axes['x'], field.axes['z']
       )
       self.assertEqual(actual, expected)
 
     with self.subTest('exclude_by_index'):
       actual = coordax.get_coordinate(field, indices_to_exclude=[0, -1])
-      expected = field.coords['y']
+      expected = field.axes['y']
       self.assertEqual(actual, expected)
 
     with self.subTest('exclude_by_index_and_name'):
       actual = coordax.get_coordinate(
           field, indices_to_exclude=[-1], dimensions_to_exclude=['x']
       )
-      expected = field.coords['y']
+      expected = field.axes['y']
       self.assertEqual(actual, expected)
 
     with self.subTest('raises_on_unknown_dim'):

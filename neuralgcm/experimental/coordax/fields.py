@@ -66,7 +66,7 @@ def _coordinate_attrs(field: Field) -> str:
       return f'SelectedAxis({c.coordinate.__class__.__name__}, axis={c.axis})'
     return c.__class__.__name__
 
-  coord_names = {k: _coord_name(c) for k, c in field.coords.items()}
+  coord_names = {k: _coord_name(c) for k, c in field.axes.items()}
   return '{' + ', '.join(f'{k!r}: {v}' for k, v in coord_names.items()) + '}'
 
 
@@ -111,14 +111,14 @@ def _cmap_with_doc(
   def wrapped_fun(*args, **kwargs):
     leaves, treedef = jax.tree.flatten((args, kwargs), is_leaf=is_field)
     field_leaves = [leaf for leaf in leaves if is_field(leaf)]
-    all_coords = {}
+    all_axes = {}
     for field in field_leaves:
-      for dim_name, c in field.coords.items():
-        if dim_name in all_coords and all_coords[dim_name] != c:
-          other = all_coords[dim_name]
+      for dim_name, c in field.axes.items():
+        if dim_name in all_axes and all_axes[dim_name] != c:
+          other = all_axes[dim_name]
           raise ValueError(f'Coordinates {c=} != {other=} use same {dim_name=}')
         else:
-          all_coords[dim_name] = c
+          all_axes[dim_name] = c
     named_array_leaves = [x.named_array if is_field(x) else x for x in leaves]
     fun_on_named_arrays = named_axes.nmap(fun, out_axes=out_axes)
     na_args, na_kwargs = jax.tree.unflatten(treedef, named_array_leaves)
@@ -127,7 +127,7 @@ def _cmap_with_doc(
     def _wrap_field(leaf):
       return Field.from_namedarray(
           named_array=leaf,
-          coords={k: all_coords[k] for k in leaf.dims if k in all_coords},
+          axes={k: all_axes[k] for k in leaf.dims if k in all_axes},
       )
 
     return jax.tree.map(_wrap_field, result, is_leaf=named_axes.is_namedarray)
@@ -143,34 +143,34 @@ def _cmap_with_doc(
 
 
 def _check_valid(
-    named_array: named_axes.NamedArray, coords: dict[str, Coordinate]
+    named_array: named_axes.NamedArray, axes: dict[str, Coordinate]
 ) -> None:
   """Checks that the field coordinates and dimension names are consistent."""
 
   # internal consistency of coordinates
-  for dim, coord in coords.items():
+  for dim, coord in axes.items():
     if coord.ndim > 1:
       raise ValueError(
-          f'all coordinates in the coords dict must be 1D, got {coord} for '
+          f'all coordinates in the axes dict must be 1D, got {coord} for '
           f'dimension {dim}. Consider using Field.tag() instead to associate '
           'multi-dimensional coordinates.'
       )
     if (dim,) != coord.dims:
       raise ValueError(
-          f'coordinate under key {dim!r} in the coords dict must have '
+          f'coordinate under key {dim!r} in the axes dict must have '
           f'dims={(dim,)!r} but got {coord.dims=}'
       )
 
   data_dims = set(named_array.named_dims)
-  keys_dims = set(_remove_dummy_axes(coords).keys())
+  keys_dims = set(_remove_dummy_axes(axes).keys())
   if not keys_dims <= data_dims:
     raise ValueError(
-        'coordinate keys must be a subset of the named dimensions of the '
-        f'underlying named array, got coordinate keys {keys_dims} vs '
+        'axis keys must be a subset of the named dimensions of the '
+        f'underlying named array, got axis keys {keys_dims} vs '
         f'data dimensions {data_dims}'
     )
 
-  for dim, coord in coords.items():
+  for dim, coord in axes.items():
     if named_array.named_shape[dim] != coord.sizes[dim]:
       raise ValueError(
           f'inconsistent size for dimension {dim!r} between data and'
@@ -180,9 +180,9 @@ def _check_valid(
       )
 
 
-def _remove_dummy_axes(coords: dict[str, Coordinate]) -> dict[str, Coordinate]:
-  """Removes dummy axes a dict of coordinates."""
-  return {k: v for k, v in coords.items() if not isinstance(v, DummyAxis)}
+def _remove_dummy_axes(axes: dict[str, Coordinate]) -> dict[str, Coordinate]:
+  """Removes dummy axes from a dict of coordinates."""
+  return {k: v for k, v in axes.items() if not isinstance(v, DummyAxis)}
 
 
 def _swapped_binop(binop):
@@ -237,13 +237,13 @@ class Field:
   """An array with optional named dimensions and associated coordinates."""
 
   _named_array: named_axes.NamedArray
-  _coords: dict[str, Coordinate]
+  _axes: dict[str, Coordinate]
 
   def __init__(
       self,
       data: ArrayLike,
       dims: tuple[str | None, ...] | None = None,
-      coords: dict[str, Coordinate] | None = None,
+      axes: dict[str, Coordinate] | None = None,
   ):
     """Construct a Field.
 
@@ -253,24 +253,24 @@ class Field:
         `data.ndim`. Strings indicate named axes, and may not be repeated.
         `None` indicates positional axes. If `dims` is not provided, all axes
         are positional.
-      coords: optional mapping from dimension names to associated
+      axes: optional mapping from dimension names to associated
         `coordax.Coordinate` objects.
     """
     self._named_array = named_axes.NamedArray(data, dims)
-    if coords is None:
-      self._coords = {}
+    if axes is None:
+      self._axes = {}
     else:
-      _check_valid(self._named_array, coords)
-      self._coords = _remove_dummy_axes(coords)
+      _check_valid(self._named_array, axes)
+      self._axes = _remove_dummy_axes(axes)
 
   @classmethod
   def from_namedarray(
       cls,
       named_array: named_axes.NamedArray,
-      coords: dict[str, Coordinate] | None = None,
+      axes: dict[str, Coordinate] | None = None,
   ) -> Self:
     """Creates a Field from a named array."""
-    return cls(named_array.data, named_array.dims, coords)
+    return cls(named_array.data, named_array.dims, axes)
 
   @classmethod
   def from_xarray(
@@ -313,7 +313,7 @@ class Field:
     data = ndarrays.to_numpy_array(self.data)
 
     coords = {}
-    for coord in self.coords.values():
+    for coord in self.axes.values():
       for name, variable in coord.to_xarray().items():
         if name in coords and not variable.identical(coords[name]):
           raise ValueError(
@@ -330,9 +330,9 @@ class Field:
     return self._named_array
 
   @property
-  def coords(self) -> dict[str, Coordinate]:
-    """The coordinate objects associated with this field."""
-    return self._coords
+  def axes(self) -> dict[str, Coordinate]:
+    """The coordinate axes associated with this field."""
+    return self._axes
 
   @property
   def data(self) -> Array:
@@ -382,22 +382,22 @@ class Field:
   def coord_fields(self) -> dict[str, Field]:
     """A mapping from coordinate field names to their values."""
     return functools.reduce(
-        operator.or_, [c.fields for c in self.coords.values()], {}
+        operator.or_, [c.fields for c in self.axes.values()], {}
     )
 
   def tree_flatten(self):
     """Flatten this object for JAX pytree operations."""
-    return [self.named_array], tuple(self.coords.items())
+    return [self.named_array], tuple(self.axes.items())
 
   @classmethod
-  def tree_unflatten(cls, coords, leaves) -> Self:
+  def tree_unflatten(cls, axes, leaves) -> Self:
     """Unflatten this object for JAX pytree operations."""
     [named_array] = leaves
     result = object.__new__(cls)
     result._named_array = named_array
-    result._coords = dict(coords)
+    result._axes = dict(axes)
     if isinstance(named_array.data, Array):
-      _check_valid(result.named_array, result.coords)
+      _check_valid(result.named_array, result.axes)
     return result
 
   def unwrap(self, *names: str | Coordinate) -> Array:
@@ -420,15 +420,15 @@ class Field:
 
     for c in axes:
       [dim] = c.dims
-      if dim not in self.coords:
+      if dim not in self.axes:
         raise ValueError(
             f'coordinate not found on this field:\n{c}\n'
-            f'not found in coordinates {list(self.coords)}'
+            f'not found in coordinates {list(self.axes)}'
         )
-      if self.coords[dim] != c:
+      if self.axes[dim] != c:
         raise ValueError(
             'coordinate not equal to the corresponding coordinate on this'
-            f' field:\n{c}\nvs\n{self.coords[dim]}'
+            f' field:\n{c}\nvs\n{self.axes[dim]}'
         )
 
   def untag(self, *axis_order: str | Coordinate) -> Field:
@@ -436,24 +436,24 @@ class Field:
     self._validate_matching_coords(axis_order)
     untag_dims = _dimension_names(*axis_order)
     named_array = self.named_array.untag(*untag_dims)
-    coords = {k: v for k, v in self.coords.items() if k not in untag_dims}
-    result = Field.from_namedarray(named_array=named_array, coords=coords)
+    axes = {k: v for k, v in self.axes.items() if k not in untag_dims}
+    result = Field.from_namedarray(named_array=named_array, axes=axes)
     return result
 
   def tag(self, *names: str | Coordinate | ellipsis | None) -> Field:
     """Returns a Field with attached coordinates to the positional axes."""
     tag_dims = _dimension_names(*names)
     tagged_array = self.named_array.tag(*tag_dims)
-    coords = {}
-    coords.update(self.coords)
+    axes = {}
+    axes.update(self.axes)
     for c in names:
       if isinstance(c, Coordinate):
         for dim, axis in zip(c.dims, c.axes):
           # TODO(shoyer): consider raising an error if an unnamed axis has the
           # wrong size.
           if dim is not None:
-            coords[dim] = axis
-    result = Field.from_namedarray(tagged_array, coords)
+            axes[dim] = axis
+    result = Field.from_namedarray(tagged_array, axes)
     return result
 
   # Note: Can't call this "transpose" like Xarray, to avoid conflicting with the
@@ -463,27 +463,27 @@ class Field:
     self._validate_matching_coords(axis_order)
     ordered_dims = _dimension_names(*axis_order)
     ordered_array = self.named_array.order_as(*ordered_dims)
-    result = Field.from_namedarray(ordered_array, self.coords)
+    result = Field.from_namedarray(ordered_array, self.axes)
     return result
 
   def __repr__(self):
     data_repr = textwrap.indent(repr(self.data), prefix=' ' * 13)[13:]
-    if self.coords:
-      coords_repr = (
+    if self.axes:
+      axes_repr = (
           '{\n'
           + '\n'.join(
-              textwrap.indent(f'{dim!r}: {self.coords[dim]},', prefix=' ' * 12)
-              for dim in self.coords
+              textwrap.indent(f'{dim!r}: {self.axes[dim]},', prefix=' ' * 12)
+              for dim in self.axes
           )
           + '\n        }'
       )
     else:
-      coords_repr = '{}'
+      axes_repr = '{}'
     return textwrap.dedent(f"""\
     {type(self).__name__}(
         data={data_repr},
         dims={self.dims},
-        coords={coords_repr},
+        axes={axes_repr},
     )""")
 
   def __treescope_repr__(self, path: str | None, subtree_renderer: Any):
@@ -494,8 +494,8 @@ class Field:
       attrs, summary, data_type = named_axes.attrs_summary_type(
           self.named_array, False
       )
-      coord_attrs = _coordinate_attrs(self)
-      attrs = ' '.join([attrs, f'coords={coord_attrs}'])
+      axes_attrs = _coordinate_attrs(self)
+      attrs = ' '.join([attrs, f'axes={axes_attrs}'])
 
       return rendering_parts.summarizable_condition(
           summary=rendering_parts.abbreviation_color(  # non-expanded repr.
@@ -518,7 +518,7 @@ class Field:
         self,
         path,
         subtree_renderer,
-        fields_or_attribute_names=('dims', 'coords'),
+        fields_or_attribute_names=('dims', 'axes'),
     )
     indented_children = rendering_parts.indented_children(children)
     return rendering_parts.build_custom_foldable_tree_node(
@@ -540,8 +540,8 @@ class Field:
       attrs, array_summary, data_type = named_axes.attrs_summary_type(
           field.named_array, inspect_data
       )
-      coord_attrs = _coordinate_attrs(field)
-      attrs = ', '.join([attrs, f'coords={coord_attrs}'])
+      axes_attrs = _coordinate_attrs(field)
+      attrs = ', '.join([attrs, f'axes={axes_attrs}'])
       return attrs, array_summary, data_type
 
     return named_axes.NamedArrayAdapter(_summary_fn)
@@ -641,7 +641,7 @@ def wrap_like(array: ArrayLike, other: Field) -> Field:
     array = jnp.asarray(array)
   if array.shape != other.shape:
     raise ValueError(f'{array.shape=} and {other.shape=} must be equal')
-  return Field(array, other.dims, other.coords)
+  return Field(array, other.dims, other.axes)
 
 
 @utils.export
@@ -690,7 +690,7 @@ def get_coordinate(
   ]
   if None in coordinate_dims:
     raise ValueError('Cannot extract coordinate from partially labeled field')
-  return coordinate_systems.compose(*[field.coords[d] for d in coordinate_dims])
+  return coordinate_systems.compose(*[field.axes[d] for d in coordinate_dims])
 
 
 PyTree = Any

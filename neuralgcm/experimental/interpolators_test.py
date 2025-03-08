@@ -37,7 +37,7 @@ class InterpolatorsTest(parameterized.TestCase):
     regridder = interpolators.SpectralRegridder(target_grid)
     inputs = cx.wrap(np.ones(input_coords.shape), input_coords)
     outputs = regridder(inputs)
-    output_coords = cx.compose_coordinates(*outputs.coords.values())
+    output_coords = cx.get_coordinate(outputs)
     self.assertEqual(output_coords, target_grid)
 
 

@@ -530,47 +530,57 @@ class FieldTest(parameterized.TestCase):
     testing.assert_fields_equal(actual, expected)
 
   def test_get_coordinate(self):
+    axes = {
+        'x': coordax.LabeledAxis('x', np.arange(2)),
+        'y': coordax.LabeledAxis('y', 2 + np.arange(3)),
+        'z': coordax.LabeledAxis('z', 3 * np.arange(4)),
+    }
     field = coordax.Field(
         np.arange(2 * 3 * 4).reshape((2, 3, 4)),
         dims=('x', 'y', 'z'),
-        axes={
-            'x': coordax.LabeledAxis('x', np.arange(2)),
-            'y': coordax.LabeledAxis('y', 2 + np.arange(3)),
-            'z': coordax.LabeledAxis('z', 3 * np.arange(4)),
-        },
+        axes=axes,
     )
     with self.subTest('default'):
       actual = coordax.get_coordinate(field)
       expected = coordax.compose_coordinates(
-          *[field.axes[d] for d in field.dims]
+          *[axes[d] for d in ['x', 'y', 'z']]
       )
       self.assertEqual(actual, expected)
 
-    with self.subTest('exclude_by_name'):
-      actual = coordax.get_coordinate(field, dimensions_to_exclude=['y'])
+    with self.subTest('single_positional_include_dummy=True'):
+      actual = coordax.get_coordinate(field.untag('y'), include_dummy=True)
       expected = coordax.compose_coordinates(
-          field.axes['x'], field.axes['z']
+          axes['x'], coordax.DummyAxis(None, 3), axes['z']
       )
       self.assertEqual(actual, expected)
 
-    with self.subTest('exclude_by_index'):
-      actual = coordax.get_coordinate(field, indices_to_exclude=[0, -1])
-      expected = field.axes['y']
-      self.assertEqual(actual, expected)
-
-    with self.subTest('exclude_by_index_and_name'):
+    with self.subTest('named_include_dummy=True'):
       actual = coordax.get_coordinate(
-          field, indices_to_exclude=[-1], dimensions_to_exclude=['x']
+          field.untag('y', 'z').tag('g', 'h'),
+          include_dummy=True,
       )
-      expected = field.axes['y']
+      expected = coordax.compose_coordinates(
+          axes['x'], coordax.DummyAxis('g', 3), coordax.DummyAxis('h', 4),
+      )
       self.assertEqual(actual, expected)
 
-    with self.subTest('raises_on_unknown_dim'):
-      with self.assertRaisesWithLiteralMatch(
-          ValueError,
-          "unknown_dims={'unknown'} are not in field.dims=('x', 'y', 'z')",
-      ):
-        _ = coordax.get_coordinate(field, dimensions_to_exclude=['unknown'])
+    with self.subTest('positional_include_dummy=False'):
+      actual = coordax.get_coordinate(field.untag('x', 'z'))
+      expected = axes['y']
+      self.assertEqual(actual, expected)
+
+    with self.subTest('named_include_dummy=False'):
+      actual = coordax.get_coordinate(field.untag('x', 'z').tag('g', 'h'))
+      expected = axes['y']  # since 'g' and 'h' are dummy axes.
+      self.assertEqual(actual, expected)
+
+    with self.subTest('multiple_positional_include_dummy=True_raises'):
+      expected_message = (
+          'including dummy axes is only supported for fields with a single'
+          ' positional dimension, got field.positional_shape=(3, 4)'
+      )
+      with self.assertRaisesWithLiteralMatch(ValueError, expected_message):
+        coordax.get_coordinate(field.untag('y', 'z'), include_dummy=True)
 
 
 if __name__ == '__main__':

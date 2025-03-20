@@ -22,6 +22,7 @@ from fiddle import tagging
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
+from neuralgcm.experimental import coordinates
 from neuralgcm.experimental import pytree_utils
 from neuralgcm.experimental import typing
 import numpy as np
@@ -61,11 +62,11 @@ FieldPartitions = dict[Schema, DimPartitions]
 # on all devices.
 
 
-def partition_spec_for_field(
-    field: cx.Field, dim_partitions: DimPartitions
+def get_partition_spec(
+    dims: tuple[str, ...], dim_partitions: DimPartitions
 ) -> P:
   """Returns partition spec for `field`."""
-  return P(*[dim_partitions.get(d, None) for d in field.dims])
+  return P(*[dim_partitions.get(d, None) for d in dims])
 
 
 # TODO(dkochkov): drop array_partitions specification when partitions can be
@@ -174,6 +175,13 @@ class Mesh:
     sharding = jax.sharding.NamedSharding(self.spmd_mesh, p_specs)
     return jax.lax.with_sharding_constraint(array, sharding)
 
+  def _get_named_sharding(
+      self, dims: tuple[str, ...], schema: str
+  ) -> jax.sharding.NamedSharding:
+    dim_partitions = self.field_partitions[schema]
+    p_specs = get_partition_spec(dims, dim_partitions)
+    return jax.sharding.NamedSharding(self.spmd_mesh, p_specs)
+
   def _with_sharding_constraint_field(
       self, field: cx.Field, schema: str
   ) -> cx.Field:
@@ -186,10 +194,45 @@ class Mesh:
     Returns:
       Field with sharding constraint applied.
     """
-    dim_partitions = self.field_partitions[schema]
-    p_specs = partition_spec_for_field(field, dim_partitions)
-    sharding = jax.sharding.NamedSharding(self.spmd_mesh, p_specs)
+    sharding = self._get_named_sharding(field.dims, schema)
     return jax.lax.with_sharding_constraint(field, sharding)
+
+  def unshard(
+      self, field_shards: dict[jax.Device, cx.Field], schema: str
+  ) -> cx.Field:
+    """Convert sharded fields to a single unsharded field.
+
+    Args:
+      field_shards: mapping from JAX device to coordax.Field indicating data to
+        load on to that device.
+      schema: key in `self.field_partitions` indicating sharding schema.
+
+    Returns:
+      A single coordax.Field with data from `field_shards` as a single JAX
+      array with sharded inputs.
+    """
+
+    example_field = next(iter(field_shards.values()))
+    sharding = self._get_named_sharding(example_field.dims, schema)
+
+    coord = cx.get_coordinate(example_field)
+    unsharded_coord = coordinates.get_unsharded(coord)
+
+    single_device_arrays = [
+        jax.device_put(field.data, device)
+        for device, field in field_shards.items()
+    ]
+
+    def make_array(*arrays: jax.Array) -> jax.Array:
+      return jax.make_array_from_single_device_arrays(
+          unsharded_coord.shape, sharding, list(arrays)
+      )
+
+    # We use jax.tree.map to handle the case where cx.Field.data contains a
+    # pytree of JAX arrays (e.g., jax_datetime.Datetime), which are not
+    # supported by jax.make_array_from_single_device_arrays.
+    array = jax.tree.map(make_array, *single_device_arrays)
+    return cx.Field(array).tag(unsharded_coord)
 
 
 # TODO(dkochkov): Remove these temporary functions once we can rely on imposing
@@ -281,10 +324,10 @@ def update_mesh_properties(
 
   Args:
     fiddle_config: input configuration that will be copied and updated.
-    spmd_mesh_updates: mapping indicating how to update `spmd_mesh`
-      attributes on Mesh configurations in `fiddle_config`. Keys specify the
-      selector of Mesh objects either via tags or mesh types and values indicate
-      the jax sharding mesh to use for the `spmd_mesh` attribute.
+    spmd_mesh_updates: mapping indicating how to update `spmd_mesh` attributes
+      on Mesh configurations in `fiddle_config`. Keys specify the selector of
+      Mesh objects either via tags or mesh types and values indicate the jax
+      sharding mesh to use for the `spmd_mesh` attribute.
     array_partitions_updates: same as `spmd_mesh_updates` but for
       `array_partitions` attribute.
     field_partitions_updates: same as `spmd_mesh_updates` but for

@@ -1244,6 +1244,14 @@ class CoordinateShard(cx.Coordinate):
     )
 
 
+def get_unsharded(coordinate: cx.Coordinate) -> cx.Coordinate:
+  """Returns the unsharded coordinate of a CoordinateShard."""
+  unsharded = []
+  for c in cx.canonicalize_coordinates(coordinate):
+    unsharded.append(c.coordinate if isinstance(c, CoordinateShard) else c)
+  return cx.compose_coordinates(*unsharded)
+
+
 #
 # Helper functions.
 #

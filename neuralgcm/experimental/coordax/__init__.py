@@ -24,6 +24,7 @@ from neuralgcm.experimental.coordax.coordinate_systems import (
     SizedAxis as SizedAxis,
     NoCoordinateMatch as NoCoordinateMatch,
     SelectedAxis as SelectedAxis,
+    canonicalize as canonicalize_coordinates,
     compose as compose_coordinates,
     from_xarray as coordinates_from_xarray,
 )

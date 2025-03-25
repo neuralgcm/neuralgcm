@@ -31,9 +31,7 @@ Metadata = ocp.metadata.value.Metadata
 class FiddleConfigHandler(ocp.type_handlers.TypeHandler):
   """A wrapper around serialization of fdl.Config to the json format."""
 
-  def __init__(
-      self, filename: str | None = None, primary_host: int | None = 0
-  ):
+  def __init__(self, filename: str | None = None, primary_host: int | None = 0):
     """Initializes FiddleConfigHandler.
 
     Args:
@@ -61,16 +59,22 @@ class FiddleConfigHandler(ocp.type_handlers.TypeHandler):
       values: Sequence[Any],
       infos: Sequence[ParamInfo],
       args: Sequence[ocp.SaveArgs] | None = None,
-  ) -> list[futures.Future]:  # pylint: disable=g-bare-generic
+  ) -> list[ocp.Future]:  # pylint: disable=g-bare-generic
     """Serializes the given fdl.Config to the json format."""
     del args  # Unused in this example.
-    ocp_futures = []
-    for value, info in zip(values, infos):
+
+    async def write_config(value, info):
       # make sure the per-key directory is present as OCDBT doesn't create one
       info.path.mkdir(exist_ok=True)  # pylint: disable=attribute-error
+      self._executor.submit(
+          functools.partial(self._write_config, value, info.path)
+      )
+
+    ocp_futures = []
+    for value, info in zip(values, infos):
       ocp_futures.append(
-          self._executor.submit(
-              functools.partial(self._write_config, value, info.path)
+          ocp.future.CommitFutureAwaitingContractedSignals(
+              write_config(value, info)
           )
       )
     return ocp_futures

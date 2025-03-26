@@ -532,6 +532,31 @@ class FieldTest(parameterized.TestCase):
     )
     testing.assert_fields_equal(actual, expected)
 
+  def test_cmap_with_custom_vmap(self):
+
+    @dataclasses.dataclass
+    class NonPytree:
+      a: jnp.ndarray
+
+    def custom_vmap(fun, in_axes, out_axes, **kwargs):
+      def mapped_fun(*args) -> jax.Array:
+        leaves, argdef = jax.tree.flatten(args)
+        leaves = [x.a if isinstance(x, NonPytree) else x for x in leaves]
+        args = jax.tree.unflatten(argdef, leaves)
+        return jax.vmap(fun, in_axes, out_axes, **kwargs)(*args)
+      return mapped_fun
+
+    def foo(x, y):
+      assert y.ndim == 1  # will only run under vmap on 2d inputs.
+      return x + y
+
+    i_grid = coordax.LabeledAxis('i', np.arange(7))
+    y = coordax.wrap(jnp.arange(5 * 7).reshape((5, 7)), None, i_grid)
+    array_x = jnp.arange(5)[::-1]
+    expected = coordax.cmap(foo)(array_x, y)
+    actual = coordax.cmap(foo, vmap=custom_vmap)(NonPytree(a=array_x), y)
+    testing.assert_fields_allclose(actual, expected)
+
   def test_get_coordinate(self):
     axes = {
         'x': coordax.LabeledAxis('x', np.arange(2)),

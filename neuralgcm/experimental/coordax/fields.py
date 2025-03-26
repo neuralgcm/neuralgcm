@@ -71,7 +71,10 @@ def _coordinate_attrs(field: Field) -> str:
 
 @utils.export
 def cmap(
-    fun: Callable[..., Any], out_axes: dict[str, int] | None = None
+    fun: Callable[..., Any],
+    out_axes: dict[str, int] | None = None,
+    *,
+    vmap: Callable = jax.vmap,  # pylint: disable=g-bare-generic
 ) -> Callable[..., Any]:
   """Vectorizes `fun` over coordinate dimensions of ``Field`` inputs.
 
@@ -80,6 +83,9 @@ def cmap(
     out_axes: Optional dictionary from dimension names to axis positions in the
       output. By default, dimension names appear as the trailing dimensions of
       every output, in order of their appearance on the inputs.
+    vmap: Vectorizing transformation to use when mapping over named axes.
+      Defaults to jax.vmap. A different implementation can be used to make
+      coordax compatible with custom objects (e.g. neural net modules).
 
   Returns:
     A vectorized version of `fun` that applies original `fun` to locally
@@ -95,7 +101,7 @@ def cmap(
     fun_doc = fun.__doc__
   else:
     fun_doc = None
-  return _cmap_with_doc(fun, fun_name, fun_doc, out_axes)
+  return _cmap_with_doc(fun, fun_name, fun_doc, out_axes, vmap=vmap)
 
 
 def _cmap_with_doc(
@@ -103,6 +109,8 @@ def _cmap_with_doc(
     fun_name: str,
     fun_doc: str | None = None,
     out_axes: dict[str, int] | None = None,
+    *,
+    vmap: Callable = jax.vmap,  # pylint: disable=g-bare-generic
 ) -> Callable[..., Any]:
   """Builds a coordinate-vectorized wrapped function with a docstring."""
 
@@ -119,7 +127,7 @@ def _cmap_with_doc(
         else:
           all_axes[dim_name] = c
     named_array_leaves = [x.named_array if is_field(x) else x for x in leaves]
-    fun_on_named_arrays = named_axes.nmap(fun, out_axes=out_axes)
+    fun_on_named_arrays = named_axes.nmap(fun, out_axes=out_axes, vmap=vmap)
     na_args, na_kwargs = jax.tree.unflatten(treedef, named_array_leaves)
     result = fun_on_named_arrays(*na_args, **na_kwargs)
 

@@ -257,7 +257,12 @@ def _nest_vmap_axis(inner_axis: int, outer_axis: int) -> int:
       return inner_axis + 1
 
 
-def nmap(fun: Callable, out_axes: dict[str, int] | None = None) -> Callable:  # pylint: disable=g-bare-generic
+def nmap(
+    fun: Callable,  # pylint: disable=g-bare-generic
+    out_axes: dict[str, int] | None = None,
+    *,
+    vmap: Callable = jax.vmap,  # pylint: disable=g-bare-generic
+) -> Callable:  # pylint: disable=g-bare-generic
   """Automatically vectorizes ``fun`` over named dimensions.
 
   ``nmap`` is a "named dimension vectorizing map". It wraps an ordinary
@@ -290,6 +295,9 @@ def nmap(fun: Callable, out_axes: dict[str, int] | None = None) -> Callable:  # 
     out_axes: Optional dictionary from dimension names to axis positions in the
       output. By default, dimension names appear as the trailing dimensions of
       every output, in order of their appearance on the inputs.
+    vmap: Vectorizing transformation to use when mapping over named axes.
+      Defaults to jax.vmap. A different implementation can be used to make
+      coordax compatible with custom objects (e.g. neural net modules).
 
   Returns:
     An automatically-vectorized version of ``fun``, which can optionally be
@@ -308,7 +316,7 @@ def nmap(fun: Callable, out_axes: dict[str, int] | None = None) -> Callable:  # 
     fun_doc = fun.__doc__
   else:
     fun_doc = None
-  return _nmap_with_doc(fun, fun_name, fun_doc, out_axes)
+  return _nmap_with_doc(fun, fun_name, fun_doc, out_axes, vmap=vmap)
 
 
 def _nmap_with_doc(
@@ -316,6 +324,8 @@ def _nmap_with_doc(
     fun_name: str,
     fun_doc: str | None = None,
     out_axes: dict[str, int] | None = None,
+    *,
+    vmap: Callable = jax.vmap,  # pylint: disable=g-bare-generic
 ) -> Callable:  # pylint: disable=g-bare-generic
   """Implementation of nmap."""
 
@@ -370,7 +380,7 @@ def _nmap_with_doc(
     # Recursively apply vmap, in the reverse of the order in which we calculated
     # nested_in_axes and nested_out_axes.
     for vmap_dim in reversed(all_dims):
-      vectorized_fun = jax.vmap(
+      vectorized_fun = vmap(
           vectorized_fun,
           in_axes=(nested_in_axes[vmap_dim],),
           out_axes=nested_out_axes[vmap_dim],

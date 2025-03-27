@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-from typing import Any, Callable
+from typing import Callable
 
-from etils import epath
 import fiddle as fdl
 from flax import nnx
 import jax
 from neuralgcm.experimental import coordax as cx
-from neuralgcm.experimental.core import checkpointing  # pylint: disable=unused-import
+# DO_NOT_SUBMIT: decide if this is to be kept and maybe method imported?
+# from neuralgcm.experimental.core import checkpointing  # pylint: disable=unused-import
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import dynamic_io
@@ -237,19 +237,6 @@ class ForecastSystem(nnx.Module, abc.ABC):
     return self.inputs_from_xarray(ds), self.dynamic_inputs_from_xarray(ds)
 
   @classmethod
-  def checkpoint_args(cls, mode: str = 'restore'):
-    """Returns orbax checkpoint args for the model for mode=`mode`."""
-    if mode == 'restore':
-      arg = ocp.args.PyTreeRestore
-    else:
-      arg = ocp.args.PyTreeSave
-    # TODO(dkochkov) Consider supporting partitioned params.
-    return {
-        'params': arg,
-        'metadata': arg,
-    }
-
-  @classmethod
   def from_fiddle_config(
       cls,
       config: fdl.Config[ForecastSystem],
@@ -276,69 +263,3 @@ class ForecastSystem(nnx.Module, abc.ABC):
         field_partitions_updates=field_partitions_updates,
     )
     return fdl.build(model_config)
-
-  @classmethod
-  def from_checkpoint(
-      cls,
-      path: str | epath.PathLike,
-      checkpointer: ocp.Checkpointer | None = None,
-      spmd_mesh_updates: (
-          dict[parallelism.TagOrMeshType, jax.sharding.Mesh | None] | None
-      ) = None,
-      array_partitions_updates: (
-          dict[parallelism.TagOrMeshType, parallelism.ArrayPartitions] | None
-      ) = None,
-      field_partitions_updates: (
-          dict[parallelism.TagOrMeshType, parallelism.FieldPartitions] | None
-      ) = None,
-  ) -> tuple[ForecastSystem, nnx.State]:
-    checkpoint_args = cls.checkpoint_args('restore')
-    if checkpointer is None:
-      checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
-    restored = checkpointer.restore(
-        path, args=ocp.args.Composite(metadata=checkpoint_args.pop('metadata'))
-    )
-    metadata = restored['metadata']
-    if 'fiddle_config' in metadata:
-      cfg = metadata['fiddle_config']
-      # Note: nnx.eval_shape doesn't seem to work here because numerics
-      # components might need to make use of init values beyond shape.
-      model = cls.from_fiddle_config(
-          cfg,
-          spmd_mesh_updates=spmd_mesh_updates,
-          array_partitions_updates=array_partitions_updates,
-          field_partitions_updates=field_partitions_updates,
-      )
-      assert isinstance(model, ForecastSystem)  # make pytype happy.
-      model.update_metadata('fiddle_config', cfg)
-      params_structure = nnx.state(model, nnx.Variable)
-      params = checkpointer.restore(
-          path,
-          args=ocp.args.Composite(
-              params=checkpoint_args['params'](params_structure)
-          ),
-      )['params']
-      nnx.update(model, params)
-      return model, params
-    else:
-      # TODO(dkochkov) implement restoration from pickled params and graph_def.
-      raise ValueError('Not yet supported without fiddle_config.')
-
-  def checkpoint_state(
-      self,
-      mode: str = 'restore',
-      param_types_filter: Any = nnx.Variable,
-  ):
-    # TODO(dkochkov) support different param_types_filter.
-    # This likely requires serialization of the filter sequence in a separate
-    # field and then recreating the state split in `from_checkpoint` method.
-    if param_types_filter != nnx.Variable:
-      raise ValueError(f'{param_types_filter=}!=nnx.Variable.')
-    params_state = nnx.state(self, param_types_filter)
-    metadata = self.metadata
-    ckpt_items = {
-        'params': params_state,
-        'metadata': metadata,
-    }
-    ckpt_args = self.checkpoint_args(mode)
-    return {k: arg(ckpt_items[k]) for k, arg in ckpt_args.items()}

@@ -21,6 +21,10 @@ from typing import Any, Optional, Sequence
 from etils import epath
 import fiddle as fdl
 from fiddle.experimental import serialization
+from flax import nnx
+import jax
+from neuralgcm.experimental.core import api
+from neuralgcm.experimental.core import parallelism
 import orbax.checkpoint as ocp
 
 
@@ -31,9 +35,7 @@ Metadata = ocp.metadata.value.Metadata
 class FiddleConfigHandler(ocp.type_handlers.TypeHandler):
   """A wrapper around serialization of fdl.Config to the json format."""
 
-  def __init__(
-      self, filename: str | None = None, primary_host: int | None = 0
-  ):
+  def __init__(self, filename: str | None = None, primary_host: int | None = 0):
     """Initializes FiddleConfigHandler.
 
     Args:
@@ -108,3 +110,67 @@ class FiddleConfigHandler(ocp.type_handlers.TypeHandler):
 ocp.type_handlers.register_type_handler(
     fdl.Config, FiddleConfigHandler(), override=True
 )
+
+
+def load_model(
+    path: str | epath.PathLike,
+    checkpointer: ocp.Checkpointer | None = None,
+    spmd_mesh_updates: (
+        dict[parallelism.TagOrMeshType, jax.sharding.Mesh | None] | None
+    ) = None,
+    array_partitions_updates: (
+        dict[parallelism.TagOrMeshType, parallelism.ArrayPartitions] | None
+    ) = None,
+    field_partitions_updates: (
+        dict[parallelism.TagOrMeshType, parallelism.FieldPartitions] | None
+    ) = None,
+) -> api.ForecastSystem:
+  """Loades a ForecastSystem model from a checkpoint."""
+  restore_arg = ocp.args.PyTreeRestore
+  ckpt_args = {'params': restore_arg, 'metadata': restore_arg}
+  if checkpointer is None:
+    checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
+  restored = checkpointer.restore(
+      path, args=ocp.args.Composite(metadata=ckpt_args.pop('metadata'))
+  )
+  metadata = restored['metadata']
+  if 'fiddle_config' not in metadata:
+    raise NotImplementedError(
+        'Checkpoints without fiddle_config are not supported yet.'
+    )
+  cfg = metadata['fiddle_config']
+  # Note: nnx.eval_shape doesn't seem to work here because numerics
+  # components might make use of init values beyond shape.
+  model = api.ForecastSystem.from_fiddle_config(
+      cfg,
+      spmd_mesh_updates=spmd_mesh_updates,
+      array_partitions_updates=array_partitions_updates,
+      field_partitions_updates=field_partitions_updates,
+  )
+  model.update_metadata('fiddle_config', cfg)
+  params_state = nnx.state(model)
+  params = checkpointer.restore(
+      path,
+      args=ocp.args.Composite(params=ckpt_args['params'](params_state)),
+  )['params']
+  nnx.update(model, params)
+  return model
+
+
+def save_checkpoint(
+    model: nnx.Module,
+    path: str | epath.PathLike,
+):
+  """Saves model to a checkpoint."""
+  metadata = getattr(model, 'metadata', {})
+  if 'fiddle_config' not in metadata:
+    raise ValueError('fiddle_config is a required metadata for serialization.')
+  save_arg = ocp.args.PyTreeSave
+  ckpt_args = {'params': save_arg, 'metadata': save_arg}
+  ckpt_items = {'params': nnx.state(model), 'metadata': metadata}
+  ckpt_state = {k: arg(ckpt_items[k]) for k, arg in ckpt_args.items()}
+  checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
+  checkpointer.save(
+      path,
+      ocp.args.Composite(**ckpt_state),
+  )

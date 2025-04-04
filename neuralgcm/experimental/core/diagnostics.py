@@ -14,6 +14,8 @@
 
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
+from typing import Protocol
+
 from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
@@ -24,8 +26,6 @@ import neuralgcm.experimental.jax_datetime as jdt
 
 class DiagnosticValue(nnx.Intermediate):
   """Variable type in which diagnostic values are stored."""
-
-  ...
 
 
 @nnx_compat.dataclass
@@ -41,97 +41,108 @@ class DiagnosticModule(nnx.Module):
     raise NotImplementedError(f'`__call__` on {self.__name__=}.')
 
 
-# TODO(dkochkov) Generalize these to work on arbitrary pytrees.
+class Extract(Protocol):
+  """Protocol for diagnostic methods that extract values from a method call."""
+
+  def __call__(
+      self,
+      result: typing.Pytree,
+      *args,
+      **kwargs,
+  ) -> dict[str, cx.Field]:
+    """Extracts diagnostic fields from the callback method result and args."""
 
 
+@nnx_compat.dataclass
 class CumulativeDiagnostic(DiagnosticModule):
-  """Diagnostic module that tracks cumulative value of an array stream."""
+  """Diagnostic that tracks cumulative value of a dictionary of fields."""
 
-  def __init__(
-      self,
-      diagnostic_name: str,
-      diagnostic_coords: cx.Coordinate,
-      extract_fn=lambda x, *args, **kwargs: x,
-  ):
-    self.diagnostic_name = diagnostic_name
-    self.coords = diagnostic_coords
-    self.extract_fn = extract_fn
-    self.cumulative = DiagnosticValue(jnp.zeros(self.coords.shape))
+  extract: Extract
+  extract_coords: dict[str, cx.Coordinate]
+
+  def __post_init__(self):
+    self.cumulatives = {
+        k: DiagnosticValue(jnp.zeros(v.shape))
+        for k, v in self.extract_coords.items()
+    }
 
   def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
+    # TODO(dkochkov): remove time arg, it is no longer used.
     return {
-        self.diagnostic_name: cx.wrap(self.cumulative.value, self.coords),
-        f'{self.diagnostic_name}_time': cx.wrap(time),
+        k: cx.wrap(v.value, self.extract_coords[k])
+        for k, v in self.cumulatives.items()
     }
 
   def __call__(self, inputs, *args, **kwargs):
-    self.cumulative.value = self.cumulative.value + self.extract_fn(
-        inputs, *args, **kwargs
-    )
+    diagnostic_values = self.extract(inputs, *args, **kwargs)
+    for k, v in diagnostic_values.items():
+      # TODO(dkochkov): consider storing values as Field type.
+      self.cumulatives[k].value += v.data
 
 
+@nnx_compat.dataclass
 class InstantDiagnostic(DiagnosticModule):
-  """Diagnostic module that tracks instant value of an array stream."""
+  """Diagnostic that tracks instant value of a dictionary of fields."""
 
-  def __init__(
-      self,
-      diagnostic_name: str,
-      diagnostic_coords: cx.Coordinate,
-      extract_fn=lambda x, *args, **kwargs: x,
-  ):
-    self.diagnostic_name = diagnostic_name
-    self.coords = diagnostic_coords
-    self.extract_fn = extract_fn
-    self.instant = DiagnosticValue(jnp.zeros(self.coords.shape))
+  extract: Extract
+  extract_coords: dict[str, cx.Coordinate]
+
+  def __post_init__(self):
+    self.instants = {
+        k: DiagnosticValue(jnp.zeros(v.shape))
+        for k, v in self.extract_coords.items()
+    }
 
   def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
+    # TODO(dkochkov): remove time arg, it is no longer used.
     return {
-        self.diagnostic_name: cx.wrap(self.instant.value, self.coords),
-        f'{self.diagnostic_name}_time': cx.wrap(time),
+        k: cx.wrap(v.value, self.extract_coords[k])
+        for k, v in self.instants.items()
     }
 
   def __call__(self, inputs, *args, **kwargs):
-    self.instant.value = self.extract_fn(inputs, *args, **kwargs)
+    diagnostic_values = self.extract(inputs, *args, **kwargs)
+    for k, v in diagnostic_values.items():
+      # TODO(dkochkov): consider storing values as Field type.
+      self.instants[k].value = v.data
 
 
+@nnx_compat.dataclass
 class IntervalDiagnostic(DiagnosticModule):
-  """Diagnostic module that tracks interval cumulant of an array."""
+  """Diagnostic that tracks instant value of a dictionary of fields."""
 
-  # TODO(dkochkov) verify this implementation and add tests.
-  def __init__(
-      self,
-      diagnostic_name: str,
-      interval_length: int,
-      diagnostic_coords: cx.Coordinate,
-      extract_fn=lambda x, *args, **kwargs: x,
-  ):
-    self.diagnostic_name = diagnostic_name
-    self.coords = diagnostic_coords
-    self.interval_length = interval_length
-    self.extract_fn = extract_fn
-    self.cumulative = DiagnosticValue(jnp.zeros(self.coords.shape))
-    interval_shape = (self.interval_length + 1,) + tuple(self.coords.shape)
-    self.interval_values = DiagnosticValue(jnp.zeros(interval_shape))
+  extract: Extract
+  extract_coords: dict[str, cx.Coordinate]
+  interval_length: int
 
-  def next_interval(self, inputs):
-    del inputs
-    interval_values = self.interval_values.value
-    c = self.cumulative.value
-    interval_values = jnp.concat(
-        [jnp.roll(interval_values, -1)[:-1], c[jnp.newaxis]]
-    )
-    self.interval_values.value = interval_values
+  def __post_init__(self):
+    self.interval_values = {
+        k: DiagnosticValue(jnp.zeros(((self.interval_length,) + v.shape)))
+        for k, v in self.extract_coords.items()
+    }
+    self.cumulative = {
+        k: DiagnosticValue(jnp.zeros(v.shape))
+        for k, v in self.extract_coords.items()
+    }
+
+  def next_interval(self, inputs, *args, **kwargs):
+    del inputs, args, kwargs
+    for k, v in self.interval_values.items():
+      self.interval_values[k].value = jnp.concat(
+          [jnp.roll(v.value, -1, axis=0)[:-1], self.cumulative[k].value[jnp.newaxis]]
+      )
 
   def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
-    interval_values = self.interval_values.value
+    # TODO(dkochkov): remove time arg, it is no longer used.
     return {
-        self.diagnostic_name: cx.wrap(
-            self.cumulative.value - interval_values[0], self.coords
-        ),
-        f'{self.diagnostic_name}_time': cx.wrap(time),
+        k: cx.wrap(
+            self.cumulative[k].value - v.value[0], self.extract_coords[k]
+        )
+        for k, v in self.interval_values.items()
     }
 
   def __call__(self, inputs, *args, **kwargs):
-    self.cumulative.value = self.cumulative.value + self.extract_fn(
-        inputs, *args, **kwargs
-    )
+    diagnostic_values = self.extract(inputs, *args, **kwargs)
+    for k, v in diagnostic_values.items():
+      # TODO(dkochkov): consider storing values as Field type.
+      self.cumulative[k].value += v.data

@@ -15,9 +15,7 @@
 """Utilities for converting between xarray and DataObservation objects."""
 
 import collections
-import functools
-import operator
-from typing import cast
+from typing import TypeVar, cast
 
 from dinosaur import spherical_harmonic
 from dinosaur import xarray_utils as dino_xarray_utils
@@ -101,6 +99,26 @@ def swap_time_to_timedelta(ds: xarray.Dataset) -> xarray.Dataset:
   return ds
 
 
+DatasetOrNestedDataset = TypeVar(
+    'DatasetOrNestedDataset', xarray.Dataset, dict[str, xarray.Dataset]
+)
+
+
+def ensure_timedelta_axis(ds: DatasetOrNestedDataset) -> DatasetOrNestedDataset:
+  """Ensures an xarray dataset has a timedelta axis."""
+  if not isinstance(ds, xarray.Dataset):
+    return jax.tree.map(
+        ensure_timedelta_axis,
+        ds,
+        is_leaf=lambda x: isinstance(x, xarray.Dataset),
+    )
+  if 'time' in ds.dims:
+    ds = swap_time_to_timedelta(ds)
+  if 'time' in ds.coords:
+    ds = ds.reset_coords('time')
+  return ds
+
+
 def xarray_to_fields_with_time(
     ds: xarray.Dataset,
     additional_coord_types: tuple[cx.Coordinate, ...] = (),
@@ -131,55 +149,67 @@ def xarray_to_fields_with_time(
 
 
 def read_fields_from_xarray(
-    dataset: xarray.Dataset,
+    nested_data: dict[str, xarray.Dataset],
     input_specs: dict[str, dict[str, cx.Coordinate]],
     strict_matches: bool = True,
 ) -> dict[str, dict[str, cx.Field]]:
-  """Returns a `specs`-like structure of coordax.Fields from a `dataset`.
+  """Returns a `specs`-like structure of coordax.Fields from nested datasets.
 
   Args:
-    dataset: xarray dataset to read data from.
+    nested_data: dict of xarray datasets from which to read data.
     input_specs: nested dictionary that associates variable with coordinates.
     strict_matches: whether to require exact coordinate matches.
 
   Returns:
     A dictionary of dictionaries of coordax.Fields.
   """
-  # TODO(dkochkov): Generalize this to work with xarray.DataTree and a
-  # a dict of arrays to be compatible with the new xreader.
-  requested_var_names = functools.reduce(
-      operator.or_, [d.keys() for d in input_specs.values()], set()
-  )
-  if not all(k in dataset for k in requested_var_names):
-    missing_vars = set(requested_var_names).difference(set(dataset))
-    raise ValueError(f'specs contains {missing_vars=} that are not in dataset')
-  dataset = dataset[requested_var_names]
-  variables = cast(dict[str, xarray.DataArray], dict(dataset))
   is_coordinate = lambda x: isinstance(x, cx.Coordinate)
-  input_spec_coords = jax.tree.leaves(input_specs, is_leaf=is_coordinate)
-  additional_coord_types = [type(x) for x in input_spec_coords]
-  if not strict_matches:
-    # including labeled axis ensures that we can match coordinates that do not
-    # support from_xarray reconstruction. LabelAxis will be retagged with the
-    # coordinate specified in the specs.
-    additional_coord_types += [cx.LabeledAxis]
-  fields = {
-      k: coordinates.field_from_xarray(v, tuple(additional_coord_types))
-      for k, v in variables.items()
-  }
   result = {}
-  for observation_key, observation_specs in input_specs.items():
-    result[observation_key] = {}
-    for k, v in observation_specs.items():
+
+  for source, observation_specs in input_specs.items():
+    if source not in nested_data:
+      raise ValueError(
+          f'Missing dataset for source {source!r} in '
+          f'nested_data. Available keys: {list(nested_data.keys())}'
+      )
+    dataset = nested_data[source]
+    requested_var_names = set(observation_specs.keys())
+
+    if not requested_var_names.issubset(dataset.keys()):
+      missing_vars = requested_var_names.difference(dataset.keys())
+      raise ValueError(
+          f'Specs for {source!r} contains {missing_vars=} that are '
+          f'not in the corresponding dataset with keys {list(dataset.keys())}'
+      )
+
+    variables = {k: dataset[k] for k in requested_var_names}
+
+    current_spec_coords = jax.tree.leaves(
+        observation_specs, is_leaf=is_coordinate
+    )
+    additional_coord_types = [type(x) for x in current_spec_coords]
+    if not strict_matches:
+      additional_coord_types += [cx.LabeledAxis]
+
+    fields = {
+        k: coordinates.field_from_xarray(v, tuple(additional_coord_types))
+        for k, v in variables.items()
+    }
+
+    result[source] = {}
+    for k, target_coord in observation_specs.items():
       if strict_matches:
-        result[observation_key][k] = fields[k].untag(v).tag(v)
+        result[source][k] = fields[k].untag(target_coord).tag(target_coord)
       else:
-        result[observation_key][k] = fields[k].untag(*v.dims).tag(v)
+        result[source][k] = (
+            fields[k].untag(*target_coord.dims).tag(target_coord)
+        )
+
   return result
 
 
 def read_sharded_fields_from_xarray(
-    dataset: xarray.Dataset,
+    nested_data: dict[str, xarray.Dataset],
     input_specs: dict[str, dict[str, cx.Coordinate]],
     mesh_shape: collections.OrderedDict[str, int],
     dim_partitions: parallelism.DimPartitions,
@@ -194,7 +224,7 @@ def read_sharded_fields_from_xarray(
   across devices.
 
   Args:
-    dataset: xarray dataset to read data from.
+    nested_data: dict of xarray datasets from which to read data.
     input_specs: nested dictionary that associates variable with coordinates.
     mesh_shape: shape of the sharding mesh indicating number of devices in each
       axis.
@@ -213,7 +243,7 @@ def read_sharded_fields_from_xarray(
   shard_specs = jax.tree.map(
       wrap_coordinate_shard, input_specs, is_leaf=is_coordinate
   )
-  return read_fields_from_xarray(dataset, shard_specs, strict_matches=False)
+  return read_fields_from_xarray(nested_data, shard_specs, strict_matches=False)
 
 
 def fields_to_xarray(

@@ -222,12 +222,13 @@ def evaluation_iterator(
   """Read a time-series xarray.Dataset into an iterator of samples.
 
   Args:
-    source: lazy xarray.Dataset, e.g., opened from a Zarr file with
-      `open_zarr(..., chunks=None)`. All data variables with a 'time' dimension
-      will be sampled. Note: setting `chunks=None` to avoid using Dask is
-      preferred for optimal performance.
+    source: lazy xarray.Dataset or JAX pytree of lazy datasets, e.g., opened
+      from a Zarr file with `xarray.open_zarr(..., chunks=None)`. All data
+      variables along `sample_dim` will be sampled. Note: setting `chunks=None`
+      to avoid using Dask is preferred for optimal performance.
     stencil: specification of what time-series samples of this dataset should
-      look like.
+      look like. Should either be a single Stencil or a pytree of Stencils
+      matching the structure of `source`.
     sample_origins: points at which to sample the time-series.
     sample_dim: name of the dimension to sample along.
     read_options: options to use for reading the Grain dataset. Buffer size here
@@ -238,6 +239,11 @@ def evaluation_iterator(
   """
   if read_options is None:
     read_options = grain.ReadOptions(num_threads=16, prefetch_buffer_size=32)
+
+  if isinstance(stencil, stencils.Stencil):
+    stencil = jax.tree.map(
+        lambda _: stencil, source, is_leaf=_is_xarray_dataset
+    )
 
   def _build_grain_source(
       source: xarray.Dataset, stencil: stencils.Stencil
@@ -283,9 +289,6 @@ def group_slices(
   return groups
 
 
-PyTree = Any
-
-
 def _split_block(sample_dim: str, block_tree: PyTree) -> list[PyTree]:
   """Apply sub_slices to each block in a pytree of _BlockResult."""
   block_leaves, outer_treedef = jax.tree.flatten(
@@ -319,12 +322,13 @@ def training_iterator(
   """Read a time-series into an iterator of samples in randomly shuffled order.
 
   Args:
-    source: lazy xarray.Dataset, e.g., opened from a Zarr file with
-      `open_zarr(..., chunks=None)`. All data variables with a 'time' dimension
-      will be sampled. Note: setting `chunks=None` to avoid using Dask is
-      preferred for optimal performance.
+    source: lazy xarray.Dataset or JAX pytree of lazy datasets, e.g., opened
+      from a Zarr file with `xarray.open_zarr(..., chunks=None)`. All data
+      variables along `sample_dim` will be sampled. Note: setting `chunks=None`
+      to avoid using Dask is preferred for optimal performance.
     stencil: specification of what time-series samples of this dataset should
-      look like.
+      look like. Should either be a single Stencil or a pytree of Stencils
+      matching the structure of `source`.
     sample_origins: points at which to sample the time-series.
     sample_dim: name of the dimension to sample along.
     num_epochs: number of epoch for which to read the dataset, or `None` to read
@@ -351,6 +355,11 @@ def training_iterator(
 
   if shard_index is None or shard_count is None:
     raise ValueError('must set both or neither of shard_index and shard_count')
+
+  if isinstance(stencil, stencils.Stencil):
+    stencil = jax.tree.map(
+        lambda _: stencil, source, is_leaf=_is_xarray_dataset
+    )
 
   source = _prepare_xarray_source(source, sample_dim)
   bytes_per_example = _example_nbytes(source, stencil, sample_dim)

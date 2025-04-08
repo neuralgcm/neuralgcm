@@ -93,6 +93,27 @@ class IteratorsTest(parameterized.TestCase):
     actual = [item for item in data]
     assert_xarray_trees_identical(actual, expected)
 
+  def test_evaluation_iterator_non_pytree_stencil(self):
+    source = {
+        'foo': xarray.Dataset(coords={'time': np.arange(100)}),
+        'bar': xarray.Dataset(coords={'time': np.arange(100)}),
+    }
+    stencil = xreader.Stencil(start=0, stop=1, step=1)
+    sample_origins = np.array([0, 10])
+    data = xreader.evaluation_iterator(source, stencil, sample_origins)
+    expected = [
+        {
+            'foo': xarray.Dataset(coords={'time': np.array([0])}),
+            'bar': xarray.Dataset(coords={'time': np.array([0])}),
+        },
+        {
+            'foo': xarray.Dataset(coords={'time': np.array([10])}),
+            'bar': xarray.Dataset(coords={'time': np.array([10])}),
+        },
+    ]
+    actual = [item for item in data]
+    assert_xarray_trees_identical(actual, expected)
+
   def test_training_iterator_basic(self):
     source = xarray.Dataset(
         {'x': ('time', -np.arange(100))}, coords={'time': np.arange(100)}
@@ -192,6 +213,30 @@ class IteratorsTest(parameterized.TestCase):
                 {'baz': ('time', np.array([300]))},
                 coords={'time': np.array([30])},
             ),
+        },
+    ]
+    actual = sorted(
+        [item for item in data],
+        key=lambda x: x['bar']['time'].item(),
+    )
+    assert_xarray_trees_identical(actual, expected)
+
+  def test_training_iterator_non_pytree_stencil(self):
+    source = {
+        'foo': xarray.Dataset(coords={'time': np.arange(100)}),
+        'bar': xarray.Dataset(coords={'time': np.arange(100)}),
+    }
+    stencil = xreader.Stencil(start=0, stop=1, step=1)
+    sample_origins = np.array([0, 10])
+    data = xreader.training_iterator(source, stencil, sample_origins)
+    expected = [
+        {
+            'foo': xarray.Dataset(coords={'time': np.array([0])}),
+            'bar': xarray.Dataset(coords={'time': np.array([0])}),
+        },
+        {
+            'foo': xarray.Dataset(coords={'time': np.array([10])}),
+            'bar': xarray.Dataset(coords={'time': np.array([10])}),
         },
     ]
     actual = sorted(

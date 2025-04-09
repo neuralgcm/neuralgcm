@@ -239,6 +239,11 @@ def evaluation_iterator(
   if read_options is None:
     read_options = grain.ReadOptions(num_threads=16, prefetch_buffer_size=32)
 
+  if isinstance(stencil, stencils.Stencil):
+    stencil = jax.tree.map(
+        lambda _: stencil, source, is_leaf=_is_xarray_dataset
+    )
+
   def _build_grain_source(
       source: xarray.Dataset, stencil: stencils.Stencil
   ) -> _XarraySliceSource:
@@ -351,6 +356,11 @@ def training_iterator(
 
   if shard_index is None or shard_count is None:
     raise ValueError('must set both or neither of shard_index and shard_count')
+
+  if isinstance(stencil, stencils.Stencil):
+    stencil = jax.tree.map(
+        lambda _: stencil, source, is_leaf=_is_xarray_dataset
+    )
 
   source = _prepare_xarray_source(source, sample_dim)
   bytes_per_example = _example_nbytes(source, stencil, sample_dim)

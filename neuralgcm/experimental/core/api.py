@@ -210,28 +210,36 @@ class ForecastSystem(nnx.Module, abc.ABC):
         out_axes=(nnx.Carry, 0),
     )
     (_, final_state), intermediates = unroll_fn((self, state))
-    steps = (int(not start_with_input) + np.arange(outer_steps))
+    steps = int(not start_with_input) + np.arange(outer_steps)
     time = coordinates.TimeDelta(steps * timedelta)
     intermediates = cx.tag(intermediates, time)
     return final_state, intermediates
 
-  def inputs_from_xarray(self, ds: xarray.Dataset) -> typing.Pytree:
+  def inputs_from_xarray(
+      self, nested_data: dict[str, xarray.Dataset]
+  ) -> typing.Pytree:
     """Converts xarray dataset to inputs for the model."""
     raise NotImplementedError(
         f'Class {self.__class__.__name__} does not implement'
         ' inputs_from_xarray.'
     )
 
-  def dynamic_inputs_from_xarray(self, ds: xarray.Dataset) -> typing.Pytree:
+  def dynamic_inputs_from_xarray(
+      self, nested_data: dict[str, xarray.Dataset]
+  ) -> typing.Pytree:
     """Converts xarray dataset to dynamic covariates for the model."""
     raise NotImplementedError(
         f'Class {self.__class__.__name__} does not implement'
         ' dynamic_inputs_from_xarray.'
     )
 
-  def data_from_xarray(self, ds: xarray.Dataset) -> typing.Pytree:
+  def data_from_xarray(
+      self, nested_data: dict[str, xarray.Dataset]
+  ) -> tuple[typing.Pytree, typing.Pytree]:
     """Converts xarray dataset to data for the model."""
-    return self.inputs_from_xarray(ds), self.dynamic_inputs_from_xarray(ds)
+    inputs = self.inputs_from_xarray(nested_data)
+    dynamic_inputs = self.dynamic_inputs_from_xarray(nested_data)
+    return inputs, dynamic_inputs
 
   @classmethod
   def from_fiddle_config(

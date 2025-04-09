@@ -26,6 +26,13 @@ import numpy as np
 import xarray
 
 
+def _maybe_isel(ds: xarray.Dataset, **indexers: slice):
+  if any(k in ds.dims for k in indexers):
+    return ds.isel(**indexers)
+  else:
+    return ds
+
+
 class ReadFieldsFromXarrayTest(parameterized.TestCase):
   """Tests utilities for reading fields from xarray configured via specs."""
 
@@ -44,15 +51,26 @@ class ReadFieldsFromXarrayTest(parameterized.TestCase):
     surface_coord = cx.compose_coordinates(timedelta, grid)
     volume_fields = {k: ones_like(volume_coord) for k in volume_variables}
     surface_fields = {k: ones_like(surface_coord) for k in surface_variables}
-    t0 = np.datetime64('2024-01-01')
     other_fields = {
-        'time': cx.wrap(jdt.to_datetime(t0 + timedelta_values), timedelta),
-        'global_scalar': cx.wrap(np.linspace(0, np.pi, 3), timedelta),
+        'global_scalar': cx.wrap(np.linspace(0, np.pi, 3), timedelta)
     }
+
+    t0 = np.datetime64('2024-01-01')
+    time = cx.wrap(jdt.to_datetime(t0 + timedelta_values), timedelta)
+    volume_fields['time'] = time
+    surface_fields['time'] = time
+    other_fields['time'] = time
+
     volume_vars = {k: v.to_xarray() for k, v in volume_fields.items()}
     surface_vars = {k: v.to_xarray() for k, v in surface_fields.items()}
     other_vars = {k: v.to_xarray() for k, v in other_fields.items()}
-    self.mock_ds = xarray.Dataset(volume_vars | surface_vars | other_vars)
+
+    # self.mock_ds = xarray.Dataset(volume_vars | surface_vars | other_vars)
+    self.mock_data = {
+        'era5': xarray.Dataset(volume_vars),
+        'era5:surface': xarray.Dataset(surface_vars),
+        'era5:other': xarray.Dataset(other_vars),
+    }
     self.grid = grid
     self.levels = levels
     self.timedelta = timedelta
@@ -74,16 +92,19 @@ class ReadFieldsFromXarrayTest(parameterized.TestCase):
         'era5': {
             'geopotential': coords,
             'temperature': coords,
+            'time': cx.Scalar(),
+        },
+        'era5:surface': {
+            '2m_temperature': self.grid,
             'sst': self.grid,
             'time': cx.Scalar(),
         },
-        'era5:surface': {'2m_temperature': self.grid},
-        'era5:g': {
+        'era5:other': {
             'global_scalar': cx.Scalar(),
             'time': cx.Scalar(),
         },
     }
-    actual = xarray_utils.read_fields_from_xarray(self.mock_ds, input_specs)
+    actual = xarray_utils.read_fields_from_xarray(self.mock_data, input_specs)
     self.assert_data_and_specs_keys_match(actual, input_specs)
 
   def test_read_sharded_fields_from_xarray(self):
@@ -94,8 +115,11 @@ class ReadFieldsFromXarrayTest(parameterized.TestCase):
             'temperature': coords,
             'time': cx.Scalar(),
         },
-        'era5:other': {
+        'era5:surface': {
             '2m_temperature': self.grid,
+            'time': cx.Scalar(),
+        },
+        'era5:other': {
             'global_scalar': cx.Scalar(),
             'time': cx.Scalar(),
         },
@@ -104,7 +128,7 @@ class ReadFieldsFromXarrayTest(parameterized.TestCase):
     with self.subTest('single_shard'):
       field_partition = {}
       actual = xarray_utils.read_sharded_fields_from_xarray(
-          self.mock_ds, input_specs, mesh_shape, field_partition
+          self.mock_data, input_specs, mesh_shape, field_partition
       )
       self.assert_data_and_specs_keys_match(actual, input_specs)
       coord_shard = coordinates.CoordinateShard(
@@ -118,7 +142,10 @@ class ReadFieldsFromXarrayTest(parameterized.TestCase):
     with self.subTest('two_longitude_shards'):
       field_partition = {'longitude': 'x'}
       actual = xarray_utils.read_sharded_fields_from_xarray(
-          self.mock_ds.isel(longitude=slice(0, 32)),
+          {
+              k: _maybe_isel(v, longitude=slice(0, 32))
+              for k, v in self.mock_data.items()
+          },
           input_specs,
           mesh_shape,
           field_partition,
@@ -135,7 +162,10 @@ class ReadFieldsFromXarrayTest(parameterized.TestCase):
     with self.subTest('lon_lat_shards'):
       field_partition = {'longitude': 'x', 'latitude': 'y'}
       actual = xarray_utils.read_sharded_fields_from_xarray(
-          self.mock_ds.isel(longitude=slice(0, 32), latitude=slice(0, 16)),
+          {
+              k: _maybe_isel(v, longitude=slice(0, 32), latitude=slice(0, 16))
+              for k, v in self.mock_data.items()
+          },
           input_specs,
           mesh_shape,
           field_partition,
@@ -152,7 +182,10 @@ class ReadFieldsFromXarrayTest(parameterized.TestCase):
     with self.subTest('four_longitude_shards'):
       field_partition = {'longitude': ('x', 'y')}
       actual = xarray_utils.read_sharded_fields_from_xarray(
-          self.mock_ds.isel(longitude=slice(0, 16)),
+          {
+              k: _maybe_isel(v, longitude=slice(0, 16))
+              for k, v in self.mock_data.items()
+          },
           input_specs,
           mesh_shape,
           field_partition,

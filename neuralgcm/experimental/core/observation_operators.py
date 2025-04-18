@@ -87,6 +87,32 @@ class DataObservationOperator(ObservationOperator):
 
 
 @dataclasses.dataclass
+class ObservationOperatorWithRenaming(ObservationOperator):
+  """Operator wrapper that converts between different naming conventions.
+
+  Attributes:
+    operator: Observation operator that performs computation.
+    renaming_dict: A dictionary mapping new names to those used by `operator`.
+  """
+
+  operator: ObservationOperator
+  renaming_dict: dict[str, str]
+
+  def observe(
+      self,
+      inputs: dict[str, cx.Field],
+      query: dict[str, cx.Field | cx.Coordinate],
+  ) -> dict[str, cx.Field]:
+    """Returns observations for `query` matched against `self.fields`."""
+    renamed_query = {
+        self.renaming_dict.get(k, k): v for k, v in query.items()
+    }
+    observation = self.operator.observe(inputs, renamed_query)
+    inverse_renaming_dict = {v: k for k, v in self.renaming_dict.items()}
+    return {inverse_renaming_dict.get(k, k): v for k, v in observation.items()}
+
+
+@dataclasses.dataclass
 class FixedLearnedObservationOperator(ObservationOperator):
   """Operator that computes fixed set of observations using state mapping."""
 

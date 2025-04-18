@@ -146,7 +146,7 @@ class LonLatGrid(cx.Coordinate):
   longitude_wavenumbers: int = dataclasses.field(default=0, kw_only=True)
   total_wavenumbers: int = dataclasses.field(default=0, kw_only=True)
   spmd_mesh: jax.sharding.Mesh | None = dataclasses.field(
-      default=None, kw_only=True
+      default=None, kw_only=True, compare=False,
   )
   _ylm_grid: spherical_harmonic.Grid = dataclasses.field(
       init=False, repr=False, compare=False
@@ -477,7 +477,7 @@ class SphericalHarmonicGrid(cx.Coordinate):
       default='gauss', repr=False, kw_only=True
   )
   spmd_mesh: jax.sharding.Mesh | None = dataclasses.field(
-      default=None, kw_only=True
+      default=None, kw_only=True, compare=False,
   )
   _ylm_grid: spherical_harmonic.Grid = dataclasses.field(
       init=False, repr=False, compare=False

@@ -42,6 +42,7 @@ class SimUnits:
   ideal_gas_constant: float
   water_vapor_gas_constant: float
   water_vapor_isobaric_heat_capacity: float
+  water_density: float
   kappa: float
   reference_datetime: np.datetime64
   scale: scales.Scale
@@ -125,6 +126,7 @@ class SimUnits:
       ideal_gas_constant_si: Quantity = scales.IDEAL_GAS_CONSTANT,
       water_vapor_gas_constant_si: Quantity = scales.IDEAL_GAS_CONSTANT_H20,
       water_vapor_isobaric_heat_capacity_si: Quantity = scales.WATER_VAPOR_CP,
+      water_density_si: Quantity = scales.WATER_DENSITY,
       kappa_si: Quantity = scales.KAPPA,
       reference_datetime: np.datetime64 = np.datetime64('1979-01-01T00:00:00'),
       scale: scales.Scale = scales.DEFAULT_SCALE,
@@ -137,6 +139,7 @@ class SimUnits:
         scale.nondimensionalize(ideal_gas_constant_si),
         scale.nondimensionalize(water_vapor_gas_constant_si),
         scale.nondimensionalize(water_vapor_isobaric_heat_capacity_si),
+        scale.nondimensionalize(water_density_si),
         scale.nondimensionalize(kappa_si),
         reference_datetime=reference_datetime,
         scale=scale,
@@ -150,6 +153,7 @@ DEFAULT_UNITS = SimUnits.from_si(
     ideal_gas_constant_si=scales.IDEAL_GAS_CONSTANT,
     water_vapor_gas_constant_si=scales.IDEAL_GAS_CONSTANT_H20,
     water_vapor_isobaric_heat_capacity_si=scales.WATER_VAPOR_CP,
+    water_density_si=scales.WATER_DENSITY,
     kappa_si=scales.KAPPA,
     scale=scales.ATMOSPHERIC_SCALE,
     reference_datetime=np.datetime64('1979-01-01T00:00:00'),
@@ -169,6 +173,7 @@ ONE_MINUTE_DT_UNITS = SimUnits.from_si(
     ideal_gas_constant_si=scales.IDEAL_GAS_CONSTANT,
     water_vapor_gas_constant_si=scales.IDEAL_GAS_CONSTANT_H20,
     water_vapor_isobaric_heat_capacity_si=scales.WATER_VAPOR_CP,
+    water_density_si=scales.WATER_DENSITY,
     kappa_si=scales.KAPPA,
     scale=ONE_MINUTE_DT_SCALE,
     reference_datetime=np.datetime64('1979-01-01T00:00:00'),

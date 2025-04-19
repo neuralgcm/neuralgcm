@@ -125,6 +125,41 @@ class EmbeddingsTest(parameterized.TestCase):
     chex.assert_trees_all_equal(out_shape, expected_shape)
 
 
+class ChannelMappingTest(parameterized.TestCase):
+  """Tests ChannelMapping."""
+
+  def test_channel_mapping(self):
+    """Checks that ChannelMapping produces outputs with expected shapes."""
+    coords = coordinates.DinosaurCoordinates(
+        horizontal=coordinates.LonLatGrid.T21(),
+        vertical=coordinates.SigmaLevels.equidistant(4),
+    )
+    tower_factory = functools.partial(
+        towers.ColumnTower,
+        column_net_factory=functools.partial(
+            standard_layers.MlpUniform, hidden_size=6, n_hidden_layers=2
+        ),
+    )
+    inputs = {
+        'full_a': np.ones(coords.shape),
+        'full_b': np.ones(coords.shape),
+        'surface_a': np.ones(coords.horizontal.shape),
+    }
+    input_shapes = pytree_utils.shape_structure(inputs)
+    output_shapes = {
+        'out_full': typing.ShapeFloatStruct((7,) + coords.horizontal.shape),
+        'out_surface': typing.ShapeFloatStruct(coords.horizontal.shape),
+    }
+    mapping = pytree_mappings.ChannelMapping(
+        input_shapes=input_shapes,
+        output_shapes=output_shapes,
+        tower_factory=tower_factory,
+        rngs=nnx.Rngs(0),
+    )
+    actual = mapping(inputs)
+    chex.assert_trees_all_equal_shapes(actual, output_shapes)
+
+
 if __name__ == '__main__':
   jax.config.parse_flags_with_absl()
   absltest.main()

@@ -45,6 +45,51 @@ def unpack_to_pytree(
   return jax.tree.unflatten(tree_def, split)
 
 
+def expand_to_ndim(
+    pytree: typing.Pytree, ndim: int, axis: int
+) -> typing.Pytree:
+  """Expands leaves of `pytree` of rank `ndim-1` to `ndim` along `axis`."""
+  axis = _normalize_axis(axis, ndim)
+  flat, treedef = jax.tree.flatten(pytree)
+  ndims = [x.ndim for x in flat]
+  if not set(ndims).issubset(set([ndim, ndim - 1])):
+    raise ValueError(
+        f'only arrays with ndim={ndim}/{ndim - 1} are supported, got {ndims=}'
+    )
+
+  def _maybe_expand(x):
+    if x.ndim == ndim:
+      return x
+    else:
+      if isinstance(x, jax.ShapeDtypeStruct):
+        new_shape = x.shape[:axis] + (1,) + x.shape[axis:]
+        return jax.ShapeDtypeStruct(new_shape, x.dtype)
+      else:
+        return jnp.expand_dims(jnp.asarray(x), axis)
+
+  return jax.tree.unflatten(treedef, [_maybe_expand(x) for x in flat])
+
+
+def squeeze_to_shapes(
+    pytree: typing.Pytree, shapes: typing.Pytree, axis: int
+) -> typing.Pytree:
+  """Squeezes leaves of `pytree` to `shapes` along `axis`."""
+
+  def _maybe_squeeze(
+      array: typing.Array, array_struct: typing.ShapeDtypeStruct
+  ) -> typing.Array:
+    if array.shape == array_struct.shape:
+      return array
+    elif array.shape[:axis] + array.shape[(axis + 1) :] == array_struct.shape:
+      return jnp.squeeze(array, axis)
+    raise ValueError(
+        f'{array.shape=} cannot be transformed into'
+        f' {array_struct.shape=} by squeezing along {axis=}'
+    )
+
+  return jax.tree.map(_maybe_squeeze, pytree, shapes)
+
+
 def stack_pytree(pytree: typing.Pytree, axis: int = 0) -> typing.Array:
   """Stacks `pytree` by stacking leaves along a new axis."""
   flat, _ = jax.tree.flatten(pytree)

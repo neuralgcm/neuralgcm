@@ -66,8 +66,14 @@ class ChannelMapping(nnx.Module):
     # TODO(dkochkov) consider passing `coords` to infer how input features are
     # structured and which axis in output_shapes is a channel axis.
     f_axis = -3  # default column axis.
-    input_size = sum([x.shape[f_axis] for x in jax.tree.leaves(input_shapes)])
-    output_size = sum([x.shape[f_axis] for x in jax.tree.leaves(output_shapes)])
+    in_shapes = pytree_utils.expand_to_ndim(
+        input_shapes, ndim=3, axis=f_axis
+    )
+    out_shapes = pytree_utils.expand_to_ndim(
+        output_shapes, ndim=3, axis=f_axis
+    )
+    input_size = sum([x.shape[f_axis] for x in jax.tree.leaves(in_shapes)])
+    output_size = sum([x.shape[f_axis] for x in jax.tree.leaves(out_shapes)])
     # tower preserves the last two spatial dimensions.
     self.tower = tower_factory(input_size, output_size, rngs=rngs)
     self._output_shapes = output_shapes
@@ -75,14 +81,21 @@ class ChannelMapping(nnx.Module):
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     # TODO(dkochkov) Consider adding check that inputs is not just an array.
+    inputs = pytree_utils.expand_to_ndim(inputs, ndim=3, axis=self.feature_axis)
     array = pytree_utils.pack_pytree(inputs, self.feature_axis)
     if array.ndim != 3:
       raise ValueError(f'Expected input array with ndim=3, got {array.shape=}')
     outputs = self.tower(array)
     if outputs.ndim != 3:
       raise ValueError(f'Expected outputs with ndim=3, got {outputs.shape=}')
-    return pytree_utils.unpack_to_pytree(
-        outputs, self._output_shapes, self.feature_axis
+    out_shapes = pytree_utils.expand_to_ndim(
+        self._output_shapes, ndim=3, axis=self.feature_axis
+    )
+    expanded_outputs = pytree_utils.unpack_to_pytree(
+        outputs, out_shapes, self.feature_axis
+    )
+    return pytree_utils.squeeze_to_shapes(
+        expanded_outputs, self._output_shapes, self.feature_axis
     )
 
   @property
@@ -154,9 +167,12 @@ class MappingWithNormalizedInputs(nnx.Module):
       rngs: nnx.Rngs,
   ):
     self._output_shapes = output_shapes
-    self.normalization = normalization_factory(input_shapes, rngs=rngs)
+    in_shapes = pytree_utils.expand_to_ndim(
+        input_shapes, ndim=3, axis=-3
+    )
+    self.normalization = normalization_factory(in_shapes, rngs=rngs)
     self.mapping = mapping_factory(
-        input_shapes=self.normalization.output_shapes(input_shapes),
+        input_shapes=self.normalization.output_shapes(in_shapes),
         output_shapes=output_shapes,
         rngs=rngs,
     )
@@ -169,7 +185,8 @@ class MappingWithNormalizedInputs(nnx.Module):
     return self.normalization(inputs)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    return self.mapping(self.normalize(inputs))
+    expanded_inputs = pytree_utils.expand_to_ndim(inputs, ndim=3, axis=-3)
+    return self.mapping(self.normalize(expanded_inputs))
 
 
 # TODO(dkochkov) Consider parameterizing this with mapping factories.

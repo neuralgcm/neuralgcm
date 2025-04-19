@@ -59,6 +59,45 @@ class PytreeUtilsTest(parameterized.TestCase):
   @parameterized.parameters(
       dict(
           pytree={
+              'a': np.arange(8).reshape((1, 2, 4)),
+              'b': np.ones((2, 4)),
+          },
+          ndim=3,
+          axis=0,
+      ),
+      dict(
+          pytree=(np.arange(16), np.zeros((16, 7))),
+          ndim=2,
+          axis=1,
+      ),
+      dict(
+          pytree=(np.arange(4).reshape((4, 1)), np.zeros((4, 5))),
+          ndim=2,
+          axis=-1,
+      ),
+  )
+  def test_expand_to_ndim_squeeze_to_shapes_roundtrip(self, pytree, ndim, axis):
+    """Tests that expand_to_ndim --> squeeze_to_shapes preserves the data."""
+    shapes = pytree_utils.shape_structure(pytree)
+    expanded = pytree_utils.expand_to_ndim(pytree, ndim=ndim, axis=axis)
+    squeezed = pytree_utils.squeeze_to_shapes(expanded, shapes, axis=axis)
+    chex.assert_trees_all_close(pytree, jax.device_get(squeezed))
+
+  def test_expand_to_ndim_works_with_shape_dtypes(self):
+    inputs = {
+        'a': typing.ShapeFloatStruct((12, 32, 64)),
+        'b': typing.ShapeFloatStruct((32, 64)),
+    }
+    expanded = pytree_utils.expand_to_ndim(inputs, ndim=3, axis=0)
+    expected = {
+        'a': typing.ShapeFloatStruct((12, 32, 64)),
+        'b': typing.ShapeFloatStruct((1, 32, 64)),
+    }
+    chex.assert_trees_all_equal(expanded, expected)
+
+  @parameterized.parameters(
+      dict(
+          pytree={
               'a': np.array([1, 2, 3]),
               'b': np.array([4, 5, 6]),
               'c': {'d': np.array([7, 8, 9])},

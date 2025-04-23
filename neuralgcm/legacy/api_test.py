@@ -17,6 +17,8 @@ import neuralgcm
 import numpy as np
 import xarray
 
+jax.config.update('jax_threefry_partitionable', False)
+
 
 def _assert_allclose(actual, desired, *, err_msg=None, range_rtol=1e-5):
   span = desired.max() - desired.min()

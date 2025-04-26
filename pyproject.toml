@@ -45,6 +45,7 @@ tests = [
     "pytest",
 ]
 experimental = [
+    "einops",
     "etils",
     "fiddle",
     "flax",

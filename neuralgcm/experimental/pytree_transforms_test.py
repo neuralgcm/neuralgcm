@@ -20,7 +20,6 @@ from typing import Any, Sequence
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
-from dinosaur import primitive_equations
 from flax import nnx
 import jax
 import jax.numpy as jnp
@@ -35,6 +34,7 @@ from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import random_processes
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
@@ -278,15 +278,12 @@ class InputsFeaturesTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
       dict(
-          testcase_name='dinosaur_coords',
-          coords=coordinates.DinosaurCoordinates(
-              horizontal=coordinates.LonLatGrid.T21(),
-              vertical=coordinates.SigmaLevels.equidistant(4),
-          ),
+          testcase_name='t21',
+          grid=coordinates.LonLatGrid.T21(),
       ),
   )
-  def test_radiation_features(self, coords):
-    radiation_features = pytree_transforms.RadiationFeatures(coords=coords)
+  def test_radiation_features(self, grid):
+    radiation_features = pytree_transforms.RadiationFeatures(grid=grid)
     self._test_feature_module(
         radiation_features,
         {'time': jdt.to_datetime('2025-01-09T15:00')},
@@ -298,11 +295,15 @@ class InputsFeaturesTest(parameterized.TestCase):
     self._test_feature_module(latitude_features, None)
 
   def test_orography_features(self):
-    grid = coordinates.SphericalHarmonicGrid.T21()
+    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(),
+    )
     orography = orographies.ModalOrography(
-        grid=grid,
+        ylm_transform=ylm_transform,
         rngs=None,
-        mesh=parallelism.Mesh(None),
     )
     orography_features = pytree_transforms.OrographyFeatures(
         orography_module=orography,
@@ -310,18 +311,21 @@ class InputsFeaturesTest(parameterized.TestCase):
     self._test_feature_module(orography_features, None)
 
   def test_orography_with_grads_features(self):
-    grid = coordinates.SphericalHarmonicGrid.T21()
+    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(),
+    )
     orography = orographies.ModalOrography(
-        grid=grid,
+        ylm_transform=ylm_transform,
         rngs=None,
-        mesh=parallelism.Mesh(None),
     )
     orography_features = pytree_transforms.OrographyWithGradsFeatures(
         orography_module=orography,
         compute_gradients_transform=pytree_transforms.ToModalWithFilteredGradients(
-            grid,
+            ylm_transform,
             filter_attenuations=[2.0],
-            mesh=parallelism.Mesh(None),
         ),
     )
     self._test_feature_module(orography_features, None)
@@ -404,17 +408,19 @@ class InputsFeaturesTest(parameterized.TestCase):
     self._test_feature_module(static_surface_features, None)
 
   def test_velocity_and_prognostics_with_modal_gradients(self):
-    coords = coordinates.DinosaurCoordinates(
-        horizontal=coordinates.LonLatGrid.T21(),
-        vertical=coordinates.SigmaLevels.equidistant(3),
+    sigma = coordinates.SigmaLevels.equidistant(4)
+    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(),
     )
     with_gradients_transform = pytree_transforms.ToModalWithFilteredGradients(
-        coords.horizontal,
+        ylm_transform,
         filter_attenuations=[2.0],
-        mesh=parallelism.Mesh(None),
     )
     features_grads = pytree_transforms.VelocityAndPrognosticsWithModalGradients(
-        coords,
+        ylm_transform,
         volume_field_names=(
             'u',
             'v',
@@ -422,25 +428,20 @@ class InputsFeaturesTest(parameterized.TestCase):
         ),
         surface_field_names=('lsp',),
         compute_gradients_transform=with_gradients_transform,
-        mesh=parallelism.Mesh(None),
     )
     inputs = {
-        'u': np.ones(coords.dinosaur_coords.modal_shape),
-        'v': np.ones(coords.dinosaur_coords.modal_shape),
-        'vorticity': np.ones(coords.dinosaur_coords.modal_shape),
-        'divergence': np.ones(coords.dinosaur_coords.modal_shape),
-        'lsp': np.ones(coords.dinosaur_coords.modal_shape[1:])[np.newaxis, ...],
+        'u': np.ones(sigma.shape + ylm_transform.modal_grid.shape),
+        'v': np.ones(sigma.shape + ylm_transform.modal_grid.shape),
+        'vorticity': np.ones(sigma.shape + ylm_transform.modal_grid.shape),
+        'divergence': np.ones(sigma.shape + ylm_transform.modal_grid.shape),
+        'lsp': np.ones(ylm_transform.modal_grid.shape),
         'tracers': {},
         'time': jdt.to_datetime('2025-01-09T15:00'),
     }
     self._test_feature_module(features_grads, inputs)
 
   def test_surface_embedding_features(self):
-    n_levels = 12
-    coords = coordinates.DinosaurCoordinates(
-        horizontal=coordinates.LonLatGrid.T21(),
-        vertical=coordinates.LayerLevels(n_levels),
-    )
+    grid = coordinates.LonLatGrid.T21()
     mlp_factory = functools.partial(
         standard_layers.MlpUniform, hidden_size=6, n_hidden_layers=2
     )
@@ -452,7 +453,7 @@ class InputsFeaturesTest(parameterized.TestCase):
         tower_factory=tower_factory,
     )
     feature_module = pytree_transforms.LatitudeFeatures(
-        grid=coords.horizontal,
+        grid=grid,
     )
     embedding_factory = functools.partial(
         pytree_mappings.Embedding,
@@ -462,7 +463,7 @@ class InputsFeaturesTest(parameterized.TestCase):
         mesh=parallelism.Mesh(None),
     )
     surface_embedding_features = pytree_transforms.SurfaceEmbeddingFeatures(
-        coords=coords,
+        grid=grid,
         embedding_sizes={'abc': 3, 'foo': 5},
         embedding_factory=embedding_factory,
     )
@@ -504,45 +505,46 @@ class InputsFeaturesTest(parameterized.TestCase):
   @parameterized.named_parameters(
       dict(
           testcase_name='T21_grid',
-          grid=coordinates.LonLatGrid.T21(),
+          ylm_transform=spherical_transforms.SphericalHarmonicsTransform(
+              lon_lat_grid=coordinates.LonLatGrid.T21(),
+              ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+              partition_schema_key=None,
+              mesh=parallelism.Mesh(None),
+          ),
       ),
   )
-  def test_randomness_features(self, grid):
+  def test_randomness_features(self, ylm_transform):
     with self.subTest('gaussian_random_field'):
       random_process = random_processes.GaussianRandomField(
-          grid=grid,  # instantiating here because uses jax at __init__.
+          ylm_transform=ylm_transform,
           dt=1.0,
           sim_units=units.DEFAULT_UNITS,
           correlation_time=1.0,
           correlation_length=1.0,
           variance=1.0,
           rngs=nnx.Rngs(0),
-          mesh=parallelism.Mesh(None),
       )
       random_process.unconditional_sample(jax.random.key(0))
       randomness_features = pytree_transforms.RandomnessFeatures(
           random_process=random_process,
-          grid=grid,
-          mesh=parallelism.Mesh(None),
+          grid=ylm_transform.nodal_grid,
       )
       self._test_feature_module(randomness_features, None)
 
     with self.subTest('batched_gaussian_random_fields'):
       random_process = random_processes.BatchGaussianRandomField(
-          grid=grid,  # instantiating here because uses jax at __init__.
+          ylm_transform=ylm_transform,
           dt=1.0,
           sim_units=units.DEFAULT_UNITS,
           correlation_times=[1.0, 2.0],
           correlation_lengths=[0.6, 0.9],
           variances=[1.0, 1.0],
           rngs=nnx.Rngs(0),
-          mesh=parallelism.Mesh(None),
       )
       random_process.unconditional_sample(jax.random.key(0))
       randomness_features = pytree_transforms.RandomnessFeatures(
           random_process=random_process,
-          grid=grid,
-          mesh=parallelism.Mesh(None),
+          grid=ylm_transform.nodal_grid,
       )
       self._test_feature_module(randomness_features, None)
 
@@ -552,7 +554,7 @@ class InputsFeaturesTest(parameterized.TestCase):
         vertical=coordinates.LayerLevels(n_layers=3),
     )
     prognostic_features = pytree_transforms.PrognosticFeatures(
-        coords=coords, surface_field_names=('a', 'b'), volume_field_names=('c',)
+        prognostic_keys=('a', 'b', 'c')
     )
     inputs = {
         'a': np.ones(coords.horizontal.shape),
@@ -563,59 +565,21 @@ class InputsFeaturesTest(parameterized.TestCase):
     self._test_feature_module(prognostic_features, inputs)
 
   def test_pressure_features(self):
-    coords = coordinates.DinosaurCoordinates(
-        horizontal=coordinates.SphericalHarmonicGrid.T21(),
-        vertical=coordinates.SigmaLevels.equidistant(8),
-    )
-    pressure_features = pytree_transforms.PressureFeatures(
-        coords=coords, mesh=parallelism.Mesh(None)
-    )
-    inputs = {
-        'log_surface_pressure': np.ones(coords.horizontal.shape),
-    }
-    self._test_feature_module(pressure_features, inputs)
-
-
-class PrecipitationminusEvaporationTest(parameterized.TestCase):
-  """Tests PrecipitationminusEvaporation calculations."""
-
-  def test_shape_and_value(self):
-    """Tests that the output dimensions and values are correct."""
-    sim_units = units.DEFAULT_UNITS
-    coords = coordinates.DinosaurCoordinates(
-        horizontal=coordinates.LonLatGrid.T21(),
-        vertical=coordinates.SigmaLevels.equidistant(layers=8),
-    )
-    state = primitive_equations.State(
-        divergence=np.ones(coords.shape),
-        vorticity=np.ones(coords.shape),
-        log_surface_pressure=np.zeros(coords.horizontal.shape),
-        temperature_variation=np.ones(coords.shape),
-        tracers={
-            'specific_humidity': np.ones(coords.shape),
-            'specific_cloud_ice_water_content': np.ones(coords.shape),
-            'specific_cloud_liquid_water_content': np.ones(coords.shape),
-        },
-    )
-    expected_outputs = (
-        np.ones(coords.horizontal.shape) * 3 / sim_units.gravity_acceleration
-    )
-
-    pme = pytree_transforms.PrecipitationMinusEvaporation(
-        grid=coords.horizontal,
-        level=coords.vertical,
-        sim_units=sim_units,
+    sigma = coordinates.SigmaLevels.equidistant(8)
+    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+        partition_schema_key=None,
         mesh=parallelism.Mesh(None),
     )
-    input_state_modal = coords.horizontal.ylm_grid.to_modal(state)
-    inputs_tendency_modal = coords.horizontal.ylm_grid.to_modal(state)
-    outputs = pme(tendencies=inputs_tendency_modal, state=input_state_modal)
 
-    with self.subTest('shape'):
-      self.assertEqual(outputs.shape, expected_outputs.shape)
-
-    with self.subTest('value'):
-      np.testing.assert_allclose(outputs, expected_outputs, rtol=1e-5)
+    pressure_features = pytree_transforms.PressureFeatures(
+        ylm_transform=ylm_transform, sigma=sigma,
+    )
+    inputs = {
+        'log_surface_pressure': np.ones(ylm_transform.modal_grid.shape),
+    }
+    self._test_feature_module(pressure_features, inputs)
 
 
 if __name__ == '__main__':

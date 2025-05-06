@@ -14,7 +14,6 @@
 
 """Helpers for converting between different atmospheric states."""
 
-import dataclasses
 import functools
 
 from dinosaur import primitive_equations as dinosaur_primitive_equations
@@ -26,6 +25,7 @@ from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
@@ -47,8 +47,7 @@ def uvtz_to_primitive_equations(
   interpolate_fn = vertical_interpolation.vectorize_vertical_interpolation(
       vertical_interpolation.vertical_interpolation
   )
-  vertical = primitive_equations.coords.vertical
-  assert isinstance(vertical, coordinates.SigmaLevels)
+  vertical = primitive_equations.sigma_levels
   # TODO(dkochkov): Consider having explicit args that used differently, eg z.
   data_on_sigma = vertical_interpolation.interp_pressure_to_sigma(
       {k: v for k, v in source_data.items() if k != 'geopotential'},
@@ -66,12 +65,12 @@ def uvtz_to_primitive_equations(
 
 def primitive_equations_to_uvtz(
     source_state: dinosaur_primitive_equations.StateWithTime,
-    input_coords: coordinates.DinosaurCoordinates,
+    ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+    sigma_levels: coordinates.SigmaLevels,
     primitive_equations: equations.PrimitiveEquations,
     orography: orographies.Orography,
     target_coords: coordinates.DinosaurCoordinates,
     sim_units: units.SimUnits,
-    mesh: parallelism.Mesh,
 ):
   """Converts primitive equations state to pressure level representation.
 
@@ -82,26 +81,20 @@ def primitive_equations_to_uvtz(
 
   Args:
     source_state: State in primitive equations representation.
-    input_coords: Coordinates of the source state.
+    ylm_transform: Spherical transform that defines modal-nodal conversion.
+    sigma_levels: Sigma coordinates used by the primitive equations module.
     primitive_equations: Primitive equations module.
     orography: Orography module.
     target_coords: Pressure-level dinosaur coordinates to convert to.
     sim_units: Simulation units object.
-    mesh: Mesh that is compatible with 'dycore' and 'physics' sharding
-      strategies described in parallelism.with_dycore_sharding and
-      parallelism.with_physics_sharding. If the underlying mesh does not set
-      device mesh then no sharding is applied. If None, a default non-sharding
-      mesh is used.
 
   Returns:
     Dictionary of state components interpolated to target_coords.
   """
-  input_ylm_grid = input_coords.horizontal.ylm_grid
-  input_ylm_grid = dataclasses.replace(input_ylm_grid, spmd_mesh=mesh.spmd_mesh)
-  to_nodal_fn = input_ylm_grid.to_nodal
+  to_nodal_fn = ylm_transform.to_nodal_array
   velocity_fn = functools.partial(
       spherical_harmonic.vor_div_to_uv_nodal,
-      input_ylm_grid,
+      ylm_transform.dinosaur_grid,
   )
   u, v = velocity_fn(  # returned in nodal space.
       vorticity=source_state.vorticity, divergence=source_state.divergence
@@ -110,9 +103,7 @@ def primitive_equations_to_uvtz(
       to_nodal_fn(source_state.temperature_variation),
       ref_temperature=primitive_equations.T_ref.squeeze(),
   )
-  tracers = to_nodal_fn(source_state.tracers)
-  vertical = input_coords.vertical
-  assert isinstance(vertical, coordinates.SigmaLevels)
+  tracers = {k: to_nodal_fn(v) for k, v in source_state.tracers.items()}
   if (
       'specific_cloud_ice_water_content' in tracers.keys()
       and 'specific_cloud_liquid_water_content' in tracers.keys()
@@ -128,7 +119,7 @@ def primitive_equations_to_uvtz(
       temperature=t,
       specific_humidity=tracers['specific_humidity'],
       nodal_orography=orography.nodal_orography,
-      coordinates=vertical.sigma_levels,
+      coordinates=sigma_levels.sigma_levels,
       gravity_acceleration=sim_units.gravity_acceleration,
       ideal_gas_constant=sim_units.ideal_gas_constant,
       water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
@@ -137,7 +128,7 @@ def primitive_equations_to_uvtz(
   surface_pressure = jnp.exp(to_nodal_fn(source_state.log_surface_pressure))
   u, v, t, z, tracers, surface_pressure = (
       parallelism.with_dycore_to_physics_sharding(
-          mesh, (u, v, t, z, tracers, surface_pressure)
+          ylm_transform.mesh, (u, v, t, z, tracers, surface_pressure)
       )
   )
   interpolate_with_linear_extrap_fn = (
@@ -145,12 +136,10 @@ def primitive_equations_to_uvtz(
           vertical_interpolation.linear_interp_with_linear_extrap
       )
   )
-  vertical = primitive_equations.coords.vertical
-  assert isinstance(vertical, coordinates.SigmaLevels)
   regrid_with_linear_fn = functools.partial(
       vertical_interpolation.interp_sigma_to_pressure,
       pressure_coords=target_coords.vertical,
-      sigma_coords=vertical.sigma_levels,
+      sigma_coords=sigma_levels.sigma_levels,
       surface_pressure=surface_pressure,
       interpolate_fn=interpolate_with_linear_extrap_fn,
   )
@@ -162,7 +151,7 @@ def primitive_equations_to_uvtz(
   regrid_with_constant_fn = functools.partial(
       vertical_interpolation.interp_sigma_to_pressure,
       pressure_coords=target_coords.vertical,
-      sigma_coords=vertical.sigma_levels,
+      sigma_coords=sigma_levels.sigma_levels,
       surface_pressure=surface_pressure,
       interpolate_fn=interpolate_with_constant_extrap_fn,
   )
@@ -193,7 +182,7 @@ def sigma_to_primitive_equations(
   data_on_new_sigma = vertical_interpolation.interp_sigma_to_sigma(
       {k: v for k, v in source_data.items() if k != 'geopotential'},
       source_sigma=source_coords.vertical,
-      target_sigma=primitive_equations.coords.vertical,
+      target_sigma=primitive_equations.sigma_levels,
   )
 
   surface_pressure = data_on_new_sigma.pop('surface_pressure')
@@ -206,20 +195,18 @@ def sigma_to_primitive_equations(
 
 def primitive_equations_to_sigma(
     source_state: dinosaur_primitive_equations.StateWithTime,
-    input_coords: coordinates.DinosaurCoordinates,
+    ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+    sigma_levels: coordinates.SigmaLevels,
     primitive_equations: equations.PrimitiveEquations,
     orography: orographies.Orography,
     target_coords: coordinates.DinosaurCoordinates,
     sim_units: units.SimUnits,
-    mesh: parallelism.Mesh,
 ):
   """Converts primitive equations state to sigma level data representation."""
-  input_ylm_grid = input_coords.horizontal.ylm_grid
-  input_ylm_grid = dataclasses.replace(input_ylm_grid, spmd_mesh=mesh.spmd_mesh)
-  to_nodal_fn = input_ylm_grid.to_nodal
+  to_nodal_fn = ylm_transform.to_nodal_array
   velocity_fn = functools.partial(
       spherical_harmonic.vor_div_to_uv_nodal,
-      input_ylm_grid,
+      ylm_transform.dinosaur_grid,
   )
   u, v = velocity_fn(  # returned in nodal space.
       vorticity=source_state.vorticity, divergence=source_state.divergence
@@ -228,9 +215,7 @@ def primitive_equations_to_sigma(
       to_nodal_fn(source_state.temperature_variation),
       ref_temperature=primitive_equations.T_ref.squeeze(),
   )
-  tracers = to_nodal_fn(source_state.tracers)
-  vertical = input_coords.vertical
-  assert isinstance(vertical, coordinates.SigmaLevels)
+  tracers = {k: to_nodal_fn(v) for k, v in source_state.tracers.items()}
   if (
       'specific_cloud_ice_water_content' in tracers.keys()
       and 'specific_cloud_liquid_water_content' in tracers.keys()
@@ -246,7 +231,7 @@ def primitive_equations_to_sigma(
       temperature=t,
       specific_humidity=tracers['specific_humidity'],
       nodal_orography=orography.nodal_orography,
-      coordinates=vertical.sigma_levels,
+      coordinates=sigma_levels.sigma_levels,
       gravity_acceleration=sim_units.gravity_acceleration,
       ideal_gas_constant=sim_units.ideal_gas_constant,
       water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
@@ -257,18 +242,16 @@ def primitive_equations_to_sigma(
 
   u, v, t, z, tracers, surface_pressure = (
       parallelism.with_dycore_to_physics_sharding(
-          mesh, (u, v, t, z, tracers, surface_pressure)
+          ylm_transform.mesh, (u, v, t, z, tracers, surface_pressure)
       )
   )
 
   interpolate_with_linear_extrap_fn = (
       vertical_interpolation.linear_interp_with_linear_extrap
   )
-  vertical = primitive_equations.coords.vertical
-  assert isinstance(vertical, coordinates.SigmaLevels)
   regrid_with_linear_fn = functools.partial(
       vertical_interpolation.interp_sigma_to_sigma,
-      source_sigma=vertical.sigma_levels,
+      source_sigma=sigma_levels.sigma_levels,
       target_sigma=target_coords.vertical.sigma_levels,
       interpolate_fn=interpolate_with_linear_extrap_fn,
   )

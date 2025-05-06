@@ -98,9 +98,7 @@ class FixedLearnedObservationOperatorTest(parameterized.TestCase):
     self.inputs = {
         k: cx.wrap(np.ones(self.coords.shape), self.coords) for k in input_names
     }
-    feature_module = pytree_transforms.PrognosticFeatures(
-        self.coords, volume_field_names=input_names
-    )
+    feature_module = pytree_transforms.PrognosticFeatures(input_names)
     tower_factory = functools.partial(
         towers.ColumnTower,
         column_net_factory=functools.partial(

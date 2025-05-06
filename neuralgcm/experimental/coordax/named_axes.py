@@ -818,6 +818,23 @@ class NamedArray:
     order = tuple(self.dims.index(dim) for dim in dims)
     return type(self)(self.data.transpose(order), dims)
 
+  def broadcast_like(self, other: Self) -> Self:
+    """Broadcasts the array to the shape of the other array."""
+    if any(dim is None for dim in self.dims):
+      raise ValueError(
+          f'cannot broadcast array with unnamed dimensions: {self.dims}'
+      )
+    missing = tuple(set(self.dims) - set(other.dims))
+    if missing:
+      raise ValueError(
+          f'cannot broadcast array with dimensions {self.dims} to array with '
+          f'dimensions {other.dims} because {missing} are not in {other.dims}'
+      )
+    out_axes = other.named_axes
+    broadcast_to_shape = lambda ref_y, x: jnp.broadcast_to(x, ref_y.shape)
+    broadcast_fn = lambda ref, x: jax.tree.map(broadcast_to_shape, ref, x)
+    return nmap(broadcast_fn, out_axes=out_axes)(other, self)
+
   # Convenience wrappers: Elementwise infix operators.
   __lt__ = _nmap_binary_op(operator.lt, 'jax.Array.__lt__')
   __le__ = _nmap_binary_op(operator.le, 'jax.Array.__le__')

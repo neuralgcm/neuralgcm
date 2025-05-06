@@ -31,6 +31,7 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import units
 import numpy as np
 
@@ -49,7 +50,7 @@ class MockMethod(nnx.Module):
     return result
 
 
-class PrecipitationMinusEvaporationTest(parameterized.TestCase):
+class PrecipitationPlusEvaporationTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
@@ -70,13 +71,18 @@ class PrecipitationMinusEvaporationTest(parameterized.TestCase):
     self.tendencies = jax.tree.map(jnp.ones_like, self.prognostics)
 
   def test_extract_precipitation_plus_evaporation(self):
+    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(),
+    )
     grid = coordinates.LonLatGrid.T21()
     sigma = coordinates.SigmaLevels.equidistant(layers=8)
     precip_plus_evap = atmos_diagnostics.ExtractPrecipitationPlusEvaporation(
-        grid=grid,
+        ylm_transform=ylm_transform,
         levels=sigma,
         sim_units=self.sim_units,
-        mesh=parallelism.Mesh(),
     )
     ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
     actual = precip_plus_evap(self.tendencies, prognostics=self.prognostics)
@@ -85,10 +91,16 @@ class PrecipitationMinusEvaporationTest(parameterized.TestCase):
 
   def test_extract_precipitation_and_evaporation(self):
     mesh = parallelism.Mesh()
+    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+        partition_schema_key=None,
+        mesh=mesh,
+    )
     grid = coordinates.LonLatGrid.T21()
     sigma = coordinates.SigmaLevels.equidistant(layers=8)
     # Setting up basic observation operator for evaporation.
-    feature_module = pytree_transforms.ToNodalWithVelocity(grid, mesh=mesh)
+    feature_module = pytree_transforms.ToNodalWithVelocity(ylm_transform)
     tower_factory = functools.partial(
         towers.ColumnTower,
         column_net_factory=nnx.Linear,
@@ -105,7 +117,10 @@ class PrecipitationMinusEvaporationTest(parameterized.TestCase):
         mesh=mesh,
     )
     observation_mapping = pytree_mappings.CoordsStateMapping(
-        coords=coordinates.DinosaurCoordinates(horizontal=grid, vertical=sigma),
+        coords=coordinates.DinosaurCoordinates(
+            horizontal=ylm_transform.lon_lat_grid,
+            vertical=sigma,
+        ),
         surface_field_names=tuple(['evaporation']),
         volume_field_names=tuple(),
         embedding_factory=embedding_factory,
@@ -116,14 +131,13 @@ class PrecipitationMinusEvaporationTest(parameterized.TestCase):
         observation_mapping
     )
     precip_plus_evap = atmos_diagnostics.ExtractPrecipitationPlusEvaporation(
-        grid=grid,
+        ylm_transform=ylm_transform,
         levels=sigma,
         sim_units=self.sim_units,
-        mesh=parallelism.Mesh(),
     )
     precip_and_evap = atmos_diagnostics.ExtractPrecipitationAndEvaporation(
         observation_operator=operator,
-        operator_query={'evaporation': grid},
+        operator_query={'evaporation': ylm_transform.lon_lat_grid},
         extract_p_plus_e=precip_plus_evap,
         prognostics_arg_key='prognostics',
         sim_units=self.sim_units,

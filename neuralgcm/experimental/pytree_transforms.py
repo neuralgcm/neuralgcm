@@ -48,6 +48,7 @@ from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import spatial_filters
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 from neuralgcm.experimental.core import xarray_utils
@@ -334,7 +335,7 @@ class ShiftAndNormalize(TransformABC):
       global_scale: float | None = None,
   ):
     if global_scale is not None:
-      scales = jax.tree_util.tree_map(lambda x: x * global_scale, scales)
+      scales = jax.tree.map(lambda x: x * global_scale, scales)
     self.shifts = TransformParams(shifts)
     self.scales = TransformParams(scales)
 
@@ -361,7 +362,7 @@ class ShiftAndNormalize(TransformABC):
     # for the default. If corresponding `inputs` is not `None`, this will raise
     # an error, as expected. This works because tree_map skips `None` values in
     # the first argument, as long as all dictionary keys match.
-    result = jax.tree_util.tree_map(
+    result = jax.tree.map(
         lambda x, y, z: (x - y) / z, inputs, shifts, scales
     )
     return from_dict_fn(result)
@@ -384,7 +385,7 @@ class InverseShiftAndNormalize(TransformABC):
       global_scale: float | None = None,
   ):
     if global_scale is not None:
-      scales = jax.tree_util.tree_map(lambda x: x * global_scale, scales)
+      scales = jax.tree.map(lambda x: x * global_scale, scales)
     self.shifts = TransformParams(shifts)
     self.scales = TransformParams(scales)
 
@@ -411,7 +412,7 @@ class InverseShiftAndNormalize(TransformABC):
     # for the default. If corresponding `inputs` is not `None`, this will raise
     # an error, as expected. This works because tree_map skips `None` values in
     # the first argument, as long as all dictionary keys match.
-    result = jax.tree_util.tree_map(
+    result = jax.tree.map(
         lambda x, y, z: x * z + y, inputs, shifts, scales
     )
     return from_dict_fn(result)
@@ -448,6 +449,7 @@ class ClipWavenumbers(TransformABC):
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     """Returns `inputs` where only last sigma level is retained."""
+    # TODO(dkochkov): add clip_wavenumbers method to SphericalHarmonicGrid.
     ylm_grid = self.grid.ylm_grid
     ylm_grid = dataclasses.replace(ylm_grid, spmd_mesh=self.mesh.spmd_mesh)
     return ylm_grid.clip_wavenumbers(inputs, self.wavenumbers_to_clip)
@@ -523,37 +525,34 @@ class MaskTransform(TransformABC):
 class ToModalWithDivCurl(TransformABC):
   """Module that converts inputs to modal replacing velocity with div/curl."""
 
-  grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
   u_key: str = 'u_component_of_wind'
   v_key: str = 'v_component_of_wind'
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    dinosaur_grid = self.grid.ylm_grid
-    dinosaur_grid = dataclasses.replace(
-        dinosaur_grid, spmd_mesh=self.mesh.spmd_mesh
-    )
+    dinosaur_grid = self.ylm_transform.dinosaur_grid
+    mesh = self.ylm_transform.mesh
     if self.u_key not in inputs or self.v_key not in inputs:
       raise ValueError(
           f'{(self.u_key, self.v_key)=} not found in {inputs.keys()=}'
       )
     sec_lat = 1 / dinosaur_grid.cos_lat
     u, v = inputs.pop(self.u_key), inputs.pop(self.v_key)
-    u, v = parallelism.with_physics_to_dycore_sharding(self.mesh, (u, v))
+    u, v = parallelism.with_physics_to_dycore_sharding(mesh, (u, v))
     # here u,v stand for velocity / cos(lat), but the cos(lat) is cancelled in
     # divergence and curl operators below.
     inputs[self.u_key] = u * sec_lat
     inputs[self.v_key] = v * sec_lat
     to_modal_fn = lambda x: dinosaur_grid.to_modal(x) if x is not None else None
-    inputs = parallelism.with_dycore_sharding(self.mesh, inputs)
-    modal_outputs = jax.tree_util.tree_map(to_modal_fn, inputs)
-    modal_outputs = parallelism.with_dycore_sharding(self.mesh, modal_outputs)
+    inputs = parallelism.with_dycore_sharding(mesh, inputs)
+    modal_outputs = jax.tree.map(to_modal_fn, inputs)
+    modal_outputs = parallelism.with_dycore_sharding(mesh, modal_outputs)
     u, v = modal_outputs.pop(self.u_key), modal_outputs.pop(self.v_key)
     modal_outputs['divergence'] = parallelism.with_dycore_sharding(
-        self.mesh, dinosaur_grid.div_cos_lat((u, v))
+        mesh, dinosaur_grid.div_cos_lat((u, v))
     )
     modal_outputs['vorticity'] = parallelism.with_dycore_sharding(
-        self.mesh, dinosaur_grid.curl_cos_lat((u, v))
+        mesh, dinosaur_grid.curl_cos_lat((u, v))
     )
     return modal_outputs
 
@@ -562,16 +561,12 @@ class ToModalWithDivCurl(TransformABC):
 class ToNodalWithVelocity(TransformABC):
   """Module that converts inputs to nodal replacing div/curl with velocity."""
 
-  grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
   u_key: str = 'u_component_of_wind'
   v_key: str = 'v_component_of_wind'
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    dinosaur_grid = self.grid.ylm_grid
-    dinosaur_grid = dataclasses.replace(
-        dinosaur_grid, spmd_mesh=self.mesh.spmd_mesh
-    )
+    dinosaur_grid = self.ylm_transform.dinosaur_grid
     if 'divergence' not in inputs or 'vorticity' not in inputs:
       raise ValueError(f'required `u, v` not found in {inputs.keys()=}')
     divergence, vorticity = inputs.pop('divergence'), inputs.pop('vorticity')
@@ -661,23 +656,16 @@ class Redimensionalize(TransformABC):
     return from_dict_fn(result)
 
 
+@nnx_compat.dataclass
 class ToModal(TransformABC):
   """Module that returns inputs that are converted from nodal to modal space."""
 
-  def __init__(
-      self,
-      grid: coordinates.LonLatGrid | coordinates.SphericalHarmonicGrid,
-      mesh: parallelism.Mesh,
-  ):
-    self.grid = grid
-    self.mesh = mesh
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     modal_outputs = {}
-    ylm_grid = self.grid.ylm_grid
-    ylm_grid = dataclasses.replace(ylm_grid, spmd_mesh=self.mesh.spmd_mesh)
     for k, v in inputs.items():
-      modal_outputs[k] = ylm_grid.to_modal(v)
+      modal_outputs[k] = self.ylm_transform.to_modal_array(v)
     return modal_outputs
 
 
@@ -692,17 +680,15 @@ class ToModalWithFilteredGradients(TransformABC):
 
   def __init__(
       self,
-      grid: coordinates.LonLatGrid | coordinates.SphericalHarmonicGrid,
+      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
       filter_attenuations: tuple[float, ...] = tuple(),
-      *,
-      mesh: parallelism.Mesh,
   ):
-    self.grid = grid
+    self.ylm_transform = ylm_transform
     self.attenuations = filter_attenuations
-    self.mesh = mesh
     modal_filters = [
         spatial_filters.ExponentialModalFilter(
-            grid, attenuation=a, order=1, mesh=mesh
+            ylm_transform.ylm_grid, attenuation=a, order=1,
+            mesh=self.ylm_transform.mesh
         )
         for a in filter_attenuations
     ]
@@ -712,10 +698,7 @@ class ToModalWithFilteredGradients(TransformABC):
       self,
       inputs: dict[typing.KeyWithCosLatFactor, typing.Array],
   ) -> dict[typing.KeyWithCosLatFactor, typing.Array]:
-    dinosaur_grid = self.grid.ylm_grid
-    dinosaur_grid = dataclasses.replace(
-        dinosaur_grid, spmd_mesh=self.mesh.spmd_mesh
-    )
+    dinosaur_grid = self.ylm_transform.dinosaur_grid
     features = {}
     for k, value in inputs.items():
       name, cos_lat_order = k.name, k.factor_order
@@ -808,24 +791,24 @@ class InverseLevelScale(TransformABC):
 #
 
 
+@nnx_compat.dataclass
 class RadiationFeatures(TransformABC):
   """Feature module that computes incident radiation flux."""
 
-  def __init__(
-      self,
-      coords: coordinates.DinosaurCoordinates,
-      transform: Transform = Identity(),
-  ):
-    self.coords = coords
-    self.transform = transform
+  grid: coordinates.LonLatGrid
+  transform: Transform = Identity()
 
   @property
   def lon(self) -> typing.Array:
-    return jnp.rad2deg(self.coords.dinosaur_grid.nodal_mesh[0])
+    # TODO(dkochkov): support field broadcasting to a coordinate.
+    dummy = cx.wrap(jnp.zeros(self.grid.shape), self.grid)
+    return self.grid.fields['longitude'].broadcast_like(dummy).data
 
   @property
   def lat(self) -> typing.Array:
-    return jnp.rad2deg(np.arcsin(self.coords.dinosaur_grid.nodal_mesh[1]))
+    # TODO(dkochkov): support field broadcasting to a coordinate.
+    dummy = cx.wrap(jnp.zeros(self.grid.shape), self.grid)
+    return self.grid.fields['latitude'].broadcast_like(dummy).data
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     features = {}
@@ -839,16 +822,19 @@ class RadiationFeatures(TransformABC):
 class LatitudeFeatures(TransformABC):
   """Feature module that creates cos and sin of latitude features."""
 
-  grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid
+  grid: coordinates.LonLatGrid
   transform: Transform = Identity()
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     del inputs  # unused.
-    _, sin_features = self.grid.ylm_grid.nodal_mesh
-    cos_features = jnp.cos(jnp.arcsin(sin_features))
+    # TODO(dkochkov): support field broadcasting to a coordinate.
+    dummy = cx.wrap(jnp.zeros(self.grid.shape), self.grid)
+    latitudes = jnp.deg2rad(
+        self.grid.fields['latitude'].broadcast_like(dummy).data
+    )
     features = {
-        'cos_latitude': cos_features,
-        'sin_latitude': sin_features.astype(cos_features.dtype),
+        'cos_latitude': jnp.cos(latitudes),
+        'sin_latitude': jnp.sin(latitudes),
     }
     return self.transform(features)
 
@@ -881,7 +867,7 @@ class OrographyWithGradsFeatures(TransformABC):
         typing.KeyWithCosLatFactor(k, 0): v for k, v in modal_features.items()
     }
     modal_gradient_features = self.compute_gradients_transform(modal_features)
-    sh_grid = self.orography_module.opt_grid.ylm_grid
+    sh_grid = self.orography_module.ylm_transform.modal_grid.ylm_grid
     sec_lat = 1 / sh_grid.cos_lat
     sec2_lat = sh_grid.sec2_lat
     sec_lat_scales = {0: 1, 1: sec_lat, 2: sec2_lat}
@@ -900,17 +886,13 @@ class OrographyWithGradsFeatures(TransformABC):
 class PressureFeatures(TransformABC):
   """Feature module that computes pressure."""
 
-  coords: coordinates.DinosaurCoordinates
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  sigma: coordinates.SigmaLevels
   transform: Transform = Identity()
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    dinosaur_grid = self.coords.dinosaur_grid
-    dinosaur_grid = dataclasses.replace(
-        dinosaur_grid, spmd_mesh=self.mesh.spmd_mesh
-    )
-    to_nodal_fn = dinosaur_grid.to_nodal
-    sigma = self.coords.fields['sigma'].data
+    to_nodal_fn = self.ylm_transform.to_nodal_array
+    sigma = self.sigma.fields['sigma'].data
     surface_pressure = jnp.exp(to_nodal_fn(inputs['log_surface_pressure']))
     pressure = surface_pressure * sigma[:, jnp.newaxis, jnp.newaxis]
     return self.transform({'pressure': pressure})
@@ -924,7 +906,6 @@ class RandomnessFeatures(nnx.Module):
   grid: cx.Coordinate
   feature_name: str = 'randomness'
   transform: Transform = Identity()
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   def output_shapes(
       self, input_shapes: typing.Pytree | None = None
@@ -937,7 +918,6 @@ class RandomnessFeatures(nnx.Module):
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     del inputs  # unused.
-    # TODO(dkochkov) consider whether we need to expand dim for surface field.
     return self.transform({
         self.feature_name: self.random_process.state_values(self.grid).data,
     })
@@ -964,7 +944,6 @@ class DynamicInputFeatures(TransformABC):
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     time = inputs['time']
     data_features = self.dynamic_input_module(time)
-    # TODO(dkochkov) Used to expand dim here.
     features = {k: data_features[k].data for k in self.keys}
     return self.transform(features)
 
@@ -1022,7 +1001,7 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
 
   def __init__(
       self,
-      coords: coordinates.DinosaurCoordinates,
+      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
       surface_field_names: tuple[str, ...] = tuple(),
       volume_field_names: tuple[str, ...] = tuple(),
       compute_gradients_transform: ToModalWithFilteredGradients | None = None,
@@ -1030,17 +1009,10 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
       inputs_are_modal: bool = True,
       u_key: str = 'u_component_of_wind',
       v_key: str = 'v_component_of_wind',
-      *,
-      mesh: parallelism.Mesh,
   ):
     if compute_gradients_transform is None:
       compute_gradients_transform = Empty()
-    # TODO(dkochkov) use grid to parameterize this transform, coords.vertical is
-    # not used.
-    self.opt_grid = dataclasses.replace(
-        coords.horizontal, spmd_mesh=mesh.spmd_mesh
-    )
-    self.coords = coords
+    self.ylm_transform = ylm_transform
     self.surface_field_names = surface_field_names
     self.volume_field_names = volume_field_names
     self.fields_to_include = surface_field_names + volume_field_names
@@ -1048,11 +1020,10 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
     self.transform = transform
     self.u_key = u_key
     self.v_key = v_key
-    self.mesh = mesh
     if inputs_are_modal:
       self.pre_process = lambda x: x
     else:
-      self.pre_process = ToModal(self.opt_grid, self.mesh)
+      self.pre_process = ToModal(ylm_transform)
 
   def _extract_features(
       self,
@@ -1063,7 +1034,7 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
     # Note: all intermediate features have an explicit cos-lat factors in key.
     # These factors are removed in the `__call__` method before returning.
 
-    dinosaur_grid = self.opt_grid.ylm_grid
+    dinosaur_grid = self.ylm_transform.dinosaur_grid
     # compute `u, v` if div/curl is available and `u, v` not in prognosics.
     if set(['vorticity', 'divergence']).issubset(inputs.keys()) and (
         not set([self.u_key, self.v_key]).intersection(inputs.keys())
@@ -1108,7 +1079,9 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
         raise ValueError(f'Prognostic {k} not found in inputs.')
 
     # Computing gradient features and adjusting cos_lat factors.
-    modal_features = parallelism.with_dycore_sharding(self.mesh, modal_features)
+    modal_features = parallelism.with_dycore_sharding(
+        self.ylm_transform.mesh, modal_features
+    )
     diff_operator_features = self.compute_gradients_transform(modal_features)
     sec_lat = 1 / dinosaur_grid.cos_lat
     sec2_lat = dinosaur_grid.sec2_lat
@@ -1118,7 +1091,9 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
     for k, v in (diff_operator_features | modal_features).items():
       sec_lat_scale = sec_lat_scales[k.factor_order]
       features[k.name] = dinosaur_grid.to_nodal(v) * sec_lat_scale
-    features = parallelism.with_dycore_sharding(self.mesh, features)
+    features = parallelism.with_dycore_sharding(
+        self.ylm_transform.mesh, features
+    )
     return features
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
@@ -1127,27 +1102,15 @@ class VelocityAndPrognosticsWithModalGradients(TransformABC):
     return self.transform(nodal_features)
 
 
+@nnx_compat.dataclass
 class PrognosticFeatures(TransformABC):
-  """Features module that returns prognostics variables as is."""
+  """Features module that returns a subset of prognostic variables."""
 
-  def __init__(
-      self,
-      coords: coordinates.DinosaurCoordinates,
-      surface_field_names: tuple[str, ...] = tuple(),
-      volume_field_names: tuple[str, ...] = tuple(),
-      transform: Transform = Identity(),
-  ):
-    self.coords = coords
-    self.surface_field_names = surface_field_names
-    self.volume_field_names = volume_field_names
-    self.fields_to_include = surface_field_names + volume_field_names
-    self.transform = transform
+  prognostic_keys: tuple[str, ...] = tuple()
+  transform: Transform = Identity()
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    output_features = {}
-    for k in self.fields_to_include:
-      output_features[k] = inputs[k]
-    return self.transform(output_features)
+    return self.transform({k: inputs[k] for k in self.prognostic_keys})
 
 
 class EmbeddedFeatures(TransformABC):
@@ -1181,13 +1144,13 @@ class SurfaceEmbeddingFeatures(TransformABC):
 
   def __init__(
       self,
-      coords: coordinates.DinosaurCoordinates,
+      grid: coordinates.LonLatGrid,
       embedding_sizes: dict[str, int],
       embedding_factory: nnx.Module,
       transform: Transform = Identity(),
   ):
     embedding_shapes = {
-        k: typing.ShapeFloatStruct((v,) + coords.horizontal.shape)
+        k: typing.ShapeFloatStruct((v,) + grid.shape)
         for k, v in embedding_sizes.items()
     }
     self.embedding = embedding_factory(output_shapes=embedding_shapes)
@@ -1265,53 +1228,3 @@ class CombinedFeatures(TransformABC):
     for m in self.feature_modules.values():
       out_shapes |= m.output_shapes(input_shapes)
     return self.transform.output_shapes(out_shapes)
-
-
-class PrecipitationMinusEvaporation(TransformABC):
-  """Diagnosing precipitation minus evaporation from corrector predictions."""
-
-  def __init__(
-      self,
-      grid: coordinates.SphericalHarmonicGrid,
-      level: coordinates.SigmaLevels,
-      sim_units: units.SimUnits,
-      moisture_species: tuple[str, ...] = (
-          'specific_humidity',
-          'specific_cloud_ice_water_content',
-          'specific_cloud_liquid_water_content',
-      ),
-      *,
-      mesh: parallelism.Mesh,
-  ):
-    self.moisture_species = moisture_species
-    self.grid = grid
-    self.sim_units = sim_units
-    self.level = level
-    self.mesh = mesh
-
-  def _compute_evaporation_minus_precipitation(
-      self, tendencies: typing.Pytree, state: typing.Pytree
-  ) -> typing.Array:
-    ylm_grid = self.grid.ylm_grid
-    ylm_grid = dataclasses.replace(ylm_grid, spmd_mesh=self.mesh.spmd_mesh)
-    lsp = state.log_surface_pressure
-    p_surface = jnp.squeeze(jnp.exp(ylm_grid.to_nodal(lsp)))
-    scale = p_surface / self.sim_units.gravity_acceleration
-    moisture_tendencies = [
-        v
-        for tracer, v in tendencies.tracers.items()
-        if tracer in self.moisture_species
-    ]
-    moisture_tendencies_nodal = ylm_grid.to_nodal(moisture_tendencies)
-    moisture_tendencies_sum = sum(moisture_tendencies_nodal)
-    # TODO(dkochkov): add sigma integral method to SigmaLevels.
-    e_minus_p = scale * sigma_coordinates.sigma_integral(
-        moisture_tendencies_sum,
-        self.level.sigma_levels,
-        keepdims=False,
-    )
-    return e_minus_p
-
-  def __call__(self, tendencies: typing.Pytree, state: typing.Pytree):
-    e_minus_p = self._compute_evaporation_minus_precipitation(tendencies, state)
-    return e_minus_p

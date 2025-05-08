@@ -24,6 +24,7 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spatial_filters
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 
 
@@ -36,7 +37,8 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
   def __init__(
       self,
       *,
-      coords: coordinates.DinosaurCoordinates,
+      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      sigma: coordinates.SigmaLevels,
       surface_field_names: tuple[str, ...],
       volume_field_names: tuple[str, ...],
       features_module: pytree_transforms.Transform,
@@ -57,15 +59,14 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     div_curl_fields = set(['divergence', 'vorticity'])
     if len(div_curl_fields.intersection(volume_field_names)) != 2:
       raise ValueError('Volume fields must contain `divergence & vorticity`.')
-    layers = coords.vertical.shape[0]
-    dinosaur_grid = coords.dinosaur_grid
+
     # TODO(dkochkov): Compute these using coords modifications.
     for name in (set(volume_field_names) | uv_fields) - div_curl_fields:
       output_shapes[name] = ShapeFloatStruct(
-          (layers,) + dinosaur_grid.nodal_shape
+          sigma.shape + ylm_transform.nodal_grid.shape
       )
     for name in set(surface_field_names):
-      output_shapes[name] = ShapeFloatStruct(dinosaur_grid.nodal_shape)
+      output_shapes[name] = ShapeFloatStruct(ylm_transform.nodal_grid.shape)
     if input_state_shapes is None:
       input_state_shapes = pytree_mappings.minimal_state_struct()
     input_shapes = features_module.output_shapes(input_state_shapes)
@@ -77,9 +78,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     self.mesh = mesh
     self.features_module = features_module
     self.tendency_transform = tendency_transform
-    self.to_div_curl = pytree_transforms.ToModalWithDivCurl(
-        coords.horizontal, mesh=mesh
-    )
+    self.to_div_curl = pytree_transforms.ToModalWithDivCurl(ylm_transform)
     self.filter = modal_filter
 
   def __call__(

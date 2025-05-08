@@ -71,9 +71,7 @@ class EmbeddingsTest(parameterized.TestCase):
     input_names = ('u', 'v')
     test_inputs = {k: np.ones(self.coords.shape) for k in input_names}
     input_state_shapes = pytree_utils.shape_structure(test_inputs)
-    feature_module = pytree_transforms.PrognosticFeatures(
-        self.coords, volume_field_names=input_names
-    )
+    feature_module = pytree_transforms.PrognosticFeatures(input_names)
     embedding = pytree_mappings.Embedding(
         output_shapes=self.output_shapes,
         feature_module=feature_module,
@@ -92,9 +90,7 @@ class EmbeddingsTest(parameterized.TestCase):
     test_inputs['u'][0, 0, :] = np.nan
     test_inputs['u'][1, :, 2] = np.nan
     input_state_shapes = pytree_utils.shape_structure(test_inputs)
-    feature_module = pytree_transforms.PrognosticFeatures(
-        self.coords, volume_field_names=input_names
-    )
+    feature_module = pytree_transforms.PrognosticFeatures(input_names)
 
     embedding = pytree_mappings.MaskedEmbedding(
         output_shapes=self.output_shapes,
@@ -126,9 +122,7 @@ class EmbeddingsTest(parameterized.TestCase):
     input_names = ('u', 'v')
     test_inputs = {k: np.ones(self.coords.shape) for k in input_names}
     input_state_shapes = pytree_utils.shape_structure(test_inputs)
-    feature_module = pytree_transforms.PrognosticFeatures(
-        self.coords, volume_field_names=input_names
-    )
+    feature_module = pytree_transforms.PrognosticFeatures(input_names)
     embedding_factory = functools.partial(
         pytree_mappings.Embedding,
         feature_module=feature_module,

@@ -26,6 +26,7 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
@@ -43,7 +44,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
   fluxes as positive and "upward" fluxes as negative.
   """
 
-  grid: coordinates.LonLatGrid
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
   moisture_species: tuple[str, ...] = (
@@ -52,17 +53,14 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
       'specific_cloud_liquid_water_content',
   )
   prognostics_arg_key: str | int = 'prognostics'
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   def _compute_p_plus_e_rate(self, tendencies, prognostics) -> typing.Array:
-    ylm_grid = self.grid.ylm_grid
-    ylm_grid = dataclasses.replace(ylm_grid, spmd_mesh=self.mesh.spmd_mesh)
-    p_surface = jnp.exp(ylm_grid.to_nodal(prognostics['log_surface_pressure']))
+    to_nodal = self.ylm_transform.to_nodal_array
+    p_surface = jnp.exp(to_nodal(prognostics['log_surface_pressure']))
     scale = p_surface / self.sim_units.gravity_acceleration
-    moisture_tendencies = [
-        v for tracer, v in tendencies.items() if tracer in self.moisture_species
+    moisture_tendencies_nodal = [
+        to_nodal(v) for k, v in tendencies.items() if k in self.moisture_species
     ]
-    moisture_tendencies_nodal = ylm_grid.to_nodal(moisture_tendencies)
     moisture_tendencies_sum = sum(moisture_tendencies_nodal)
     # TODO(dkochkov): add sigma integral method to SigmaLevels.
     p_plus_e = -scale * sigma_coordinates.sigma_integral(
@@ -79,7 +77,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
     else:
       prognostics = kwargs.get(self.prognostics_arg_key)
     p_plus_e_rate = self._compute_p_plus_e_rate(tendencies, prognostics)
-    p_plus_e_rate = cx.wrap(p_plus_e_rate, self.grid)
+    p_plus_e_rate = cx.wrap(p_plus_e_rate, self.ylm_transform.nodal_grid)
     return {'precipitation_plus_evaporation_rate': p_plus_e_rate}
 
 

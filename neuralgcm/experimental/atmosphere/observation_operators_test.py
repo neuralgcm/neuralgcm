@@ -26,6 +26,7 @@ from neuralgcm.experimental.atmosphere import observation_operators
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import units
 import numpy as np
 
@@ -35,6 +36,12 @@ class ObservationOperatorsTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     n_sigma = 12
+    self.ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(),
+    )
     self.sh_grid = coordinates.SphericalHarmonicGrid.T21()
     self.grid = coordinates.LonLatGrid.T21()
     self.input_sigma_levels = coordinates.SigmaLevels.equidistant(n_sigma)
@@ -44,17 +51,16 @@ class ObservationOperatorsTest(parameterized.TestCase):
     self.sim_units = units.DEFAULT_UNITS
     self.mesh = parallelism.Mesh(None)
     self.orography_module = orographies.ModalOrography(
-        grid=self.grid,
-        mesh=self.mesh,
+        ylm_transform=self.ylm_transform,
         rngs=nnx.Rngs(0),
     )
     self.ref_temperatures = np.linspace(220, 250, num=n_sigma)
     self.primitive_equations = equations.PrimitiveEquations(
-        coords=self.source_coords,
+        ylm_transform=self.ylm_transform,
+        sigma_levels=self.input_sigma_levels,
         sim_units=self.sim_units,
         reference_temperatures=self.ref_temperatures,
         orography_module=self.orography_module,
-        mesh=self.mesh,
     )
     zero_like = lambda c: cx.wrap(np.zeros(c.shape), c)
     self.prognostic_fields = {
@@ -72,8 +78,9 @@ class ObservationOperatorsTest(parameterized.TestCase):
         horizontal=self.grid, vertical=pressure_levels
     )
     operator = observation_operators.PressureLevelObservationOperator(
-        self.primitive_equations,
-        self.orography_module,
+        ylm_transform=self.ylm_transform,
+        primitive_equation=self.primitive_equations,
+        orography=self.orography_module,
         pressure_levels=pressure_levels,
         sim_units=self.sim_units,
         observation_correction=None,
@@ -95,8 +102,9 @@ class ObservationOperatorsTest(parameterized.TestCase):
         horizontal=self.grid, vertical=target_sigma_levels
     )
     operator = observation_operators.SigmaLevelObservationOperator(
-        self.primitive_equations,
-        self.orography_module,
+        primitive_equation=self.primitive_equations,
+        ylm_transform=self.ylm_transform,
+        orography=self.orography_module,
         sigma_levels=target_sigma_levels,
         sim_units=self.sim_units,
         observation_correction=None,

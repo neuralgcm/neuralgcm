@@ -48,7 +48,7 @@ class ExponentialModalFilter(ModalSpatialFilter):
 
   def __init__(
       self,
-      grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid,
+      grid: coordinates.SphericalHarmonicGrid,
       attenuation: float = 16,
       order: int = 18,
       cutoff: float = 0,
@@ -63,6 +63,8 @@ class ExponentialModalFilter(ModalSpatialFilter):
     self.mesh = mesh
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:
+    # TODO(dkochkov): reimplement this using only SphericalHarmonicGrid,
+    # this will allow to remove the need for mesh.
     ylm_grid = self.grid.ylm_grid
     ylm_grid = dataclasses.replace(ylm_grid, spmd_mesh=self.mesh.spmd_mesh)
     filter_fn = filtering.exponential_filter(
@@ -82,7 +84,7 @@ class ExponentialModalFilter(ModalSpatialFilter):
   @classmethod
   def from_timescale(
       cls,
-      grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid,
+      grid: coordinates.SphericalHarmonicGrid,
       dt: float | typing.Quantity | typing.Numeric,
       timescale: float | typing.Quantity | typing.Numeric,
       order: int = 18,

@@ -47,20 +47,18 @@ class ModalFixedGlobalMeanFilter(StepFilter):
 
   def __init__(
       self,
-      grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid,
       keys: tuple[str, ...] = ('log_surface_pressure',),
-      *,
-      mesh: parallelism.Mesh,
   ):
-    self.grid = grid
     self.keys = keys
-    self.mesh = mesh
 
   def __call__(
       self, state: typing.Pytree, next_state: typing.Pytree
   ) -> typing.Pytree:
     state_dict, _ = pytree_utils.as_dict(state)
     next_state_dict, from_dict_fn = pytree_utils.as_dict(next_state)
+    # TODO(dkochkov): implementation below is dangerous, as it assumes a
+    # specific layout of wavenumbers in arrays. Use grid from `state` once we
+    # pass it as dict of cx.Field objects.
     for key in self.keys:
       global_mean = state_dict[key][..., 0]  # assuming modal
       next_state_dict[key] = next_state_dict[key].at[..., 0].set(global_mean)

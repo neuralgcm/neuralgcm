@@ -104,9 +104,7 @@ class ObservationOperatorWithRenaming(ObservationOperator):
       query: dict[str, cx.Field | cx.Coordinate],
   ) -> dict[str, cx.Field]:
     """Returns observations for `query` matched against `self.fields`."""
-    renamed_query = {
-        self.renaming_dict.get(k, k): v for k, v in query.items()
-    }
+    renamed_query = {self.renaming_dict.get(k, k): v for k, v in query.items()}
     observation = self.operator.observe(inputs, renamed_query)
     inverse_renaming_dict = {v: k for k, v in self.renaming_dict.items()}
     return {inverse_renaming_dict.get(k, k): v for k, v in observation.items()}
@@ -190,9 +188,10 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
         neighbor_feature_shapes, ndim=3, axis=-3
     )
     f_axis = -3  # default column axis.
-    neighbor_feature_size = sum(
-        [x.shape[f_axis] for x in jax.tree.leaves(expanded_neighbor_feature_shapes)]
-    )
+    neighbor_feature_size = sum([
+        x.shape[f_axis]
+        for x in jax.tree.leaves(expanded_neighbor_feature_shapes)
+    ])
     displacement_shapes = {
         'delta_lon': typing.ShapeFloatStruct([1]),
         'delta_lat': typing.ShapeFloatStruct([1]),

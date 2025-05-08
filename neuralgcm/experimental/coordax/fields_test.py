@@ -15,6 +15,7 @@ import dataclasses
 import functools
 import math
 import operator
+import re
 import textwrap
 
 from absl.testing import absltest
@@ -291,6 +292,36 @@ class FieldTest(parameterized.TestCase):
           unwrapped = untagged.unwrap()
           np.testing.assert_array_equal(unwrapped, array)
 
+  def test_broadcast_like(self):
+    x = coordax.LabeledAxis('x', np.linspace(0, 1, 4))
+    y = coordax.LabeledAxis('y', np.linspace(5, 10, 5))
+    z = coordax.LabeledAxis('z', np.linspace(0, np.pi, 7))
+    yxz = coordax.compose_coordinates(y, x, z)
+    field = coordax.wrap(np.arange(4), x)
+    other = coordax.wrap(np.ones((5, 4, 7)), yxz)
+    expected_data = np.tile(np.arange(4)[np.newaxis, :, np.newaxis], (5, 1, 7))
+    actual = field.broadcast_like(other)
+    expected = coordax.wrap(expected_data, yxz)
+    testing.assert_fields_allclose(actual=actual, desired=expected)
+
+    actual = field.broadcast_like(other.untag('y'))
+    expected = coordax.wrap(expected_data, yxz).untag('y')
+    testing.assert_fields_allclose(actual=actual, desired=expected)
+
+  def test_broadcast_like_invalid_coords(self):
+    x = coordax.LabeledAxis('x', np.linspace(0, 1, 4, endpoint=False))
+    x_mismatch = coordax.LabeledAxis('x', np.linspace(0, 1, 4, endpoint=True))
+    field = coordax.wrap(np.arange(4), x)
+    other = coordax.wrap(np.ones((1, 4)), 'y', x_mismatch)
+    with self.assertRaisesRegex(
+        ValueError,
+        re.escape(
+            'cannot broadcast field because axes corresponding to dimension '
+            f"'x' do not match: {x} vs {x_mismatch}"
+        )
+    ):
+      field.broadcast_like(other)
+
   def test_cmap_cos(self):
     """Tests that cmap works as expected."""
     inputs = (
@@ -521,6 +552,25 @@ class FieldTest(parameterized.TestCase):
     expected = coordax.Field(
         Duck(a=jnp.array([[[1], [2]]]), b=jnp.array([[[3], [4]]])),
         dims=('z', 'y', 'x'),
+    )
+    testing.assert_fields_equal(actual, expected)
+
+    x = coordax.LabeledAxis('x', np.array([np.e, np.pi]))
+    y = coordax.LabeledAxis('y', np.linspace(0, 1, 2))
+    other = coordax.wrap(
+        Duck(a=jnp.zeros((2, 2)), b=jnp.zeros((2, 2))), x, y
+    )
+    actual = field.tag(x).broadcast_like(other)
+    expected = coordax.wrap(
+        Duck(a=jnp.array([[1, 1], [2, 2]]), b=jnp.array([[3, 3], [4, 4]])),
+        x, y
+    )
+    testing.assert_fields_equal(actual, expected)
+
+    actual = field.tag(y).broadcast_like(other)
+    expected = coordax.wrap(
+        Duck(a=jnp.array([[1, 2], [1, 2]]), b=jnp.array([[3, 4], [3, 4]])),
+        x, y
     )
     testing.assert_fields_equal(actual, expected)
 

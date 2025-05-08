@@ -29,6 +29,7 @@ from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
@@ -50,6 +51,7 @@ class PressureLevelObservationOperator(
   """
 
   primitive_equation: equations.PrimitiveEquations
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
   orography: orographies.ModalOrography
   pressure_levels: coordinates.PressureLevels
   sim_units: units.SimUnits
@@ -105,12 +107,12 @@ class PressureLevelObservationOperator(
     # prognostic fields in observer to remove this dependency.
     pressure_interpolated_state = state_conversion.primitive_equations_to_uvtz(
         source_state=source_state,
-        input_coords=input_coords,
+        ylm_transform=self.ylm_transform,
+        sigma_levels=input_coords.vertical,
         primitive_equations=self.primitive_equation,
         orography=self.orography,
         target_coords=nondim_target_coords,
         sim_units=self.sim_units,
-        mesh=self.mesh,
     )
     pressure_interpolated_state = parallelism.with_physics_sharding(
         self.mesh, pressure_interpolated_state
@@ -156,6 +158,7 @@ class SigmaLevelObservationOperator(
   """
 
   primitive_equation: equations.PrimitiveEquations
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
   orography: orographies.ModalOrography
   sigma_levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
@@ -202,12 +205,12 @@ class SigmaLevelObservationOperator(
     # prognostic fields in observer to remove this dependency.
     interpolated_state = state_conversion.primitive_equations_to_sigma(
         source_state=source_state,
-        input_coords=input_coords,
+        ylm_transform=self.ylm_transform,
+        sigma_levels=input_coords.vertical,
         primitive_equations=self.primitive_equation,
         orography=self.orography,
         target_coords=target_coords,
         sim_units=self.sim_units,
-        mesh=self.mesh,
     )
     interpolated_state = parallelism.with_physics_sharding(
         self.mesh, interpolated_state

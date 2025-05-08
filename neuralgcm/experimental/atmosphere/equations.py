@@ -14,16 +14,16 @@
 
 """Modules parameterizing PDEs describing atmospheric processes."""
 
-import dataclasses
 from typing import Callable, Sequence
 
+from dinosaur import coordinate_systems
 from dinosaur import primitive_equations
 from dinosaur import sigma_coordinates
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import time_integrators
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
@@ -35,7 +35,8 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
 
   def __init__(
       self,
-      coords: coordinates.DinosaurCoordinates,
+      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      sigma_levels: coordinates.SigmaLevels,
       sim_units: units.SimUnits,
       reference_temperatures: Sequence[float],
       orography_module: orographies.ModalOrography,
@@ -44,10 +45,9 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
       ),
       equation_cls=primitive_equations.MoistPrimitiveEquationsWithCloudMoisture,
       include_vertical_advection: bool = True,
-      *,
-      mesh: parallelism.Mesh,
   ):
-    self.coords = coords
+    self.ylm_transform = ylm_transform
+    self.sigma_levels = sigma_levels
     self.orography_module = orography_module
     self.sim_units = sim_units
     self.orography = orography_module
@@ -55,13 +55,13 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     self.vertical_advection = vertical_advection
     self.include_vertical_advection = include_vertical_advection
     self.equation_cls = equation_cls
-    self.mesh = mesh
 
   @property
   def primitive_equation(self):
-    dinosaur_coords = self.coords.dinosaur_coords
-    dinosaur_coords = dataclasses.replace(
-        dinosaur_coords, spmd_mesh=self.mesh.spmd_mesh
+    dinosaur_coords = coordinate_systems.CoordinateSystem(
+        horizontal=self.ylm_transform.dinosaur_grid,
+        vertical=self.sigma_levels.sigma_levels,
+        spmd_mesh=self.ylm_transform.dinosaur_spmd_mesh,
     )
     return self.equation_cls(
         coords=dinosaur_coords,

@@ -436,6 +436,67 @@ class NamedAxesTest(parameterized.TestCase):
     actual = jax.vmap(lambda x: x.order_as('y', 'x'))(array)
     assert_named_array_equal(actual, expected)
 
+  def test_broadcast_like(self):
+    data = np.arange(10).reshape((2, 5))
+    array = named_axes.NamedArray(data, ('x', 'y'))
+
+    actual = array.broadcast_like(array)
+    assert_named_array_equal(actual, array)
+
+    other = named_axes.NamedArray(np.ones((1, 2, 5)), ('z', 'x', 'y'))
+    expected = named_axes.NamedArray(data[np.newaxis, ...], ('z', 'x', 'y'))
+    actual = array.broadcast_like(other)
+    assert_named_array_equal(actual, expected)
+
+    other = named_axes.NamedArray(np.ones((2, 1, 5, 2)), ('q', 'd', 'y', 'x'))
+    expected = named_axes.NamedArray(
+        np.tile(data.T[np.newaxis, np.newaxis, ...], (2, 1, 1, 1)),
+        ('q', 'd', 'y', 'x')
+    )
+    actual = array.broadcast_like(other)
+    assert_named_array_equal(actual, expected)
+
+    other = named_axes.NamedArray(np.ones((2, 5, 2)), (None, 'y', 'x'))
+    expected = named_axes.NamedArray(
+        np.tile(data.T[np.newaxis, ...], (2, 1, 1)),
+        (None, 'y', 'x')
+    )
+    actual = array.broadcast_like(other)
+    assert_named_array_equal(actual, expected)
+
+  def test_broadcast_like_within_vmap(self):
+    data = np.arange(10).reshape((1, 2, 5))
+    array = named_axes.NamedArray(data, (None, 'x', 'y'))
+    other = named_axes.NamedArray(np.ones((3, 2, 5)), ('z', 'x', 'y'))
+    tiled_data = np.tile(data[:, np.newaxis, ...], (1, 3, 1, 1))
+    expected = named_axes.NamedArray(tiled_data, (None, 'z', 'x', 'y'))
+    actual = jax.vmap(lambda x: x.broadcast_like(other))(array)
+    assert_named_array_equal(actual, expected)
+
+  def test_broadcast_like_invalid_dims(self):
+    data = np.ones((2, 5))
+
+    array = named_axes.NamedArray(data, (None, 'y'))
+    other = named_axes.NamedArray(np.ones((2, 2, 5)), (None, 'x', 'y'))
+    with self.assertRaisesRegex(
+        ValueError,
+        re.escape(
+            "cannot broadcast array with unnamed dimensions: (None, 'y')"
+        ),
+    ):
+      array.broadcast_like(other)
+
+    array = named_axes.NamedArray(data, ('x', 'y'))
+    other = named_axes.NamedArray(np.ones((2, 5)), ('x', 'z'))
+    with self.assertRaisesRegex(
+        ValueError,
+        re.escape(
+            "cannot broadcast array with dimensions ('x', 'y') to array with "
+            "dimensions ('x', 'z') because ('y',) are not in ('x', 'z')"
+        ),
+    ):
+      array.broadcast_like(other)
+
   @parameterized.named_parameters(
       dict(testcase_name='numpy', xp=np),
       dict(testcase_name='jax.numpy', xp=jnp),
@@ -858,6 +919,23 @@ class NamedAxesTest(parameterized.TestCase):
     expected = named_axes.NamedArray(
         Duck(a=jnp.array([[[1], [2]]]), b=jnp.array([[[3], [4]]])),
         dims=('z', 'y', 'x'),
+    )
+    chex.assert_trees_all_equal(actual, expected)
+
+    other = named_axes.NamedArray(
+        Duck(a=jnp.zeros((2, 2)), b=jnp.zeros((2, 2))), dims=('x', 'y')
+    )
+    actual = array.tag('x').broadcast_like(other)
+    expected = named_axes.NamedArray(
+        Duck(a=jnp.array([[1, 1], [2, 2]]), b=jnp.array([[3, 3], [4, 4]])),
+        dims=('x', 'y')
+    )
+    chex.assert_trees_all_equal(actual, expected)
+
+    actual = array.tag('y').broadcast_like(other)
+    expected = named_axes.NamedArray(
+        Duck(a=jnp.array([[1, 2], [1, 2]]), b=jnp.array([[3, 4], [3, 4]])),
+        dims=('x', 'y')
     )
     chex.assert_trees_all_equal(actual, expected)
 

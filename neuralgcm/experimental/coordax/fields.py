@@ -479,6 +479,18 @@ class Field:
     result = Field.from_namedarray(ordered_array, self.axes)
     return result
 
+  def broadcast_like(self, other: Self) -> Self:
+    """Returns a field broadcasted like `other`."""
+    for k, v in self.axes.items():
+      if other.axes.get(k) != v:
+        raise ValueError(
+            'cannot broadcast field because axes corresponding to dimension '
+            f'{k!r} do not match: {v} vs {other.axes.get(k)}'
+        )
+    return Field.from_namedarray(
+        self.named_array.broadcast_like(other.named_array), other.axes
+    )
+
   def __repr__(self):
     if _in_treescope_abbreviation_mode():
       return treescope.render_to_text(self)

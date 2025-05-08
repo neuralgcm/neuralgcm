@@ -16,7 +16,9 @@
 import collections
 import dataclasses
 import math
-from typing import Type, TypeGuard, Self
+from typing import Self, Type, TypeGuard
+
+import einops
 import fiddle as fdl
 from fiddle import selectors
 from fiddle import tagging
@@ -143,6 +145,60 @@ def get_unsharded(coordinate: cx.Coordinate) -> cx.Coordinate:
   return cx.compose_coordinates(*unsharded)
 
 
+def rearrange_spmd_mesh(
+    spmd_mesh: jax.sharding.Mesh,
+    dim_partitions: DimPartitions,
+    dims_to_spmd_mesh_axes: dict[str, str],
+) -> jax.sharding.Mesh:
+  """Returns rearranged & renamed spmd mesh representing the same partitions.
+
+  This transformation helps interface with existing codes that rely on
+  spmd mesh with specific axis names. It is parameterized by a mapping from
+  dimension names that are to be aligned with spmd_mesh axes in the output to
+  the desired spmd_mesh axis names.
+
+  Args:
+    spmd_mesh: input spmd mesh specifying the devices and axis names.
+    dim_partitions: mapping from dimension names to partition axes in spmd_mesh.
+    dims_to_spmd_mesh_axes: mapping from dimension names to be aligned with the
+      trailing axes of the output spmd_mesh to their desired axis names.
+
+  Returns:
+    A new spmd mesh with trailing axes renamed to spmd_mesh_axis_names and
+    rearranged to correspond to partition data in a way consistent with
+    dim_partitions and input spmd_mesh.
+  """
+  partitions = tuple(
+      dim_partitions.get(k, None) for k in dims_to_spmd_mesh_axes
+  )
+  # Replace None with empty tuple to assign no partitioning to these dimensions.
+  partitions = tuple(p if p is not None else tuple() for p in partitions)
+  used_axes = sum(map(tuple, partitions), start=())
+  retained_axes = tuple(
+      axis for axis in spmd_mesh.axis_names if axis not in used_axes
+  )
+
+  def _as_rearrangement_string(x: str | tuple[str, ...]) -> str:
+    """Converts partition description to rearrangement string."""
+    if isinstance(x, str):
+      return x
+    if not x:
+      return '1'  # effectively expands axis in the rearrangement.
+    else:
+      return '(' + ' '.join(x) + ')'  # groups multiple axes into one.
+
+  rearrange_schema = (
+      ' '.join(spmd_mesh.axis_names)  # current mesh axes.
+      + '->'
+      + ' '.join(retained_axes)
+      + ' '
+      + ' '.join(map(_as_rearrangement_string, partitions))
+  )
+  devices = einops.rearrange(spmd_mesh.devices, rearrange_schema)
+  spmd_mesh_axis_names = tuple(dims_to_spmd_mesh_axes.values())
+  return jax.sharding.Mesh(devices, retained_axes + spmd_mesh_axis_names)
+
+
 # TODO(dkochkov): drop array_partitions specification when partitions can be
 # specified using field_partitions.
 # TODO(dkochkov): consider making Mesh not an nnx.Module.
@@ -204,6 +260,25 @@ class Mesh:
   def axis_names(self) -> tuple[str, ...]:
     """Names of the mesh axes."""
     return self.spmd_mesh.axis_names if self.spmd_mesh else ()
+
+  def rearrange_spmd_mesh(
+      self,
+      schema_name: Schema | None,
+      dims_to_spmd_mesh_axes: dict[str, str],
+  ) -> jax.sharding.Mesh | None:
+    """Returns rearranged & renamed spmd mesh representing the same partitions."""
+    if self.spmd_mesh is None or schema_name is None:
+      return None
+    if schema_name not in self.field_partitions:
+      raise ValueError(
+          f'Schema {schema_name} not found in field_partitions.'
+          f' Available schemas: {self.field_partitions.keys()}'
+      )
+    return rearrange_spmd_mesh(
+        self.spmd_mesh,
+        self.field_partitions[schema_name],
+        dims_to_spmd_mesh_axes=dims_to_spmd_mesh_axes,
+    )
 
   def with_sharding_constraint(
       self, inputs: typing.PyTreeState, schema: str | tuple[str, ...]

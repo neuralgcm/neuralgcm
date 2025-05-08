@@ -199,6 +199,42 @@ class MeshTest(parameterized.TestCase):
 class HelperFunctionsTest(parameterized.TestCase):
   """Tests helper functions for dycore and physics constraints on arrays."""
 
+  def test_rearrange_spmd_simple_rename(self):
+    devices = np.array(jax.devices()).reshape((1, 2, 2, 2))
+    spmd_mesh = jax.sharding.Mesh(devices, ('a', 'b', 'c', 'd'))
+    partition = {'level': 'b', 'longitude': 'c', 'latitude': 'd'}
+    dim_to_ax = {'level': 'z', 'longitude': 'x', 'latitude': 'y'}
+    actual = parallelism.rearrange_spmd_mesh(spmd_mesh, partition, dim_to_ax)
+    expected = jax.sharding.Mesh(devices, ('a', 'z', 'x', 'y'))
+    self.assertEqual(actual, expected)
+
+  def test_rearrange_spmd_reshape(self):
+    devices = np.array(jax.devices())
+    spmd_mesh = jax.sharding.Mesh(
+        devices.reshape((1, 2, 2, 2)), ('a', 'b', 'c', 'd')
+    )
+    partition = {'longitude': ('b', 'c'), 'latitude': 'd'}
+    dim_to_ax = {'level': 'z', 'longitude': 'x', 'latitude': 'y'}
+    actual = parallelism.rearrange_spmd_mesh(spmd_mesh, partition, dim_to_ax)
+    expected = jax.sharding.Mesh(
+        devices.reshape((1, 1, 4, 2)), ('a', 'z', 'x', 'y')
+    )
+    self.assertEqual(actual, expected)
+
+  def test_rearrange_spmd_many_axes_reshape_and_transpose(self):
+    devices = np.array(jax.devices())
+    spmd_mesh = jax.sharding.Mesh(
+        devices.reshape((1, 1, 2, 2, 2)), ('e', 'a', 'b', 'c', 'd')
+    )
+    partition = {'longitude': ('c', 'd'), 'latitude': 'b'}
+    dim_to_ax = {'level': 'z', 'longitude': 'x', 'latitude': 'y'}
+    actual = parallelism.rearrange_spmd_mesh(spmd_mesh, partition, dim_to_ax)
+    expected = jax.sharding.Mesh(
+        np.swapaxes(devices.reshape((1, 1, 1, 2, 4)), 3, 4),
+        axis_names=('e', 'a', 'z', 'x', 'y')
+    )
+    self.assertEqual(actual, expected)
+
   def test_dycore_sharding(self):
     spmd_mesh = jax.sharding.Mesh(
         np.array(jax.devices()).reshape((2, 2, 2)), axis_names=['z', 'x', 'y']

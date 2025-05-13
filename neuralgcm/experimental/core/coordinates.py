@@ -17,8 +17,7 @@
 from __future__ import annotations
 
 import dataclasses
-import math
-from typing import Any, Iterable, Self
+from typing import Any, Iterable, Literal, Self, TYPE_CHECKING, cast
 
 from dinosaur import coordinate_systems as dinosaur_coordinates
 from dinosaur import sigma_coordinates
@@ -30,11 +29,24 @@ from neuralgcm.experimental import coordax as cx
 import numpy as np
 import xarray
 
+if TYPE_CHECKING:
+  # import only under TYPE_CHECKING to avoid circular dependency
+  # pylint: disable=g-bad-import-order
+  # TODO(dkochkov): consider moving UnshardedCoordinate to coordax.
+  from neuralgcm.experimental.core import parallelism
+
 
 SphericalHarmonicsImpl = spherical_harmonic.SphericalHarmonicsImpl
 RealSphericalHarmonics = spherical_harmonic.RealSphericalHarmonics
 FastSphericalHarmonics = spherical_harmonic.FastSphericalHarmonics
 P = jax.sharding.PartitionSpec
+
+
+SphericalHarmonicsMethodNames = Literal['real', 'fast']
+SPHERICAL_HARMONICS_METHODS = {
+    'real': RealSphericalHarmonics,
+    'fast': FastSphericalHarmonics,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -92,7 +104,7 @@ class TimeDelta(cx.Coordinate):
   ) -> Self | cx.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'timedelta':
-      return cx.NoCoordinateMatch(f"dimension {dim!r} != 'timedelta'")
+      return cx.NoCoordinateMatch(f'dimension {dim!r} != "timedelta"')
     if 'timedelta' not in coords:
       return cx.NoCoordinateMatch('no associated coordinate for timedelta')
 
@@ -128,6 +140,21 @@ class TimeDelta(cx.Coordinate):
 #
 
 
+def _mesh_to_dinosaur_spmd_mesh(
+    dims: tuple[str, ...],
+    mesh: parallelism.Mesh | None = None,
+    partition_schema_key: str | None = None,
+) -> jax.sharding.Mesh | None:
+  """Returns spmd_mesh in dinosaur.spherical_harmonic.Grid format."""
+  if mesh is not None:
+    dim_to_axes = {d: ax for d, ax in zip(dims, ['x', 'y'])}
+    # TODO(dkochkov): modify dinosaur.spherical_harmonic.Grid to not
+    # assume level dimension in implementation details.
+    dim_to_axes['level'] = 'z'
+    return mesh.rearrange_spmd_mesh(partition_schema_key, dim_to_axes)
+  return None
+
+
 # TODO(dkochkov) Consider leaving out spherical_harmonics_impl from repr.
 @jax.tree_util.register_static
 @dataclasses.dataclass(frozen=True)
@@ -139,35 +166,20 @@ class LonLatGrid(cx.Coordinate):
   latitude_spacing: str = 'gauss'
   longitude_offset: float = 0.0
   radius: float = 1.0
-  spherical_harmonics_impl: SphericalHarmonicsImpl = dataclasses.field(
-      default=FastSphericalHarmonics, kw_only=True
-  )
-  longitude_wavenumbers: int = dataclasses.field(default=0, kw_only=True)
-  total_wavenumbers: int = dataclasses.field(default=0, kw_only=True)
-  spmd_mesh: jax.sharding.Mesh | None = dataclasses.field(
-      default=None, kw_only=True, compare=False,
-  )
-  _ylm_grid: spherical_harmonic.Grid = dataclasses.field(
-      init=False, repr=False, compare=False
-  )
+  lon_lat_padding: tuple[int, int] = (0, 0)
 
-  def __post_init__(self):
-    ylm_grid = spherical_harmonic.Grid(
-        longitude_wavenumbers=self.longitude_wavenumbers,
-        total_wavenumbers=self.total_wavenumbers,
+  @property
+  def _ylm_grid(self) -> spherical_harmonic.Grid:
+    """Unpadded spherical harmonic grid with matching nodal values."""
+    return spherical_harmonic.Grid(
+        longitude_wavenumbers=0,
+        total_wavenumbers=0,
         longitude_nodes=self.longitude_nodes,
         latitude_nodes=self.latitude_nodes,
         latitude_spacing=self.latitude_spacing,
         longitude_offset=self.longitude_offset,
         radius=self.radius,
-        spherical_harmonics_impl=self.spherical_harmonics_impl,
-        spmd_mesh=self.spmd_mesh,
     )
-    object.__setattr__(self, '_ylm_grid', ylm_grid)
-
-  @property
-  def ylm_grid(self) -> spherical_harmonic.Grid:
-    return self._ylm_grid
 
   @property
   def dims(self):
@@ -175,41 +187,18 @@ class LonLatGrid(cx.Coordinate):
 
   @property
   def shape(self):
-    return self.ylm_grid.nodal_shape
+    unpadded_shape = (self.longitude_nodes, self.latitude_nodes)
+    return tuple(x + y for x, y in zip(unpadded_shape, self.lon_lat_padding))
 
   @property
   def fields(self):
-    lons = jnp.rad2deg(self.ylm_grid.longitudes)
-    lats = jnp.rad2deg(self.ylm_grid.latitudes)
+    lon_pad, lat_pad = self.lon_lat_padding
+    lons = jnp.rad2deg(jnp.pad(self._ylm_grid.longitudes, (0, lon_pad)))
+    lats = jnp.rad2deg(jnp.pad(self._ylm_grid.latitudes, (0, lat_pad)))
     return {
         'longitude': cx.wrap(lons, cx.SelectedAxis(self, axis=0)),
         'latitude': cx.wrap(lats, cx.SelectedAxis(self, axis=1)),
     }
-
-  def to_spherical_harmonic_grid(
-      self,
-      longitude_wavenumbers: int | None = None,
-      total_wavenumbers: int | None = None,
-      spherical_harmonics_impl: SphericalHarmonicsImpl | None = None,
-  ):
-    """Constructs a `SphericalHarmonicGrid` from the `LonLatGrid`."""
-    if longitude_wavenumbers is None:
-      longitude_wavenumbers = self.longitude_wavenumbers
-    if total_wavenumbers is None:
-      total_wavenumbers = self.total_wavenumbers
-    if spherical_harmonics_impl is None:
-      spherical_harmonics_impl = self.spherical_harmonics_impl
-    return SphericalHarmonicGrid(
-        longitude_wavenumbers=longitude_wavenumbers,
-        total_wavenumbers=total_wavenumbers,
-        longitude_offset=self.longitude_offset,
-        radius=self.radius,
-        spherical_harmonics_impl=spherical_harmonics_impl,
-        longitude_nodes=self.longitude_nodes,
-        latitude_nodes=self.latitude_nodes,
-        latitude_spacing=self.latitude_spacing,
-        spmd_mesh=self.spmd_mesh,
-    )
 
   @classmethod
   def from_dinosaur_grid(
@@ -222,51 +211,45 @@ class LonLatGrid(cx.Coordinate):
         latitude_spacing=ylm_grid.latitude_spacing,
         longitude_offset=ylm_grid.longitude_offset,
         radius=ylm_grid.radius,
-        total_wavenumbers=ylm_grid.total_wavenumbers,
-        longitude_wavenumbers=ylm_grid.longitude_wavenumbers,
-        spherical_harmonics_impl=ylm_grid.spherical_harmonics_impl,
-        spmd_mesh=ylm_grid.spmd_mesh,
+        lon_lat_padding=ylm_grid.nodal_padding,
     )
 
   @classmethod
   def construct(
       cls,
-      max_wavenumber: int,
       gaussian_nodes: int,
       latitude_spacing: str = 'gauss',
       longitude_offset: float = 0.0,
       radius: float = 1.0,
-      spherical_harmonics_impl: SphericalHarmonicsImpl = FastSphericalHarmonics,
-      spmd_mesh: jax.sharding.Mesh | None = None,
+      mesh: parallelism.Mesh | None = None,
+      partition_schema_key: str | None = None,
   ) -> LonLatGrid:
-    """Constructs a `LonLatGrid` compatible with max_wavenumber and nodes.
+    """Constructs a `LonLatGrid` with specified number of latitude nodes.
 
     Args:
-      max_wavenumber: maximum wavenumber to resolve.
-      gaussian_nodes: number of nodes on the Gaussian grid between the equator
-        and a pole.
+      gaussian_nodes: number of nodes between the equator and a pole.
       latitude_spacing: either 'gauss' or 'equiangular'. This determines the
-        spacing of nodal grid points in the latitudinal (north-south) direction.
+        spacing of grid points in the latitudinal (north-south) direction.
       longitude_offset: the value of the first longitude node, in radians.
       radius: radius of the sphere.
-      spherical_harmonics_impl: class providing an implementation of spherical
-        harmonics.
-      spmd_mesh: optional SPMD mesh that informps how the grid is padded to have
-        equal number of elements in each shard.
+      mesh: optional Mesh that specifies necessary grid padding.
+      partition_schema_key: key indicating a partition schema on `mesh` to infer
+        padding details. Used only if an appropriate `mesh` is passed in.
 
     Returns:
       Constructed LonLatGrid object.
     """
+    dims = ('longitude', 'latitude')
     ylm_grid = spherical_harmonic.Grid(
-        longitude_wavenumbers=max_wavenumber + 1,
-        total_wavenumbers=max_wavenumber + 2,
-        longitude_nodes=4 * gaussian_nodes,
-        latitude_nodes=2 * gaussian_nodes,
+        longitude_wavenumbers=0,
+        total_wavenumbers=0,
+        longitude_nodes=(4 * gaussian_nodes),
+        latitude_nodes=(2 * gaussian_nodes),
         latitude_spacing=latitude_spacing,
         longitude_offset=longitude_offset,
-        spherical_harmonics_impl=spherical_harmonics_impl,
         radius=radius,
-        spmd_mesh=spmd_mesh,
+        spherical_harmonics_impl=FastSphericalHarmonics,
+        spmd_mesh=_mesh_to_dinosaur_spmd_mesh(dims, mesh, partition_schema_key),
     )
     return cls.from_dinosaur_grid(ylm_grid=ylm_grid)
 
@@ -290,43 +273,43 @@ class LonLatGrid(cx.Coordinate):
 
   @classmethod
   def T21(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=21, gaussian_nodes=16, **kwargs)
+    return cls.construct(gaussian_nodes=16, **kwargs)
 
   @classmethod
   def T31(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=31, gaussian_nodes=24, **kwargs)
+    return cls.construct(gaussian_nodes=24, **kwargs)
 
   @classmethod
   def T42(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=42, gaussian_nodes=32, **kwargs)
+    return cls.construct(gaussian_nodes=32, **kwargs)
 
   @classmethod
   def T85(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=85, gaussian_nodes=64, **kwargs)
+    return cls.construct(gaussian_nodes=64, **kwargs)
 
   @classmethod
   def T106(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=106, gaussian_nodes=80, **kwargs)
+    return cls.construct(gaussian_nodes=80, **kwargs)
 
   @classmethod
   def T119(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=119, gaussian_nodes=90, **kwargs)
+    return cls.construct(gaussian_nodes=90, **kwargs)
 
   @classmethod
   def T170(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=170, gaussian_nodes=128, **kwargs)
+    return cls.construct(gaussian_nodes=128, **kwargs)
 
   @classmethod
   def T213(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=213, gaussian_nodes=160, **kwargs)
+    return cls.construct(gaussian_nodes=160, **kwargs)
 
   @classmethod
   def T340(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=340, gaussian_nodes=256, **kwargs)
+    return cls.construct(gaussian_nodes=256, **kwargs)
 
   @classmethod
   def T425(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=425, gaussian_nodes=320, **kwargs)
+    return cls.construct(gaussian_nodes=320, **kwargs)
 
   # TL* grids do not truncate any frequencies, and hence can only model linear
   # terms exactly. ECMWF used "TL" (truncated linear) grids for semi-Lagrangian
@@ -336,55 +319,49 @@ class LonLatGrid(cx.Coordinate):
 
   @classmethod
   def TL31(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=31, gaussian_nodes=16, **kwargs)
+    return cls.construct(gaussian_nodes=16, **kwargs)
 
   @classmethod
   def TL47(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=47, gaussian_nodes=24, **kwargs)
+    return cls.construct(gaussian_nodes=24, **kwargs)
 
   @classmethod
   def TL63(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=63, gaussian_nodes=32, **kwargs)
+    return cls.construct(gaussian_nodes=32, **kwargs)
 
   @classmethod
   def TL95(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=95, gaussian_nodes=48, **kwargs)
+    return cls.construct(gaussian_nodes=48, **kwargs)
 
   @classmethod
   def TL127(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=127, gaussian_nodes=64, **kwargs)
+    return cls.construct(gaussian_nodes=64, **kwargs)
 
   @classmethod
   def TL159(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=159, gaussian_nodes=80, **kwargs)
+    return cls.construct(gaussian_nodes=80, **kwargs)
 
   @classmethod
   def TL179(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=179, gaussian_nodes=90, **kwargs)
+    return cls.construct(gaussian_nodes=90, **kwargs)
 
   @classmethod
   def TL255(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=255, gaussian_nodes=128, **kwargs)
+    return cls.construct(gaussian_nodes=128, **kwargs)
 
   @classmethod
   def TL639(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=639, gaussian_nodes=320, **kwargs)
+    return cls.construct(gaussian_nodes=320, **kwargs)
 
   @classmethod
   def TL1279(cls, **kwargs) -> LonLatGrid:
-    return cls.construct(max_wavenumber=1279, gaussian_nodes=640, **kwargs)
+    return cls.construct(gaussian_nodes=640, **kwargs)
 
   def to_xarray(self) -> dict[str, xarray.Variable]:
-    if self.spmd_mesh is not None:
-      raise ValueError(
-          'Conversion of LonLatGrid with SPMD mesh to xarray.DataArray is not'
-          ' supported.'
-      )
     variables = super().to_xarray()
     metadata = dict(
-        total_wavenumbers=self.total_wavenumbers,
-        longitude_wavenumbers=self.longitude_wavenumbers,
         radius=self.radius,
+        lon_lat_padding=self.lon_lat_padding,
     )
     variables['longitude'].attrs = metadata
     variables['latitude'].attrs = metadata
@@ -426,20 +403,14 @@ class LonLatGrid(cx.Coordinate):
     latitude_nodes = coords.sizes['latitude']
 
     radius = float(coords['longitude'].attrs.get('radius', 1.0))
-    total_wavenumbers = int(
-        coords['longitude'].attrs.get('total_wavenumbers', 0)
-    )
-    longitude_wavenumbers = int(
-        coords['longitude'].attrs.get('longitude_wavenumbers', 0)
-    )
+    lon_lat_padding = coords['longitude'].attrs.get('lon_lat_padding', (0, 0))
     result = cls(
         longitude_nodes=longitude_nodes,
         latitude_nodes=latitude_nodes,
         latitude_spacing=latitude_spacing,
         longitude_offset=longitude_offset,
         radius=radius,
-        total_wavenumbers=total_wavenumbers,
-        longitude_wavenumbers=longitude_wavenumbers,
+        lon_lat_padding=lon_lat_padding,
     )
     result_lat = np.rad2deg(result._ylm_grid.latitudes)
     if not np.allclose(result_lat, lat, atol=1e-3):
@@ -465,40 +436,23 @@ class SphericalHarmonicGrid(cx.Coordinate):
 
   longitude_wavenumbers: int
   total_wavenumbers: int
-  longitude_offset: float = 0.0
   radius: float = 1.0
-  spherical_harmonics_impl: SphericalHarmonicsImpl = dataclasses.field(
-      default=FastSphericalHarmonics, kw_only=True
-  )
-  longitude_nodes: int = dataclasses.field(default=0, kw_only=True)
-  latitude_nodes: int = dataclasses.field(default=0, kw_only=True)
-  latitude_spacing: str = dataclasses.field(
-      default='gauss', repr=False, kw_only=True
-  )
-  spmd_mesh: jax.sharding.Mesh | None = dataclasses.field(
-      default=None, kw_only=True, compare=False,
-  )
-  _ylm_grid: spherical_harmonic.Grid = dataclasses.field(
-      init=False, repr=False, compare=False
-  )
-
-  def __post_init__(self):
-    ylm_grid = spherical_harmonic.Grid(
-        longitude_wavenumbers=self.longitude_wavenumbers,
-        total_wavenumbers=self.total_wavenumbers,
-        longitude_offset=self.longitude_offset,
-        radius=self.radius,
-        spherical_harmonics_impl=self.spherical_harmonics_impl,
-        longitude_nodes=self.longitude_nodes,
-        latitude_nodes=self.latitude_nodes,
-        latitude_spacing=self.latitude_spacing,
-        spmd_mesh=self.spmd_mesh,
-    )
-    object.__setattr__(self, '_ylm_grid', ylm_grid)
+  spherical_harmonics_method: SphericalHarmonicsMethodNames = 'fast'
+  wavenumber_padding: tuple[int, int] = (0, 0)
 
   @property
-  def ylm_grid(self) -> spherical_harmonic.Grid:
-    return self._ylm_grid
+  def _ylm_grid(self) -> spherical_harmonic.Grid:
+    method = SPHERICAL_HARMONICS_METHODS[self.spherical_harmonics_method]
+    return spherical_harmonic.Grid(
+        longitude_wavenumbers=self.longitude_wavenumbers,
+        total_wavenumbers=self.total_wavenumbers,
+        longitude_nodes=0,
+        latitude_nodes=0,
+        latitude_spacing='gauss',
+        longitude_offset=0.0,
+        radius=self.radius,
+        spherical_harmonics_impl=method,
+    )
 
   @property
   def dims(self):
@@ -506,85 +460,71 @@ class SphericalHarmonicGrid(cx.Coordinate):
 
   @property
   def shape(self) -> tuple[int, ...]:
-    return self.ylm_grid.modal_shape
+    unpadded_shape = self._ylm_grid.modal_shape
+    return tuple(x + y for x, y in zip(unpadded_shape, self.wavenumber_padding))
 
   @property
   def fields(self):
+    unpadded_ms, unpadded_ls = self._ylm_grid.modal_axes
+    m_pad, l_pad = self.wavenumber_padding
+    ms = jnp.pad(unpadded_ms, (0, m_pad))
+    ls = jnp.pad(unpadded_ls, (0, l_pad))
     return {
         k: cx.wrap(v, cx.SelectedAxis(self, i))
-        for i, (k, v) in enumerate(zip(self.dims, self.ylm_grid.modal_axes))
+        for i, (k, v) in enumerate(zip(self.dims, [ms, ls]))
     }
 
-  def to_lon_lat_grid(
-      self,
-      longitude_nodes: int | None = None,
-      latitude_nodes: int | None = None,
-      latitude_spacing: str | None = None,
-  ):
-    """Constructs a `LonLatGrid` from the `SphericalHarmonicGrid`."""
-    if longitude_nodes is None:
-      longitude_nodes = self.longitude_nodes
-    if latitude_nodes is None:
-      latitude_nodes = self.latitude_nodes
-    if latitude_spacing is None:
-      latitude_spacing = self.latitude_spacing
-    return LonLatGrid(
-        longitude_nodes=longitude_nodes,
-        latitude_nodes=latitude_nodes,
-        latitude_spacing=latitude_spacing,
-        longitude_offset=self.longitude_offset,
-        radius=self.radius,
-        spherical_harmonics_impl=self.spherical_harmonics_impl,
-        longitude_wavenumbers=self.longitude_wavenumbers,
-        total_wavenumbers=self.total_wavenumbers,
-        spmd_mesh=self.spmd_mesh,
-    )
+  def clip_wavenumbers(
+      self, inputs: Any, n: int
+  ) -> Any:
+    if n <= 0:
+      raise ValueError(f'`n` must be >= 0; got {n}.')
+
+    def clip(x):
+      # Multiplication by the mask is significantly faster than directly using
+      # `x.at[..., -n:].set(0)`
+      num_zeros = n + self.wavenumber_padding[-1]
+      mask = jnp.ones(self.shape[-1], x.dtype).at[-num_zeros:].set(0)
+      return x * mask
+
+    return jax.tree.map(clip, inputs)
 
   @classmethod
   def from_dinosaur_grid(
       cls,
       ylm_grid: spherical_harmonic.Grid,
   ):
+    cls_to_method = {v: k for k, v in SPHERICAL_HARMONICS_METHODS.items()}
+    method_name = cls_to_method[ylm_grid.spherical_harmonics_impl]
+    method_name = cast(SphericalHarmonicsMethodNames, method_name)
     return cls(
         longitude_wavenumbers=ylm_grid.longitude_wavenumbers,
         total_wavenumbers=ylm_grid.total_wavenumbers,
-        longitude_offset=ylm_grid.longitude_offset,
         radius=ylm_grid.radius,
-        spherical_harmonics_impl=ylm_grid.spherical_harmonics_impl,
-        longitude_nodes=ylm_grid.longitude_nodes,
-        latitude_nodes=ylm_grid.latitude_nodes,
-        latitude_spacing=ylm_grid.latitude_spacing,
-        spmd_mesh=ylm_grid.spmd_mesh,
+        spherical_harmonics_method=method_name,
+        wavenumber_padding=ylm_grid.modal_padding,
     )
 
   @classmethod
   def with_wavenumbers(
       cls,
       longitude_wavenumbers: int,
-      dealiasing: str = 'quadratic',
-      latitude_spacing: str = 'gauss',
-      longitude_offset: float = 0.0,
-      spherical_harmonics_impl: SphericalHarmonicsImpl = (
-          FastSphericalHarmonics
-      ),
+      spherical_harmonics_method: SphericalHarmonicsMethodNames = 'fast',
       radius: float = 1.0,
-      spmd_mesh: jax.sharding.Mesh | None = None,
+      mesh: parallelism.Mesh | None = None,
+      partition_schema_key: str | None = None,
   ) -> SphericalHarmonicGrid:
     """Constructs a `SphericalHarmonicGrid` by specifying only wavenumbers."""
-    # The number of nodes is chosen for de-aliasing.
-    order = {'linear': 2, 'quadratic': 3, 'cubic': 4}[dealiasing]
-    longitude_nodes = order * longitude_wavenumbers + 1
-    latitude_nodes = math.ceil(longitude_nodes / 2)
+    dims = ('longitude_wavenumber', 'total_wavenumber')
+    method = SPHERICAL_HARMONICS_METHODS[spherical_harmonics_method]
     ylm_grid = spherical_harmonic.Grid(
         longitude_wavenumbers=longitude_wavenumbers,
         total_wavenumbers=longitude_wavenumbers + 1,
-        longitude_nodes=longitude_nodes,
-        latitude_nodes=latitude_nodes,
-        latitude_spacing=latitude_spacing,
-        longitude_offset=longitude_offset,
-        spherical_harmonics_impl=spherical_harmonics_impl,
+        longitude_nodes=0,
+        latitude_nodes=0,
+        spherical_harmonics_impl=method,
         radius=radius,
-        spmd_mesh=spmd_mesh,
+        spmd_mesh=_mesh_to_dinosaur_spmd_mesh(dims, mesh, partition_schema_key),
     )
     return cls.from_dinosaur_grid(ylm_grid=ylm_grid)
 
@@ -592,42 +532,34 @@ class SphericalHarmonicGrid(cx.Coordinate):
   def construct(
       cls,
       max_wavenumber: int,
-      gaussian_nodes: int,
-      latitude_spacing: str = 'gauss',
-      longitude_offset: float = 0.0,
       radius: float = 1.0,
-      spherical_harmonics_impl: SphericalHarmonicsImpl = (
-          FastSphericalHarmonics
-      ),
-      spmd_mesh: jax.sharding.Mesh | None = None,
+      spherical_harmonics_method: SphericalHarmonicsMethodNames = 'fast',
+      mesh: parallelism.Mesh | None = None,
+      partition_schema_key: str | None = None,
   ) -> SphericalHarmonicGrid:
     """Constructs a `SphericalHarmonicGrid` with max_wavenumber.
 
     Args:
       max_wavenumber: maximum wavenumber to resolve.
-      gaussian_nodes: number of nodes on the Gaussian grid between the equator
-        and a pole.
-      latitude_spacing: either 'gauss' or 'equiangular'. This determines the
-        spacing of nodal grid points in the latitudinal (north-south) direction.
-      longitude_offset: the value of the first longitude node, in radians.
       radius: radius of the sphere.
-      spherical_harmonics_impl: class providing an implementation of spherical
-        harmonics.
-      spmd_mesh: optional mesh to use for SPMD sharding.
+      spherical_harmonics_method: name of the Yₗᵐ implementation to use.
+      mesh: optional Mesh that specifies necessary grid padding.
+      partition_schema_key: key indicating a partition schema on `mesh` to infer
+        padding details. Used only if an appropriate `mesh` is passed in.
 
     Returns:
       Constructed SphericalHarmonicGrid object.
     """
+    dims = ('longitude_wavenumber', 'total_wavenumber')
+    method = SPHERICAL_HARMONICS_METHODS[spherical_harmonics_method]
     ylm_grid = spherical_harmonic.Grid(
         longitude_wavenumbers=max_wavenumber + 1,
         total_wavenumbers=max_wavenumber + 2,
-        longitude_nodes=4 * gaussian_nodes,
-        latitude_nodes=2 * gaussian_nodes,
-        latitude_spacing=latitude_spacing,
-        longitude_offset=longitude_offset,
-        spherical_harmonics_impl=spherical_harmonics_impl,
+        longitude_nodes=0,
+        latitude_nodes=0,
+        spherical_harmonics_impl=method,
         radius=radius,
-        spmd_mesh=spmd_mesh,
+        spmd_mesh=_mesh_to_dinosaur_spmd_mesh(dims, mesh, partition_schema_key),
     )
     return cls.from_dinosaur_grid(ylm_grid=ylm_grid)
 
@@ -651,43 +583,43 @@ class SphericalHarmonicGrid(cx.Coordinate):
 
   @classmethod
   def T21(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=21, gaussian_nodes=16, **kwargs)
+    return cls.construct(max_wavenumber=21, **kwargs)
 
   @classmethod
   def T31(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=31, gaussian_nodes=24, **kwargs)
+    return cls.construct(max_wavenumber=31, **kwargs)
 
   @classmethod
   def T42(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=42, gaussian_nodes=32, **kwargs)
+    return cls.construct(max_wavenumber=42, **kwargs)
 
   @classmethod
   def T85(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=85, gaussian_nodes=64, **kwargs)
+    return cls.construct(max_wavenumber=85, **kwargs)
 
   @classmethod
   def T106(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=106, gaussian_nodes=80, **kwargs)
+    return cls.construct(max_wavenumber=106, **kwargs)
 
   @classmethod
   def T119(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=119, gaussian_nodes=90, **kwargs)
+    return cls.construct(max_wavenumber=119, **kwargs)
 
   @classmethod
   def T170(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=170, gaussian_nodes=128, **kwargs)
+    return cls.construct(max_wavenumber=170, **kwargs)
 
   @classmethod
   def T213(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=213, gaussian_nodes=160, **kwargs)
+    return cls.construct(max_wavenumber=213, **kwargs)
 
   @classmethod
   def T340(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=340, gaussian_nodes=256, **kwargs)
+    return cls.construct(max_wavenumber=340, **kwargs)
 
   @classmethod
   def T425(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=425, gaussian_nodes=320, **kwargs)
+    return cls.construct(max_wavenumber=425, **kwargs)
 
   # TL* grids do not truncate any frequencies, and hence can only model linear
   # terms exactly. ECMWF used "TL" (truncated linear) grids for semi-Lagrangian
@@ -697,57 +629,50 @@ class SphericalHarmonicGrid(cx.Coordinate):
 
   @classmethod
   def TL31(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=31, gaussian_nodes=16, **kwargs)
+    return cls.construct(max_wavenumber=31, **kwargs)
 
   @classmethod
   def TL47(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=47, gaussian_nodes=24, **kwargs)
+    return cls.construct(max_wavenumber=47, **kwargs)
 
   @classmethod
   def TL63(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=63, gaussian_nodes=32, **kwargs)
+    return cls.construct(max_wavenumber=63, **kwargs)
 
   @classmethod
   def TL95(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=95, gaussian_nodes=48, **kwargs)
+    return cls.construct(max_wavenumber=95, **kwargs)
 
   @classmethod
   def TL127(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=127, gaussian_nodes=64, **kwargs)
+    return cls.construct(max_wavenumber=127, **kwargs)
 
   @classmethod
   def TL159(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=159, gaussian_nodes=80, **kwargs)
+    return cls.construct(max_wavenumber=159, **kwargs)
 
   @classmethod
   def TL179(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=179, gaussian_nodes=90, **kwargs)
+    return cls.construct(max_wavenumber=179, **kwargs)
 
   @classmethod
   def TL255(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=255, gaussian_nodes=128, **kwargs)
+    return cls.construct(max_wavenumber=255, **kwargs)
 
   @classmethod
   def TL639(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=639, gaussian_nodes=320, **kwargs)
+    return cls.construct(max_wavenumber=639, **kwargs)
 
   @classmethod
   def TL1279(cls, **kwargs) -> SphericalHarmonicGrid:
-    return cls.construct(max_wavenumber=1279, gaussian_nodes=640, **kwargs)
+    return cls.construct(max_wavenumber=1279, **kwargs)
 
   def to_xarray(self) -> dict[str, xarray.Variable]:
-    if self.spmd_mesh is not None:
-      raise ValueError(
-          'Conversion of SphericalHarmonicGrid with SPMD mesh to'
-          ' xarray.DataArray is not supported.'
-      )
     variables = super().to_xarray()
     metadata = dict(
-        longitude_offset=self.longitude_offset,
-        longitude_nodes=self.longitude_nodes,
-        latitude_nodes=self.latitude_nodes,
-        latitude_spacing=self.latitude_spacing,
         radius=self.radius,
+        wavenumber_padding=self.wavenumber_padding,
+        spherical_harmonics_method=self.spherical_harmonics_method,
     )
     variables['longitude_wavenumber'].attrs = metadata
     variables['total_wavenumber'].attrs = metadata
@@ -772,30 +697,21 @@ class SphericalHarmonicGrid(cx.Coordinate):
 
     longitude_wavenumbers = (coords.sizes['longitude_wavenumber'] + 1) // 2
     radius = float(coords['longitude_wavenumber'].attrs.get('radius', 1.0))
-    longitude_offset = float(
-        coords['longitude_wavenumber'].attrs.get('longitude_offset', 0.0)
+    wavenumber_padding = coords['longitude_wavenumber'].attrs.get(
+        'wavenumber_padding', (0, 0)
     )
-    longitude_nodes = int(
-        coords['longitude_wavenumber'].attrs.get('longitude_nodes', 0)
+    spherical_harmonics_method = coords['longitude_wavenumber'].attrs.get(
+        'spherical_harmonics_method', 'fast'
     )
-    latitude_nodes = int(
-        coords['longitude_wavenumber'].attrs.get('latitude_nodes', 0)
-    )
-    latitude_spacing = str(
-        coords['longitude_wavenumber'].attrs.get('latitude_spacing', 'gauss')
-    )
-
     candidate = cls(
         longitude_wavenumbers=longitude_wavenumbers,
         total_wavenumbers=coords.sizes['total_wavenumber'],
         radius=radius,
-        longitude_offset=longitude_offset,
-        longitude_nodes=longitude_nodes,
-        latitude_nodes=latitude_nodes,
-        latitude_spacing=latitude_spacing,
+        spherical_harmonics_method=spherical_harmonics_method,
+        wavenumber_padding=wavenumber_padding,
     )
 
-    expected = candidate._ylm_grid.modal_axes[0]
+    expected = candidate.fields['longitude_wavenumber'].data
     got = coords['longitude_wavenumber'].data
     if not np.array_equal(expected, got):
       return cx.NoCoordinateMatch(
@@ -805,7 +721,7 @@ class SphericalHarmonicGrid(cx.Coordinate):
           'restoration?'
       )
 
-    expected = candidate._ylm_grid.modal_axes[1]
+    expected = candidate.fields['total_wavenumber'].data
     got = coords['total_wavenumber'].data
     if not np.array_equal(expected, got):
       return cx.NoCoordinateMatch(
@@ -903,7 +819,7 @@ class SigmaLevels(cx.Coordinate):
   ) -> Self | cx.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'sigma':
-      return cx.NoCoordinateMatch(f"dimension {dim!r} != 'sigma'")
+      return cx.NoCoordinateMatch(f'dimension {dim!r} != "sigma"')
 
     if coords['sigma'].ndim != 1:
       return cx.NoCoordinateMatch('sigma coordinate is not a 1D array')
@@ -1032,7 +948,7 @@ class PressureLevels(cx.Coordinate):
     dim = dims[0]
     if dim not in {'level', 'pressure'}:
       return cx.NoCoordinateMatch(
-          f"dimension {dim!r} is not 'pressure' or 'level'"
+          f'dimension {dim!r} is not "pressure" or "level"'
       )
     if coords[dim].ndim != 1:
       return cx.NoCoordinateMatch('pressure coordinate is not a 1D array')
@@ -1074,7 +990,7 @@ class LayerLevels(cx.Coordinate):
   ) -> Self | cx.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'layer_index':
-      return cx.NoCoordinateMatch(f"dimension {dim!r} != 'layer_index'")
+      return cx.NoCoordinateMatch(f'dimension {dim!r} != "layer_index"')
 
     if coords['layer_index'].ndim != 1:
       return cx.NoCoordinateMatch('layer_index coordinate is not a 1D array')
@@ -1136,29 +1052,29 @@ class DinosaurCoordinates(cx.CartesianProduct):
   def fields(self):
     return self.vertical.fields | self.horizontal.fields
 
-  @property
-  def dinosaur_coords(self):
-    """Returns the CoordinateSystem object from the Dinosaur package."""
-    # TODO(dkochkov) Either make spmd_mesh an argument or ideally add
-    # ShardingMesh object to the new API to hold sharding information.
-    spmd_mesh = None  # make this an argument and change property to a method.
-    horizontal, vertical = self.horizontal, self.vertical
-    horizontal = horizontal.ylm_grid
-    if isinstance(vertical, SigmaLevels):
-      vertical = vertical.sigma_levels
-    elif isinstance(vertical, PressureLevels):
-      vertical = vertical.pressure_levels
-    elif isinstance(vertical, LayerLevels):
-      pass
-    else:
-      raise ValueError(f'Unsupported vertical {vertical=}')
-    return dinosaur_coordinates.CoordinateSystem(
-        horizontal=horizontal, vertical=vertical, spmd_mesh=spmd_mesh
-    )
+  # @property
+  # def dinosaur_coords(self):
+  #   """Returns the CoordinateSystem object from the Dinosaur package."""
+  #   # TODO(dkochkov) Either make spmd_mesh an argument or ideally add
+  #   # ShardingMesh object to the new API to hold sharding information.
+  #   spmd_mesh = None  # make this an argument and change property to a method.
+  #   horizontal, vertical = self.horizontal, self.vertical
+  #   horizontal = horizontal.ylm_grid
+  #   if isinstance(vertical, SigmaLevels):
+  #     vertical = vertical.sigma_levels
+  #   elif isinstance(vertical, PressureLevels):
+  #     vertical = vertical.pressure_levels
+  #   elif isinstance(vertical, LayerLevels):
+  #     pass
+  #   else:
+  #     raise ValueError(f'Unsupported vertical {vertical=}')
+  #   return dinosaur_coordinates.CoordinateSystem(
+  #       horizontal=horizontal, vertical=vertical, spmd_mesh=spmd_mesh
+  #   )
 
-  @property
-  def dinosaur_grid(self):
-    return self.dinosaur_coords.horizontal
+  # @property
+  # def dinosaur_grid(self):
+  #   return self.dinosaur_coords.horizontal
 
   @classmethod
   def from_dinosaur_coords(

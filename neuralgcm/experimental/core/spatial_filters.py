@@ -15,14 +15,12 @@
 """Modules that implement spatial filters."""
 
 import abc
-import dataclasses
 from typing import Sequence
 
 from dinosaur import filtering
 from flax import nnx
-from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
-from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
@@ -43,54 +41,38 @@ class ModalSpatialFilter(SpatialFilter):
     """Returns filtered modal ``inputs``."""
 
 
+@nnx_compat.dataclass
 class ExponentialModalFilter(ModalSpatialFilter):
   """Modal filter that removes high frequency components."""
 
-  def __init__(
-      self,
-      grid: coordinates.SphericalHarmonicGrid,
-      attenuation: float = 16,
-      order: int = 18,
-      cutoff: float = 0,
-      *,
-      mesh: parallelism.Mesh,
-  ):
-    """See ``dinosaur.filtering.exponential_filter`` for details."""
-    self.grid = grid
-    self.attenuation = attenuation
-    self.order = order
-    self.cutoff = cutoff
-    self.mesh = mesh
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  attenuation: float = 16.0
+  order: int = 18
+  cutoff: float = 0.0
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:
-    # TODO(dkochkov): reimplement this using only SphericalHarmonicGrid,
-    # this will allow to remove the need for mesh.
-    ylm_grid = self.grid.ylm_grid
-    ylm_grid = dataclasses.replace(ylm_grid, spmd_mesh=self.mesh.spmd_mesh)
     filter_fn = filtering.exponential_filter(
-        ylm_grid, self.attenuation, self.order, self.cutoff
+        grid=self.ylm_transform.dinosaur_grid,
+        attenuation=self.attenuation,
+        order=self.order,
+        cutoff=self.cutoff,
     )
     return filter_fn(inputs)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    dinosaur_grid = self.grid.ylm_grid
-    dinosaur_grid = dataclasses.replace(
-        dinosaur_grid, spmd_mesh=self.mesh.spmd_mesh
-    )
-    return dinosaur_grid.to_nodal(
-        self.filter_modal(dinosaur_grid.to_modal(inputs))
+    return self.ylm_transform.dinosaur_grid.to_nodal(
+        self.filter_modal(self.ylm_transform.dinosaur_grid.to_modal(inputs))
     )
 
   @classmethod
   def from_timescale(
       cls,
-      grid: coordinates.SphericalHarmonicGrid,
+      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
       dt: float | typing.Quantity | typing.Numeric,
       timescale: float | typing.Quantity | typing.Numeric,
       order: int = 18,
-      cutoff: float = 0,
+      cutoff: float = 0.0,
       *,
-      mesh: parallelism.Mesh,
       sim_units: units.SimUnits,
   ):
     """Returns a filter with the given timescale."""
@@ -103,11 +85,10 @@ class ExponentialModalFilter(ModalSpatialFilter):
     else:
       timescale = units.maybe_nondimensionalize(timescale, sim_units)
     return cls(
-        grid,
+        ylm_transform=ylm_transform,
         attenuation=(dt / timescale),
         order=order,
         cutoff=cutoff,
-        mesh=mesh,
     )
 
 
@@ -116,8 +97,7 @@ class SequentialModalFilter(ModalSpatialFilter):
   """Modal filter that applies multiple filters sequentially."""
 
   filters: Sequence[ModalSpatialFilter]
-  grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid
-  mesh: parallelism.Mesh
+  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:
     for modal_filter in self.filters:
@@ -125,10 +105,6 @@ class SequentialModalFilter(ModalSpatialFilter):
     return inputs
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    dinosaur_grid = self.grid.ylm_grid
-    dinosaur_grid = dataclasses.replace(
-        dinosaur_grid, spmd_mesh=self.mesh.spmd_mesh
-    )
-    modal_inputs = dinosaur_grid.to_modal(inputs)
+    modal_inputs = self.ylm_transform.dinosaur_grid.to_modal(inputs)
     modal_outputs = self.filter_modal(modal_inputs)
-    return dinosaur_grid.to_nodal(modal_outputs)
+    return self.ylm_transform.dinosaur_grid.to_nodal(modal_outputs)

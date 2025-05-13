@@ -166,7 +166,7 @@ class FixedLearnedObservationOperatorTest(parameterized.TestCase):
     operator = observation_operators.FixedLearnedObservationOperator(
         self.observation_mapping
     )
-    query_coord = coordinates.LonLatGrid.TL31()
+    query_coord = coordinates.LonLatGrid.T21(longitude_offset=0.5)
     query = {'evaporation_rate': query_coord}
     with self.assertRaisesWithLiteralMatch(
         ValueError,

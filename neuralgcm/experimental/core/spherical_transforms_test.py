@@ -42,11 +42,9 @@ class SphericalTransformsTest(parameterized.TestCase):
       dict(
           modal_input_array=np.arange(128 * 65).reshape((128, 65)),
           ylm_grid=coordinates.SphericalHarmonicGrid.TL63(
-              spherical_harmonics_impl=spherical_harmonic.FastSphericalHarmonics
+              spherical_harmonics_method='fast'
           ),
-          lon_lat_grid=coordinates.LonLatGrid.TL63(
-              spherical_harmonics_impl=spherical_harmonic.RealSphericalHarmonics
-          ),
+          lon_lat_grid=coordinates.LonLatGrid.TL63(),
       ),
   )
   def test_array_transforms(
@@ -63,6 +61,9 @@ class SphericalTransformsTest(parameterized.TestCase):
         mesh=mesh,
         partition_schema_key='spatial',  # unused.
     )
+    method = coordinates.SPHERICAL_HARMONICS_METHODS[
+        ylm_grid.spherical_harmonics_method
+    ]
     dinosaur_grid = spherical_harmonic.Grid(
         longitude_wavenumbers=ylm_grid.longitude_wavenumbers,
         total_wavenumbers=ylm_grid.total_wavenumbers,
@@ -71,7 +72,7 @@ class SphericalTransformsTest(parameterized.TestCase):
         longitude_offset=lon_lat_grid.longitude_offset,
         latitude_spacing=lon_lat_grid.latitude_spacing,
         radius=1.0,
-        spherical_harmonics_impl=ylm_grid.spherical_harmonics_impl,
+        spherical_harmonics_impl=method,
         spmd_mesh=None,
     )
     nodal_array = transform.to_nodal_array(modal_input_array)

@@ -118,20 +118,20 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
   def check_variance(
       self,
       samples,
-      grid,
+      ylm_transform,
       correlation_length,
       expected_variance,
       var_tol_in_standard_errs,
   ):
     expected_variance = expected_variance or 0.0
     expected_integrated_variance = (
-        expected_variance * 4 * np.pi * grid.radius**2
+        expected_variance * 4 * np.pi * ylm_transform.radius**2
     )
 
     n_samples, unused_n_lngs, unused_n_lats = samples.shape
     # Integrating over the sphere we get additional statistical power since
     # points decorrelate.
-    expected_corr_frac = correlation_length / grid.radius
+    expected_corr_frac = correlation_length / ylm_transform.radius
     n_equivalent_integrated_samples = n_samples / expected_corr_frac**2
     standard_error = np.sqrt(
         # The variance of a (normal) variance estimate is 2 σ⁴ / (n - 1).
@@ -141,7 +141,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     )
 
     np.testing.assert_allclose(
-        grid.ylm_grid.integrate(np.var(samples, axis=0)),
+        ylm_transform.dinosaur_grid.integrate(np.var(samples, axis=0)),
         expected_integrated_variance,
         atol=var_tol_in_standard_errs * standard_error,
         rtol=0.0,
@@ -152,7 +152,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       random_field,
       mean,
       variance,
-      grid,
+      ylm_transform,
       correlation_length,
       correlation_time,
       run_mean_check=True,
@@ -163,6 +163,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       var_tol_in_standard_errs=4,
   ):
     dt = self.dt
+    grid = ylm_transform.nodal_grid
 
     # generating multiple trajectories of random fields.
     n_samples = 500
@@ -205,7 +206,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       with self.subTest('unconditional_sample_integrated_var'):
         self.check_variance(
             initial_values,
-            grid,
+            ylm_transform,
             correlation_length=correlation_length,
             expected_variance=variance,
             var_tol_in_standard_errs=var_tol_in_standard_errs,
@@ -253,7 +254,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       with self.subTest('final_sample_integrated_var'):
         self.check_variance(
             final_sample,
-            grid,
+            ylm_transform,
             correlation_length=correlation_length,
             expected_variance=variance,
             var_tol_in_standard_errs=var_tol_in_standard_errs,
@@ -352,7 +353,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         grf,
         0.0,  # mean = 0
         variance,
-        ylm_transform.nodal_grid,
+        ylm_transform,
         correlation_length,
         correlation_time,
     )
@@ -494,7 +495,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     final_nodal_value = field_trajectory[-1, ...]
 
     self.assertEqual(
-        (n_samples, n_fields) + grid.ylm_grid.modal_shape,
+        (n_samples, n_fields) + self.ylm_transform.modal_grid.shape,
         initial_states.core.shape,
     )
 
@@ -513,7 +514,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         )
         self.check_variance(
             x[:, i],
-            grid,
+            self.ylm_transform,
             correlation_length=correlation_length,
             expected_variance=variance,
             var_tol_in_standard_errs=5,

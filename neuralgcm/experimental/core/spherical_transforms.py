@@ -55,6 +55,9 @@ class SphericalHarmonicsTransform:
 
   @property
   def dinosaur_grid(self) -> spherical_harmonic.Grid:
+    method = coordinates.SPHERICAL_HARMONICS_METHODS[
+        self.ylm_grid.spherical_harmonics_method
+    ]
     return spherical_harmonic.Grid(
         longitude_wavenumbers=self.ylm_grid.longitude_wavenumbers,
         total_wavenumbers=self.ylm_grid.total_wavenumbers,
@@ -63,7 +66,7 @@ class SphericalHarmonicsTransform:
         longitude_offset=self.lon_lat_grid.longitude_offset,
         latitude_spacing=self.lon_lat_grid.latitude_spacing,
         radius=self.radius,
-        spherical_harmonics_impl=self.ylm_grid.spherical_harmonics_impl,
+        spherical_harmonics_impl=method,
         spmd_mesh=self.dinosaur_spmd_mesh,
     )
 

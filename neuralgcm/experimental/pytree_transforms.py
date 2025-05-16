@@ -26,12 +26,10 @@ of these can be crudely separated into two categories:
 from __future__ import annotations
 
 import abc
-import dataclasses
 import functools
 import re
 from typing import Callable, Protocol, Sequence
 
-from dinosaur import sigma_coordinates
 from dinosaur import spherical_harmonic
 from flax import nnx
 import jax
@@ -445,14 +443,10 @@ class ClipWavenumbers(TransformABC):
 
   grid: coordinates.SphericalHarmonicGrid
   wavenumbers_to_clip: int = 1
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     """Returns `inputs` where only last sigma level is retained."""
-    # TODO(dkochkov): add clip_wavenumbers method to SphericalHarmonicGrid.
-    ylm_grid = self.grid.ylm_grid
-    ylm_grid = dataclasses.replace(ylm_grid, spmd_mesh=self.mesh.spmd_mesh)
-    return ylm_grid.clip_wavenumbers(inputs, self.wavenumbers_to_clip)
+    return self.grid.clip_wavenumbers(inputs, self.wavenumbers_to_clip)
 
 
 class MaskTransform(TransformABC):
@@ -687,8 +681,7 @@ class ToModalWithFilteredGradients(TransformABC):
     self.attenuations = filter_attenuations
     modal_filters = [
         spatial_filters.ExponentialModalFilter(
-            ylm_transform.ylm_grid, attenuation=a, order=1,
-            mesh=self.ylm_transform.mesh
+            ylm_transform, attenuation=a, order=1,
         )
         for a in filter_attenuations
     ]
@@ -867,7 +860,7 @@ class OrographyWithGradsFeatures(TransformABC):
         typing.KeyWithCosLatFactor(k, 0): v for k, v in modal_features.items()
     }
     modal_gradient_features = self.compute_gradients_transform(modal_features)
-    sh_grid = self.orography_module.ylm_transform.modal_grid.ylm_grid
+    sh_grid = self.orography_module.ylm_transform.dinosaur_grid
     sec_lat = 1 / sh_grid.cos_lat
     sec2_lat = sh_grid.sec2_lat
     sec_lat_scales = {0: 1, 1: sec_lat, 2: sec2_lat}

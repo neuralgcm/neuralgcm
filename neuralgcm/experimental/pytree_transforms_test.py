@@ -197,7 +197,6 @@ class StandardPytreeTransformsTest(parameterized.TestCase):
     clip_transform = pytree_transforms.ClipWavenumbers(
         grid=grid,
         wavenumbers_to_clip=n_clip,
-        mesh=parallelism.Mesh(None),
     )
     actual = clip_transform(inputs)
     chex.assert_trees_all_equal(actual, expected)

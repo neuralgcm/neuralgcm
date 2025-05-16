@@ -44,7 +44,7 @@ class ModalOrography(nnx.Module):
   ):
     self.ylm_transform = ylm_transform
     # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
-    modal_shape_1d = (ylm_transform.ylm_grid.ylm_grid.mask.sum(),)
+    modal_shape_1d = (ylm_transform.dinosaur_grid.mask.sum(),)
     self.orography = OrographyVariable(initializer(rngs, modal_shape_1d))
 
   @property
@@ -55,7 +55,7 @@ class ModalOrography(nnx.Module):
   def modal_orography(self) -> typing.Array:
     """Returns orography converted to modal representation with filtering."""
     # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
-    mask = self.ylm_transform.modal_grid.ylm_grid.mask
+    mask = self.ylm_transform.dinosaur_grid.mask
     modal_orography_2d = jnp.zeros(self.ylm_transform.modal_grid.shape)
     return modal_orography_2d.at[mask].set(self.orography.value)
 
@@ -90,7 +90,7 @@ class ModalOrography(nnx.Module):
       modal_orography = spatial_filter.filter_modal(modal_orography)
     # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
     self.orography.value = modal_orography[
-        self.ylm_transform.modal_grid.ylm_grid.mask
+        self.ylm_transform.dinosaur_grid.mask
     ]
 
 
@@ -121,7 +121,7 @@ class ModalOrographyWithCorrection(ModalOrography):
   def modal_orography(self) -> typing.Array:
     """Returns orography converted to modal representation with filtering."""
     # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
-    mask = self.ylm_transform.modal_grid.ylm_grid.mask
+    mask = self.ylm_transform.dinosaur_grid.mask
     modal_orography_2d = jnp.zeros(mask.shape)
     modal_orography_1d = (
         self.orography.value + self.correction.value * self.correction_scale
@@ -140,9 +140,7 @@ class Orography(nnx.Module):
       rngs: nnx.Rngs,
   ):
     self.grid = grid
-    self.orography = OrographyVariable(
-        initializer(rngs, grid.ylm_grid.nodal_shape)
-    )
+    self.orography = OrographyVariable(initializer(rngs, grid.shape))
 
   @property
   def nodal_orography(self) -> typing.Array:

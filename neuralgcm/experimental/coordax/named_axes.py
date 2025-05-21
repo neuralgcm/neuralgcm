@@ -218,7 +218,7 @@ def _normalize_out_axes(
 
   if out_axes.keys() != named_shape.keys():
     raise ValueError(
-        f'out_axes keys {list(out_axes)} must must match the named '
+        f'out_axes keys {list(out_axes)} must match the named '
         f'dimensions {list(named_shape)}'
     )
   any_negative = any(axis < 0 for axis in out_axes.values())

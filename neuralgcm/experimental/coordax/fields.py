@@ -400,7 +400,7 @@ class Field:
 
   def tree_flatten(self):
     """Flatten this object for JAX pytree operations."""
-    return [self.named_array], tuple(self.axes.items())
+    return [self.named_array], tuple(sorted(self.axes.items()))
 
   @classmethod
   def tree_unflatten(cls, axes, leaves) -> Self:

@@ -733,7 +733,7 @@ class NamedAxesTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError,
         re.escape(
-            "out_axes keys ['x'] must must match the named "
+            "out_axes keys ['x'] must match the named "
             "dimensions ['x', 'y']"
         ),
     ):

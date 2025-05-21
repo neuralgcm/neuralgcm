@@ -132,6 +132,14 @@ class FieldTest(parameterized.TestCase):
           np.zeros(3), dims=('x',), axes={'x': coordax.SizedAxis('x', 4)}
       )
 
+  def test_field_treedef_independent_of_tag_order(self):
+    x, y = coordax.SizedAxis('x', 2), coordax.SizedAxis('y', 3)
+    field_a = coordax.wrap(np.ones((2, 3)), None, y)
+    field_a = field_a.tag(x)
+    field_b = coordax.wrap(np.ones((2, 3)), x, None)
+    field_b = field_b.tag(y)
+    chex.assert_trees_all_equal(field_a, field_b)
+
   def test_field_binary_op_sum_simple(self):
     field_a = coordax.wrap(np.arange(2 * 3 * 4).reshape((2, 4, 3)))
     field_b = coordax.wrap(np.arange(2 * 3 * 4).reshape((2, 4, 3)))

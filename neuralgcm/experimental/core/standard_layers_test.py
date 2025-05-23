@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import nnx
@@ -28,21 +30,21 @@ class StandardLayersTest(parameterized.TestCase):
       dict(
           input_size=11,
           output_size=3,
-          num_hidden_units=6,
+          hidden_size=6,
           num_hidden_layers=1,
           use_bias=True,
       ),
       dict(
           input_size=2,
           output_size=6,
-          num_hidden_units=6,
+          hidden_size=6,
           num_hidden_layers=0,
           use_bias=True,
       ),
       dict(
           input_size=8,
           output_size=5,
-          num_hidden_units=13,
+          hidden_size=13,
           num_hidden_layers=4,
           use_bias=False,
       ),
@@ -51,7 +53,7 @@ class StandardLayersTest(parameterized.TestCase):
       self,
       input_size: int,
       output_size: int,
-      num_hidden_units: int,
+      hidden_size: int,
       num_hidden_layers: int,
       use_bias: bool,
   ):
@@ -59,7 +61,7 @@ class StandardLayersTest(parameterized.TestCase):
     mlp = standard_layers.MlpUniform(
         input_size=input_size,
         output_size=output_size,
-        hidden_size=num_hidden_units,
+        hidden_size=hidden_size,
         n_hidden_layers=num_hidden_layers,
         use_bias=use_bias,
         rngs=nnx.Rngs(0),
@@ -72,7 +74,7 @@ class StandardLayersTest(parameterized.TestCase):
     with self.subTest('total_params_count'):
       expected = count_mlp_uniform_params(
           input_size=input_size,
-          num_hidden_units=num_hidden_units,
+          hidden_size=hidden_size,
           num_hidden_layers=num_hidden_layers,
           output_size=output_size,
           use_bias=use_bias,
@@ -85,6 +87,29 @@ class StandardLayersTest(parameterized.TestCase):
         for previous_layer, layer in zip(mlp.layers[1:-3], mlp.layers[2:-2]):
           kernel_diff = previous_layer.kernel.value - layer.kernel.value
           self.assertGreater(jnp.linalg.norm(kernel_diff), 1e-1)
+
+  def test_sequential(self):
+    input_size, latent_size, output_size = 3, 5, 4
+    first_mlp = standard_layers.Mlp.uniform(
+        input_size=input_size,
+        output_size=latent_size,
+        hidden_size=latent_size,
+        hidden_layers=2,
+        rngs=nnx.Rngs(0),
+    )
+    second_mlp = standard_layers.Mlp.uniform(
+        input_size=latent_size,
+        output_size=output_size,
+        hidden_size=latent_size,
+        hidden_layers=1,
+        rngs=nnx.Rngs(0),
+    )
+    sequential = standard_layers.Sequential(
+        layers=(first_mlp, jax.nn.gelu, second_mlp),
+    )
+    inputs = np.ones([input_size])
+    out = sequential(inputs)
+    self.assertEqual(out.shape, (output_size,))
 
   @parameterized.parameters(
       dict(
@@ -298,9 +323,7 @@ class StandardLayersTest(parameterized.TestCase):
 
     with self.subTest('wrap_padding'):
       kernel_select_above = jnp.expand_dims(
-          jnp.array([[0.0, 1.0, 0.0],
-                     [0.0, 0.0, 0.0],
-                     [0.0, 0.0, 0.0]]),
+          jnp.array([[0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
           axis=(-1, -2),
       )
       conv.conv_layer.kernel.value = kernel_select_above
@@ -308,9 +331,7 @@ class StandardLayersTest(parameterized.TestCase):
       np.testing.assert_allclose(output[:, 0], test_in_wrap[:, -1])
     with self.subTest('reflect_padding'):
       kernel_select_left = jnp.expand_dims(
-          jnp.array([[0.0, 0.0, 0.0],
-                     [1.0, 0.0, 0.0],
-                     [0.0, 0.0, 0.0]]),
+          jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
           axis=(-1, -2),
       )
       conv.conv_layer.kernel.value = kernel_select_left
@@ -355,18 +376,88 @@ class StandardLayersTest(parameterized.TestCase):
             outputs.shape, (1, 128 // resize_ratio[0], 256 // resize_ratio[1])
         )
 
+  def test_cnn_lon_lat(self):
+    cnn_lon_lat = standard_layers.CnnLonLat.build_using_factories(
+        input_size=3,
+        output_size=2,
+        hidden_size=1,
+        hidden_layers=1,
+        kernel_size=(3, 3),
+        dilation=1,
+        rngs=nnx.Rngs(0),
+    )
+
+    with self.subTest('output_shape'):
+      inputs = jnp.ones((3, 32, 64))
+      outputs = cnn_lon_lat(inputs)
+      self.assertEqual(outputs.shape, (2, 32, 64))
+
+    with self.subTest('total_params_count'):
+      expected = count_cnn_conv_params(
+          input_size=3,
+          output_size=2,
+          kernel_size=(3, 3),
+          hidden_size=1,
+          hidden_layers=1,
+          use_bias=True,
+      )
+      actual = count_actual_params(cnn_lon_lat)
+      self.assertEqual(actual, expected)
+
+  def test_epd_layer(self):
+    mlp_factory = functools.partial(
+        standard_layers.Mlp.uniform,
+        hidden_size=8,
+        hidden_layers=4,
+    )
+    epd_layer = standard_layers.Epd.build_using_factories(
+        input_size=7,
+        output_size=13,
+        latent_size=11,
+        num_process_blocks=2,
+        encode_factory=mlp_factory,
+        decode_factory=mlp_factory,
+        process_factory=mlp_factory,
+        rngs=nnx.Rngs(0),
+    )
+    with self.subTest('output_shape'):
+      inputs = jnp.ones((7,))
+      outputs = epd_layer(inputs)
+      self.assertEqual(outputs.shape, (13,))
+
+    with self.subTest('total_params_count'):
+      count_mlp = functools.partial(
+          count_mlp_uniform_params,
+          hidden_size=8,
+          num_hidden_layers=4,
+          use_bias=True,
+      )
+      expected = (
+          count_mlp(input_size=7, output_size=11) +  # encode
+          2 * count_mlp(input_size=11, output_size=11) +  # process blocks.
+          count_mlp(input_size=11, output_size=13)  # decode
+      )
+      actual = count_actual_params(epd_layer)
+      self.assertEqual(actual, expected)
+
+
+def count_actual_params(module: nnx.Module):
+  return sum(
+      [np.prod(x.shape) for x in jax.tree.leaves(nnx.state(module, nnx.Param))]
+  )
+
 
 def count_mlp_uniform_params(
     input_size: int,
-    num_hidden_units: int,
+    hidden_size: int,
     num_hidden_layers: int,
     output_size: int,
     use_bias: bool,
 ):
   """Returns the number of parameters in MlpUniform based on settings."""
-  n_input = input_size * num_hidden_units + num_hidden_units * use_bias
-  n_hidden = num_hidden_units * num_hidden_units + num_hidden_units * use_bias
-  n_output = num_hidden_units * output_size + output_size * use_bias
+  n_input = input_size * hidden_size + hidden_size * use_bias
+  n_hidden = hidden_size * hidden_size + hidden_size * use_bias
+  n_output = hidden_size * output_size + output_size * use_bias
   return n_input + n_hidden * (num_hidden_layers - 1) + n_output
 
 
@@ -377,6 +468,34 @@ def count_conv_params(
   n_w_params = np.prod(kernel_size) * input_size * output_size
   n_b_params = output_size
   return n_w_params + n_b_params * use_bias
+
+
+def count_cnn_conv_params(
+    input_size: int,
+    output_size: int,
+    kernel_size: tuple[int, int],
+    hidden_size: int,
+    hidden_layers: int,
+    use_bias: bool,
+):
+
+  def _count_conv_params(input_size, kernel_size, output_size, use_bias):
+    n_w_params = np.prod(kernel_size) * input_size * output_size
+    n_b_params = output_size
+    return n_w_params + n_b_params * use_bias
+
+  param_count = 0
+  param_count += _count_conv_params(
+      input_size, kernel_size, hidden_size, use_bias
+  )
+  for _ in range(hidden_layers):
+    param_count += _count_conv_params(
+        hidden_size, kernel_size, hidden_size, use_bias
+    )
+  param_count += _count_conv_params(
+      hidden_size, kernel_size, output_size, use_bias
+  )
+  return param_count
 
 
 if __name__ == '__main__':

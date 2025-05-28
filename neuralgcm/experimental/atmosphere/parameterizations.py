@@ -14,17 +14,17 @@
 
 """Modules that parameterize unsimulated atmospheric processes."""
 
-from typing import Callable
+import copy
 
 from flax import nnx
-import jax_datetime as jdt
-from neuralgcm.experimental import pytree_mappings
-from neuralgcm.experimental import pytree_transforms
+from neuralgcm.experimental import coordax as cx
+from neuralgcm.experimental.atmosphere import transforms as atm_transforms
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 
 
@@ -41,53 +41,45 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
       sigma: coordinates.SigmaLevels,
       surface_field_names: tuple[str, ...],
       volume_field_names: tuple[str, ...],
-      features_module: pytree_transforms.Transform,
-      mapping_factory: Callable[
-          ..., pytree_mappings.ChannelMapping | pytree_mappings.VariableMapping
-      ],
-      tendency_transform: pytree_transforms.Transform,
+      features_module: transforms.Transform,
+      mapping_factory: transforms.TransformFactory,
+      tendency_transform: transforms.Transform,
       modal_filter: spatial_filters.ModalSpatialFilter,
-      input_state_shapes: typing.Pytree | None = None,
+      input_state_shapes: typing.Pytree,
       u_key: str = 'u_component_of_wind',
       v_key: str = 'v_component_of_wind',
       mesh: parallelism.Mesh,
       rngs: nnx.Rngs,
   ):
-    output_shapes = {}
-    # TODO(dkochkov): Add checks for the field names that are required.
+    output_coords = {}
     uv_fields = set([u_key, v_key])
     div_curl_fields = set(['divergence', 'vorticity'])
     if len(div_curl_fields.intersection(volume_field_names)) != 2:
       raise ValueError('Volume fields must contain `divergence & vorticity`.')
 
-    # TODO(dkochkov): Compute these using coords modifications.
+    grid = ylm_transform.nodal_grid
     for name in (set(volume_field_names) | uv_fields) - div_curl_fields:
-      output_shapes[name] = ShapeFloatStruct(
-          sigma.shape + ylm_transform.nodal_grid.shape
-      )
+      output_coords[name] = cx.compose_coordinates(sigma, grid)
     for name in set(surface_field_names):
-      output_shapes[name] = ShapeFloatStruct(ylm_transform.nodal_grid.shape)
-    if input_state_shapes is None:
-      input_state_shapes = pytree_mappings.minimal_state_struct()
+      output_coords[name] = grid
+
     input_shapes = features_module.output_shapes(input_state_shapes)
     self.parameterization_mapping = mapping_factory(
         input_shapes=input_shapes,
-        output_shapes=output_shapes,
+        targets=output_coords,
         rngs=rngs,
     )
     self.mesh = mesh
     self.features_module = features_module
     self.tendency_transform = tendency_transform
-    self.to_div_curl = pytree_transforms.ToModalWithDivCurl(ylm_transform)
+    self.to_div_curl = atm_transforms.ToModalWithDivCurl(ylm_transform)
     self.filter = modal_filter
 
-  def __call__(
-      self, inputs: typing.PyTreeState, time: jdt.Datetime
-  ) -> typing.PyTreeState:
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    inputs = copy.copy(inputs)  # avoid mutating inputs.
     inputs = parallelism.with_dycore_sharding(self.mesh, inputs)
-    # TODO(shoyer): always take a dict instead of a pytree?
-    inputs_dict, from_dict_fn = pytree_utils.as_dict(inputs)
-    features = self.features_module(inputs_dict | {'time': time})
+    features = self.features_module(inputs)
+    inputs.pop('time')  # we use inputs to model outputs, but do not need time.
     features = parallelism.with_dycore_to_physics_sharding(self.mesh, features)
     tendencies = self.parameterization_mapping(features)
     tendencies = parallelism.with_physics_to_dycore_sharding(
@@ -97,8 +89,9 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     modal_tendencies = self.to_div_curl(tendencies)
     modal_tendencies = self.filter.filter_modal(modal_tendencies)
     modal_tendencies = pytree_utils.replace_with_matching_or_default(
-        inputs_dict, modal_tendencies, default=0.0
+        inputs, modal_tendencies, default=0.0
     )
-    outputs = from_dict_fn(modal_tendencies)
-    outputs = parallelism.with_dycore_sharding(self.mesh, outputs)
-    return outputs
+    modal_tendencies = parallelism.with_dycore_sharding(
+        self.mesh, modal_tendencies
+    )
+    return modal_tendencies

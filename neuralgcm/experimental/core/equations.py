@@ -14,16 +14,14 @@
 
 """Modules that define differential equations."""
 
-from typing import Callable, Sequence
+from typing import Sequence
 
-from flax import nnx
 import jax
-from neuralgcm.experimental import pytree_mappings
-from neuralgcm.experimental import pytree_transforms
-from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import time_integrators
+from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 
 
@@ -43,48 +41,18 @@ class SimTimeEquation(time_integrators.ExplicitODE):
     return from_dict_fn(terms)
 
 
-class NeuralEquation(time_integrators.ExplicitODE):
-  """Module for equations fully parameterized by a neural network."""
+@nnx_compat.dataclass
+class ExplicitTransformEquation(time_integrators.ExplicitODE):
+  """Explicit equation whose terms are parameterized by a transform."""
 
-  def __init__(
-      self,
-      *,
-      coords: coordinates.DinosaurCoordinates,
-      surface_field_names: tuple[str, ...],
-      volume_field_names: tuple[str, ...] = tuple(),
-      features_module: pytree_transforms.Transform,
-      mapping_factory: Callable[..., pytree_mappings.ChannelMapping],
-      tendency_transform: pytree_transforms.Transform = pytree_transforms.Identity(),
-      input_state_shapes: typing.Pytree | None = None,
-      rngs: nnx.Rngs,
-  ):
-    output_shapes = {}
-    (layers,) = coords.vertical.shape
-    for field in volume_field_names:
-      output_shapes[field] = ShapeFloatStruct(
-          (layers,) + coords.horizontal.shape
-      )
-    for field in surface_field_names:
-      output_shapes[field] = ShapeFloatStruct(coords.horizontal.shape)
-    if input_state_shapes is None:
-      input_state_shapes = pytree_mappings.minimal_state_struct()  # default.
-    self.explicit_tendency_mapping = mapping_factory(
-        input_shapes=features_module.output_shapes(input_state_shapes),
-        output_shapes=output_shapes,
-        rngs=rngs,
-    )
-    self.features_module = features_module
-    self.tendency_transform = tendency_transform
+  explicit_terms_transform: transforms.Transform
 
-  def explicit_terms(self, inputs):
-    inputs_dict, from_dict_fn = pytree_utils.as_dict(inputs)
-    features = self.features_module(inputs_dict)
-    tendencies = self.explicit_tendency_mapping(features)
-    tendencies = self.tendency_transform(tendencies)
+  def explicit_terms(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    tendencies = self.explicit_terms_transform(inputs)
     tendencies = pytree_utils.replace_with_matching_or_default(
-        inputs_dict, tendencies, None
+        inputs, tendencies, None
     )
-    return from_dict_fn(tendencies)
+    return tendencies
 
 
 def _sum_non_nones(*args: jax.Array | None) -> jax.Array | None:

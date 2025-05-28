@@ -17,18 +17,16 @@
 import abc
 import copy
 import dataclasses
-import functools
-from typing import Sequence
 
 from flax import nnx
-import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
-from neuralgcm.experimental import pytree_mappings
-from neuralgcm.experimental import pytree_transforms
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import pytree_utils
-from neuralgcm.experimental.core import standard_layers
+from neuralgcm.experimental.core import learned_transforms
+from neuralgcm.experimental.core import nnx_compat
+from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import towers
+from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 
 
@@ -114,7 +112,7 @@ class ObservationOperatorWithRenaming(ObservationOperator):
 class FixedLearnedObservationOperator(ObservationOperator):
   """Operator that computes fixed set of observations using state mapping."""
 
-  coordinate_mapping: pytree_mappings.CoordsStateMapping
+  coordinate_mapping: learned_transforms.UnaryFieldTowerTransform
 
   def observe(
       self,
@@ -122,27 +120,11 @@ class FixedLearnedObservationOperator(ObservationOperator):
       query: dict[str, cx.Field | cx.Coordinate],
   ) -> dict[str, cx.Field]:
     """Returns predicted observations matching `query`."""
-    inputs = jax.tree.map(lambda x: x.data, inputs, is_leaf=cx.is_field)
     predictions = self.coordinate_mapping(inputs)
-    is_coordinate = lambda x: isinstance(x, cx.Coordinate)
-    prediction_keys = list(predictions.keys())
-    observations = {}
-    coord = self.coordinate_mapping.coords
-    for k, v in query.items():
-      if k not in prediction_keys:
-        raise ValueError(f'Query contains {k=} not in {prediction_keys}')
-      if not is_coordinate(v):
-        raise ValueError(
-            'FixedLearnedObservationOperator only supports coordinate queries,'
-            f' got {v}'
-        )
-      if (coord == v) or (coord.horizontal == v):
-        observations[k] = cx.wrap(predictions[k], v)
-      else:
-        raise ValueError(f'Query ({k}, {v}) is not compatible with {coord=}')
-    return observations
+    return DataObservationOperator(predictions).observe(inputs, query)
 
 
+@nnx_compat.dataclass
 class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
   """Observation operator for scalar observations at sparse locations.
 
@@ -165,50 +147,56 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
     scalar_names: names of the scalar fields predicted by this operator.
     grid: grid on which state features are computed.
     features_module: module that computes state features from the prognostics.
-    displacement_features_module: module that computes features that represent
-      the relative location of the query point and the neighbor on the `grid`.
-    input_state_shapes: shapes of the input state.
+    input_shapes: shapes of the inputs.
     layer_factory: factory for instantiating a NN that will compute predictions.
     rngs: random number generator.
   """
 
-  def __init__(
-      self,
-      scalar_names: Sequence[str],
-      grid: coordinates.LonLatGrid,
+  target_predictions: dict[str, cx.Coordinate]
+  grid: coordinates.LonLatGrid
+  grid_features: transforms.Transform
+  tower: towers.UnaryFieldTower
+  prediction_transform: transforms.Transform = transforms.Identity()
+  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_shapes: dict[str, cx.Field],
+      target_predictions: dict[str, cx.Coordinate],
       *,
-      features_module: pytree_transforms.Transform,
-      displacement_features_module: pytree_transforms.Transform = pytree_transforms.Identity(),
-      input_state_shapes: typing.Pytree,
-      layer_factory: standard_layers.UnaryLayerFactory,
+      grid: coordinates.LonLatGrid,
+      grid_features: transforms.Transform,
+      tower_factory: towers.UnaryFieldTowerFactory,
+      prediction_transform: transforms.Transform = transforms.Identity(),
+      mesh: parallelism.Mesh,
       rngs: nnx.Rngs,
   ):
-    neighbor_feature_shapes = features_module.output_shapes(input_state_shapes)
-    expanded_neighbor_feature_shapes = pytree_utils.expand_to_ndim(
-        neighbor_feature_shapes, ndim=3, axis=-3
-    )
-    f_axis = -3  # default column axis.
-    neighbor_feature_size = sum([
-        x.shape[f_axis]
-        for x in jax.tree.leaves(expanded_neighbor_feature_shapes)
-    ])
-    displacement_shapes = {
-        'delta_lon': typing.ShapeFloatStruct([1]),
-        'delta_lat': typing.ShapeFloatStruct([1]),
+    # TODO(dkochkov): Add check that target_predictions are at most 1D.
+    grid_features_shapes = grid_features.output_shapes(input_shapes)
+    loc_feature_sizes = {
+        k: (
+            {d: s for d, s in v.named_shape.items() if d not in grid.dims}
+            if v.ndim > grid.ndim
+            else {None: 1}
+        )
+        for k, v in grid_features_shapes.items()
     }
-    displacement_feature_shapes = displacement_features_module.output_shapes(
-        displacement_shapes
+    input_size = sum(
+        [v.popitem()[1] for v in loc_feature_sizes.values()], start=2
     )
-    displacement_feature_size = sum(
-        [x.shape[0] for x in jax.tree.leaves(displacement_feature_shapes)]
+    output_size = sum(
+        [x.shape[0] if x.shape else 1 for x in target_predictions.values()]
     )
-    input_size = neighbor_feature_size + displacement_feature_size
-    output_size = len(scalar_names)
-    self.net = layer_factory(input_size, output_size, rngs=rngs)
-    self.scalar_names = scalar_names
-    self.features_module = features_module
-    self.displacement_features_module = displacement_features_module
-    self.grid = grid
+    tower = tower_factory(input_size, output_size, rngs=rngs)
+    return cls(
+        target_predictions=target_predictions,
+        grid=grid,
+        grid_features=grid_features,
+        tower=tower,
+        prediction_transform=prediction_transform,
+        mesh=mesh,
+    )
 
   def _lon_lat_neighbor_indices(
       self,
@@ -232,69 +220,47 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
   ) -> dict[str, cx.Field]:
     inputs = copy.copy(inputs)  # ensure that inputs are not modified.
     query = copy.copy(query)  # ensure that query is not modified.
-    all_features = self.features_module(inputs)
-    all_features = pytree_utils.expand_to_ndim(all_features, ndim=3, axis=-3)
-    grid = self.grid
+    grid_features = self.grid_features(inputs)
     lon_query, lat_query = query.pop('longitude'), query.pop('latitude')
     sparse_coord = cx.get_coordinate(lon_query)
     assert sparse_coord == cx.get_coordinate(lat_query)  # should be the same.
+    grid = self.grid
     lon, lat = grid.fields['longitude'].data, grid.fields['latitude'].data
-    get_indices_fn = functools.partial(self._lon_lat_neighbor_indices, lon, lat)
-    lon_idx, lat_idx = cx.cmap(get_indices_fn)(lon_query, lat_query)
-    delta_lon = (lon_query - cx.wrap_like(lon[lon_idx.data], lon_query)).data
-    delta_lat = (lat_query - cx.wrap_like(lat[lat_idx.data], lat_query)).data
-
-    def vmap_features(feature_module, inputs):
-      return feature_module(inputs)
-
-    mapped_features = nnx.vmap(vmap_features, in_axes=(None, 0))
-    displacement_features = mapped_features(
-        self.displacement_features_module,
-        {
-            'delta_lon': delta_lon[..., jnp.newaxis],
-            'delta_lat': delta_lat[..., jnp.newaxis],
-        },
-    )
+    get_indices_fn = self._lon_lat_neighbor_indices
+    lon_idx, lat_idx = cx.cmap(get_indices_fn)(lon_query, lat_query, lon, lat)
+    delta_lon = lon_query - cx.wrap_like(lon[lon_idx.data], lon_query)
+    delta_lat = lat_query - cx.wrap_like(lat[lat_idx.data], lat_query)
+    displacement_inputs = {
+        'delta_lon': delta_lon,
+        'delta_lat': delta_lat,
+    }
 
     def _select_features_at_lon_lat(array, lon_idx, lat_idx):
       # if lon_idx/lat_idx are batched, move then upfront keeping features last.
-      return jnp.asarray(array)[..., lon_idx, lat_idx].T
+      return jnp.asarray(array)[lon_idx, lat_idx]
 
-    nearest_features = {
-        k: _select_features_at_lon_lat(v, lon_idx.data, lat_idx.data)
-        for k, v in all_features.items()
+    nearest_grid_features = {
+        k: cx.cmap(_select_features_at_lon_lat)(v.untag(grid), lon_idx, lat_idx)
+        for k, v in grid_features.items()
     }
-    all_features = pytree_utils.pack_pytree(
-        nearest_features | displacement_features, axis=-1
-    )
-
-    def vmap_fn(net, inputs):
-      return net(inputs)
-
-    mapped_scalar_net = nnx.vmap(vmap_fn, in_axes=(None, 0))
-    all_scalars = mapped_scalar_net(self.net, all_features)
-    output_shapes = {
-        k: typing.ShapeFloatStruct(sparse_coord.shape + (1,))
-        for k in self.scalar_names
+    all_features = nearest_grid_features | displacement_inputs
+    target_predictions = {
+        k: cx.compose_coordinates(v, sparse_coord)
+        for k, v in self.target_predictions.items()
     }
-    predictions = pytree_utils.unpack_to_pytree(
-        all_scalars, output_shapes, axis=1
+    observe_sparse_transform = learned_transforms.UnaryFieldTowerTransform(
+        targets=target_predictions,
+        tower=self.tower,
+        dims_to_align=(sparse_coord,),
+        out_transform=self.prediction_transform,
+        # feature_sharding_schema=self.feature_sharding_schema,  # need this?
+        # result_sharding_schema=self.result_sharding_schema,
+        mesh=self.mesh,
     )
-    prediction_keys = list(predictions.keys())
-    observations = {}
-    for k, v in query.items():
-      if k not in prediction_keys:
-        raise ValueError(f'Query contains {k=} not in {prediction_keys}')
-      if v == sparse_coord:
-        observations[k] = cx.wrap(jnp.squeeze(predictions[k], axis=1), v)
-      else:
-        raise ValueError(
-            f'Query ({k}, {v}) is not compatible with {sparse_coord=}'
-        )
+    predictions = observe_sparse_transform(all_features)
+    obs = DataObservationOperator(predictions).observe(inputs, query)
     # TODO(dkochkov): Consider not returning field entries in operators.
-    observations['longitude'] = lon_query
-    observations['latitude'] = lat_query
-    return observations
+    return obs | {'longitude': lon_query, 'latitude': lat_query}
 
 
 @dataclasses.dataclass

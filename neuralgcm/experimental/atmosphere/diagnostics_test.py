@@ -23,17 +23,16 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
-from neuralgcm.experimental import pytree_mappings
-from neuralgcm.experimental import pytree_transforms
-from neuralgcm.experimental import towers
 from neuralgcm.experimental.atmosphere import diagnostics as atmos_diagnostics
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import towers
+from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import units
-import numpy as np
 
 
 class MockMethod(nnx.Module):
@@ -55,20 +54,20 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     self.sim_units = units.DEFAULT_UNITS
-    modal_coords = coordinates.DinosaurCoordinates(
-        horizontal=coordinates.SphericalHarmonicGrid.T21(),
-        vertical=coordinates.SigmaLevels.equidistant(layers=8),
-    )
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
+    full_modal = cx.compose_coordinates(sigma_levels, ylm_grid)
+    ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
     self.prognostics = {
-        'divergence': np.ones(modal_coords.shape),
-        'vorticity': np.ones(modal_coords.shape),
-        'log_surface_pressure': np.zeros(modal_coords.horizontal.shape),
-        'temperature_variation': np.ones(modal_coords.shape),
-        'specific_humidity': np.ones(modal_coords.shape),
-        'specific_cloud_ice_water_content': np.ones(modal_coords.shape),
-        'specific_cloud_liquid_water_content': np.ones(modal_coords.shape),
+        'divergence': ones_like(full_modal),
+        'vorticity': ones_like(full_modal),
+        'temperature_variation': ones_like(full_modal),
+        'specific_humidity': ones_like(full_modal),
+        'specific_cloud_ice_water_content': ones_like(full_modal),
+        'specific_cloud_liquid_water_content': ones_like(full_modal),
+        'log_surface_pressure': ones_like(ylm_grid),
     }
-    self.tendencies = jax.tree.map(jnp.ones_like, self.prognostics)
+    self.tendencies = {k: 0.1 * v for k, v in self.prognostics.items()}
 
   def test_extract_precipitation_plus_evaporation(self):
     ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
@@ -100,35 +99,28 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     grid = coordinates.LonLatGrid.T21()
     sigma = coordinates.SigmaLevels.equidistant(layers=8)
     # Setting up basic observation operator for evaporation.
-    feature_module = pytree_transforms.ToNodalWithVelocity(ylm_transform)
+    state_shapes = pytree_utils.shape_structure(self.prognostics)
     tower_factory = functools.partial(
-        towers.ColumnTower,
-        column_net_factory=nnx.Linear,
+        towers.UnaryFieldTower.build_using_factories,
+        net_in_dims=('d',),
+        net_out_dims=('d',),
+        neural_net_factory=nnx.Linear,
     )
-    mapping_factory = functools.partial(
-        pytree_mappings.ChannelMapping,
-        tower_factory=tower_factory,
-    )
-    embedding_factory = functools.partial(
-        pytree_mappings.Embedding,
-        feature_module=feature_module,
-        input_state_shapes=pytree_utils.shape_structure(self.prognostics),
-        mapping_factory=mapping_factory,
-        mesh=mesh,
-    )
-    observation_mapping = pytree_mappings.CoordsStateMapping(
-        coords=coordinates.DinosaurCoordinates(
-            horizontal=ylm_transform.lon_lat_grid,
-            vertical=sigma,
-        ),
-        surface_field_names=tuple(['evaporation']),
-        volume_field_names=tuple(),
-        embedding_factory=embedding_factory,
-        rngs=nnx.Rngs(0),
-        mesh=mesh,
+    surface_observation_operator_transform = (
+        learned_transforms.UnaryFieldTowerTransform.build_using_factories(
+            input_shapes=state_shapes,
+            targets={'evaporation': grid},
+            tower_factory=tower_factory,
+            dims_to_align=(grid,),
+            in_transform=transforms.ToNodal(ylm_transform),
+            feature_sharding_schema=None,
+            result_sharding_schema=None,
+            mesh=mesh,
+            rngs=nnx.Rngs(0),
+        )
     )
     operator = observation_operators.FixedLearnedObservationOperator(
-        observation_mapping
+        surface_observation_operator_transform
     )
     precip_plus_evap = atmos_diagnostics.ExtractPrecipitationPlusEvaporation(
         ylm_transform=ylm_transform,

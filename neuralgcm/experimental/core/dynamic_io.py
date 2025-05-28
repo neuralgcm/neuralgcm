@@ -22,7 +22,9 @@ import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental import coordax as cx
+from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import typing
+import numpy as np
 
 
 class DynamicInputValue(nnx.Intermediate):
@@ -59,6 +61,13 @@ class DynamicInputSlice(DynamicInputModule):
     self.keys_to_coords = keys_to_coords
     self.observation_key = observation_key
     self.time_axis = time_axis
+    self.time = DynamicInputValue(jdt.to_datetime('1970-01-01T00')[np.newaxis])
+    mock_dt = coordinates.TimeDelta(np.array([np.timedelta64(1, 'h')]))
+    dummy_data = {}
+    for k, v in self.keys_to_coords.items():
+      value = jnp.nan * jnp.zeros(mock_dt.shape + v.shape)
+      dummy_data[k] = cx.wrap(value, mock_dt, v)
+    self.data = DynamicInputValue(dummy_data)
 
   def update_dynamic_inputs(self, dynamic_inputs):
     if self.observation_key not in dynamic_inputs:
@@ -100,8 +109,9 @@ class DynamicInputSlice(DynamicInputModule):
         for k, coord in self.keys_to_coords.items()
     }
 
-  def __call__(self, time: jdt.Datetime) -> typing.Pytree:
+  def __call__(self, time: cx.Field) -> dict[str, cx.Field]:
     """Returns covariates at the specified time."""
+    time = time.unwrap()
     time_indices = jnp.arange(self.time.size)
     approx_index = jdt.interp(time, self.time.value, time_indices)
     index = jnp.round(approx_index).astype(int)

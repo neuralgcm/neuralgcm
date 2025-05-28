@@ -21,16 +21,15 @@ from typing import Sequence
 from dinosaur import primitive_equations as dinosaur_primitive_equations
 import jax
 from neuralgcm.experimental import coordax as cx
-from neuralgcm.experimental import pytree_mappings
 from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.atmosphere import state_conversion
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_transforms
-from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
@@ -57,7 +56,7 @@ class PressureLevelObservationOperator(
   pressure_levels: coordinates.PressureLevels
   sim_units: units.SimUnits
   tracer_names: Sequence[str]
-  observation_correction: pytree_mappings.CoordsStateMapping | None
+  observation_correction: learned_transforms.UnaryFieldTowerTransform | None
   mesh: parallelism.Mesh
 
   def observe(
@@ -76,24 +75,16 @@ class PressureLevelObservationOperator(
     """
     inputs = copy.copy(inputs)  # avoid mutating inputs.
     time = inputs.pop('time')
-    nondim_pressure = dataclasses.replace(
-        self.pressure_levels,
-        centers=self.sim_units.nondimensionalize(
-            self.pressure_levels.centers * typing.units.millibar
-        ),
-    )
-    nondim_target_coords = coordinates.DinosaurCoordinates(
-        horizontal=self.ylm_transform.nodal_grid, vertical=nondim_pressure
-    )
-    target_coords = coordinates.DinosaurCoordinates(
-        horizontal=self.ylm_transform.nodal_grid, vertical=self.pressure_levels
-    )
-    inputs = jax.tree.map(lambda x: x.data, inputs, is_leaf=cx.is_field)
     # TODO(dkochkov): make primitive_equation_to_uvtz work with flat structure
     # to avoid the need to nesting tracers.
-    tracers = {k: inputs.pop(k) for k in self.tracer_names}
+    tracers = {k: inputs[k].data for k in self.tracer_names}
+    log_surface_pressure = inputs['log_surface_pressure'].data
     source_state = dinosaur_primitive_equations.State(
-        **(inputs | {'tracers': tracers})
+        divergence=inputs['divergence'].data,
+        vorticity=inputs['vorticity'].data,
+        temperature_variation=inputs['temperature_variation'].data,
+        log_surface_pressure=log_surface_pressure,
+        tracers=tracers,
     )
     # TODO(dkochkov): pass temperature instead of temperature_variation as
     # prognostic fields in observer to remove this dependency.
@@ -101,35 +92,29 @@ class PressureLevelObservationOperator(
         source_state=source_state,
         ylm_transform=self.ylm_transform,
         sigma_levels=self.sigma_levels,
+        pressure_levels=self.pressure_levels,
         primitive_equations=self.primitive_equation,
         orography=self.orography,
-        target_coords=nondim_target_coords,
         sim_units=self.sim_units,
     )
     pressure_interpolated_state = parallelism.with_physics_sharding(
         self.mesh, pressure_interpolated_state
     )
     if self.observation_correction is not None:
-      # TODO(dkochkov): make this unnested as we move towards using
-      # dict[str, cx.Field] for internal representation.
-      source_dict = source_state.asdict() | {'time': time.data}
-      source_dict = parallelism.with_dycore_sharding(self.mesh, source_dict)
-      correction = self.observation_correction(source_dict)
+      inputs = parallelism.with_dycore_sharding(self.mesh, inputs)
+      correction = self.observation_correction(inputs | {'time': time})
       correction = pytree_utils.replace_with_matching_or_default(
           pressure_interpolated_state, correction
       )
       correction = parallelism.with_physics_sharding(self.mesh, correction)
       add_fn = lambda x, y: x + y if y is not None else x
-      pressure_interpolated_state = jax.tree.map(
-          add_fn, pressure_interpolated_state, correction
-      )
+      pressure_interpolated_state = {
+          k: add_fn(v, correction.get(k, None))
+          for k, v in pressure_interpolated_state.items()
+      }
 
-    observations_fields = {
-        k: cx.wrap(v, target_coords)
-        for k, v in pressure_interpolated_state.items()
-    }
     return observation_operators.DataObservationOperator(
-        observations_fields | {'time': time}
+        pressure_interpolated_state | {'time': time}
     ).observe(inputs, query)
 
 
@@ -156,7 +141,7 @@ class SigmaLevelObservationOperator(
   target_sigma_levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
   tracer_names: Sequence[str]
-  observation_correction: pytree_mappings.CoordsStateMapping | None
+  observation_correction: learned_transforms.UnaryFieldTowerTransform | None
   mesh: parallelism.Mesh
 
   def observe(
@@ -179,12 +164,16 @@ class SigmaLevelObservationOperator(
         horizontal=self.ylm_transform.nodal_grid,
         vertical=self.target_sigma_levels
     )
-    inputs = jax.tree.map(lambda x: x.data, inputs, is_leaf=cx.is_field)
     # TODO(dkochkov): make primitive_equation_to_uvtz work with flat structure
     # to avoid the need to nesting tracers.
-    tracers = {k: inputs.pop(k) for k in self.tracer_names}
+    tracers = {k: inputs[k].data for k in self.tracer_names}
+    log_surface_pressure = inputs['log_surface_pressure'].data
     source_state = dinosaur_primitive_equations.State(
-        **(inputs | {'tracers': tracers})
+        divergence=inputs['divergence'].data,
+        vorticity=inputs['vorticity'].data,
+        temperature_variation=inputs['temperature_variation'].data,
+        log_surface_pressure=log_surface_pressure,
+        tracers=tracers,
     )
     # TODO(dkochkov): pass temperature instead of temperature_variation as
     # prognostic fields in observer to remove this dependency.
@@ -201,27 +190,17 @@ class SigmaLevelObservationOperator(
         self.mesh, interpolated_state
     )
     if self.observation_correction is not None:
-      # TODO(dkochkov): make this unnested as we move towards using
-      # dict[str, cx.Field] for internal representation.
-      source_dict = source_state.asdict() | {'time': time.data}
-      source_dict = parallelism.with_dycore_sharding(self.mesh, source_dict)
-      correction = self.observation_correction(source_dict)
+      inputs = parallelism.with_dycore_sharding(self.mesh, inputs)
+      correction = self.observation_correction(inputs | {'time': time})
       correction = pytree_utils.replace_with_matching_or_default(
           interpolated_state, correction
       )
       correction = parallelism.with_physics_sharding(self.mesh, correction)
       add_fn = lambda x, y: x + y if y is not None else x
       interpolated_state = jax.tree.map(
-          add_fn, interpolated_state, correction
+          add_fn, interpolated_state, correction, is_leaf=cx.is_field
       )
 
-    observations_fields = {
-        k: cx.wrap(v, target_coords)
-        for k, v in interpolated_state.items() if k != 'surface_pressure'
-    }
-    observations_fields['surface_pressure'] = cx.wrap(
-        interpolated_state['surface_pressure'], self.ylm_transform.nodal_grid
-    )
     return observation_operators.DataObservationOperator(
-        observations_fields | {'time': time}
+        interpolated_state | {'time': time}
     ).observe(inputs, query)

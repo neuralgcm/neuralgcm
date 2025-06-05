@@ -102,7 +102,8 @@ class SphericalHarmonicsTransform:
     """Converts a nodal field(s) to a modal field(s)."""
     if isinstance(x, dict):
       return {k: self.to_modal(v) for k, v in x.items()}
-    modal = cx.cmap(self.to_modal_array)(x.untag(self.nodal_grid))
+    x = x.untag(self.nodal_grid)
+    modal = cx.cmap(self.to_modal_array, out_axes=x.named_axes)(x)
     return modal.tag(self.modal_grid)
 
   @overload
@@ -119,5 +120,6 @@ class SphericalHarmonicsTransform:
     """Converts a modal field(s) to a nodal field(s)."""
     if isinstance(x, dict):
       return {k: self.to_nodal(v) for k, v in x.items()}
-    nodal = cx.cmap(self.to_nodal_array)(x.untag(self.modal_grid))
+    x = x.untag(self.modal_grid)
+    nodal = cx.cmap(self.to_nodal_array, out_axes=x.named_axes)(x)
     return nodal.tag(self.nodal_grid)

@@ -14,6 +14,7 @@
 
 """Helpers for converting between different atmospheric states."""
 
+import dataclasses
 import functools
 
 from dinosaur import primitive_equations as dinosaur_primitive_equations
@@ -21,6 +22,7 @@ from dinosaur import spherical_harmonic
 from dinosaur import vertical_interpolation
 from dinosaur import xarray_utils as dinosaur_xarray_utils
 import jax.numpy as jnp
+from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
@@ -31,26 +33,29 @@ from neuralgcm.experimental.core import units
 
 
 def uvtz_to_primitive_equations(
-    source_data: dict[str, typing.Array],
+    source_data: dict[str, cx.Field],
     source_coords: coordinates.DinosaurCoordinates,
     primitive_equations: equations.PrimitiveEquations,
     orography,
     sim_units: units.SimUnits,
-):
+) -> dict[str, cx.Field]:
   """Converts velocity/temperature/geopotential to primitive equations state."""
+  # TODO(dkochkov): Update this method to leverage coordax.
   surface_pressure = vertical_interpolation.get_surface_pressure(
       source_coords.vertical,
-      source_data['geopotential'],
+      source_data['geopotential'].data,
       orography.nodal_orography,
       sim_units.g,
-  )[0, ...]  # Dinosaur uses dummy surface dimension for which we remove.
+  )[
+      0, ...
+  ]  # Dinosaur uses dummy surface dimension for which we remove.
   interpolate_fn = vertical_interpolation.vectorize_vertical_interpolation(
       vertical_interpolation.vertical_interpolation
   )
   vertical = primitive_equations.sigma_levels
   # TODO(dkochkov): Consider having explicit args that used differently, eg z.
   data_on_sigma = vertical_interpolation.interp_pressure_to_sigma(
-      {k: v for k, v in source_data.items() if k != 'geopotential'},
+      {k: v.data for k, v in source_data.items() if k != 'geopotential'},
       pressure_coords=source_coords.vertical,
       sigma_coords=vertical.sigma_levels,
       surface_pressure=surface_pressure,
@@ -59,7 +64,14 @@ def uvtz_to_primitive_equations(
   data_on_sigma['temperature_variation'] = (
       data_on_sigma.pop('temperature') - primitive_equations.T_ref
   )
-  data_on_sigma['log_surface_pressure'] = jnp.log(surface_pressure)
+  grid = source_coords.horizontal
+  out_coords = coordinates.DinosaurCoordinates(
+      horizontal=grid, vertical=vertical
+  )
+  data_on_sigma = {k: cx.wrap(v, out_coords) for k, v in data_on_sigma.items()}
+  data_on_sigma['log_surface_pressure'] = cx.wrap(
+      jnp.log(surface_pressure), grid
+  )
   return data_on_sigma
 
 
@@ -67,11 +79,11 @@ def primitive_equations_to_uvtz(
     source_state: dinosaur_primitive_equations.StateWithTime,
     ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
     sigma_levels: coordinates.SigmaLevels,
+    pressure_levels: coordinates.PressureLevels,
     primitive_equations: equations.PrimitiveEquations,
     orography: orographies.Orography,
-    target_coords: coordinates.DinosaurCoordinates,
     sim_units: units.SimUnits,
-):
+) -> dict[str, cx.Field]:
   """Converts primitive equations state to pressure level representation.
 
   This function transforms an atmospheric state described in terms of
@@ -83,14 +95,21 @@ def primitive_equations_to_uvtz(
     source_state: State in primitive equations representation.
     ylm_transform: Spherical transform that defines modal-nodal conversion.
     sigma_levels: Sigma coordinates used by the primitive equations module.
+    pressure_levels: Pressure coordinates on which to comupte the outputs.
     primitive_equations: Primitive equations module.
     orography: Orography module.
-    target_coords: Pressure-level dinosaur coordinates to convert to.
     sim_units: Simulation units object.
 
   Returns:
     Dictionary of state components interpolated to target_coords.
   """
+  # TODO(dkochkov): Update this method to leverage coordax.
+  nondim_pressure = dataclasses.replace(
+      pressure_levels.pressure_levels,
+      centers=sim_units.nondimensionalize(
+          pressure_levels.pressure_levels.centers * typing.units.millibar
+      ),
+  )
   to_nodal_fn = ylm_transform.to_nodal_array
   velocity_fn = functools.partial(
       spherical_harmonic.vor_div_to_uv_nodal,
@@ -138,7 +157,7 @@ def primitive_equations_to_uvtz(
   )
   regrid_with_linear_fn = functools.partial(
       vertical_interpolation.interp_sigma_to_pressure,
-      pressure_coords=target_coords.vertical,
+      pressure_coords=nondim_pressure,
       sigma_coords=sigma_levels.sigma_levels,
       surface_pressure=surface_pressure,
       interpolate_fn=interpolate_with_linear_extrap_fn,
@@ -150,7 +169,7 @@ def primitive_equations_to_uvtz(
   )
   regrid_with_constant_fn = functools.partial(
       vertical_interpolation.interp_sigma_to_pressure,
-      pressure_coords=target_coords.vertical,
+      pressure_coords=nondim_pressure,
       sigma_coords=sigma_levels.sigma_levels,
       surface_pressure=surface_pressure,
       interpolate_fn=interpolate_with_constant_extrap_fn,
@@ -167,28 +186,43 @@ def primitive_equations_to_uvtz(
   )
   for k, v in regrid_with_constant_fn(tracers).items():
     outputs[k] = v
+  target_coords = coordinates.DinosaurCoordinates(
+      horizontal=ylm_transform.nodal_grid, vertical=pressure_levels
+  )
+  outputs = {k: cx.wrap(v, target_coords) for k, v in outputs.items()}
   return outputs
 
 
 def sigma_to_primitive_equations(
-    source_data: dict[str, typing.Array],
+    source_data: dict[str, cx.Field],
     source_coords: coordinates.DinosaurCoordinates,
     primitive_equations: equations.PrimitiveEquations,
     orography,
     sim_units: units.SimUnits,
-):
+) -> dict[str, cx.Field]:
   """Converts v/u/temp/geopot from sigma levels to primitive equations state."""
   del orography, sim_units
+  # TODO(dkochkov): Update this method to leverage coordax.
   data_on_new_sigma = vertical_interpolation.interp_sigma_to_sigma(
-      {k: v for k, v in source_data.items() if k != 'geopotential'},
+      {k: v.data for k, v in source_data.items() if k != 'geopotential'},
       source_sigma=source_coords.vertical,
       target_sigma=primitive_equations.sigma_levels,
   )
 
   surface_pressure = data_on_new_sigma.pop('surface_pressure')
-  data_on_new_sigma['log_surface_pressure'] = jnp.log(surface_pressure)
   data_on_new_sigma['temperature_variation'] = (
       data_on_new_sigma.pop('temperature') - primitive_equations.T_ref
+  )
+  grid = source_coords.horizontal
+  target_coords = coordinates.DinosaurCoordinates(
+      horizontal=grid,
+      vertical=primitive_equations.sigma_levels,
+  )
+  data_on_new_sigma = {
+      k: cx.wrap(v, target_coords) for k, v in data_on_new_sigma.items()
+  }
+  data_on_new_sigma['log_surface_pressure'] = cx.wrap(
+      jnp.log(surface_pressure), grid
   )
   return data_on_new_sigma
 
@@ -201,8 +235,9 @@ def primitive_equations_to_sigma(
     orography: orographies.Orography,
     target_coords: coordinates.DinosaurCoordinates,
     sim_units: units.SimUnits,
-):
+) -> dict[str, cx.Field]:
   """Converts primitive equations state to sigma level data representation."""
+  # TODO(dkochkov): Update this method to leverage coordax.
   to_nodal_fn = ylm_transform.to_nodal_array
   velocity_fn = functools.partial(
       spherical_harmonic.vor_div_to_uv_nodal,
@@ -265,5 +300,8 @@ def primitive_equations_to_sigma(
   for k, v in regrid_with_linear_fn(tracers).items():
     outputs[k] = v
 
-  outputs['surface_pressure'] = surface_pressure
+  outputs = {k: cx.wrap(v, target_coords) for k, v in outputs.items()}
+  outputs['surface_pressure'] = cx.wrap(
+      surface_pressure, target_coords.horizontal
+  )
   return outputs

@@ -20,9 +20,9 @@ from dinosaur import coordinate_systems
 from dinosaur import primitive_equations
 from dinosaur import sigma_coordinates
 import jax.numpy as jnp
+from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
-from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import time_integrators
 from neuralgcm.experimental.core import typing
@@ -39,6 +39,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
       sigma_levels: coordinates.SigmaLevels,
       sim_units: units.SimUnits,
       reference_temperatures: Sequence[float],
+      tracer_names: Sequence[str],
       orography_module: orographies.ModalOrography,
       vertical_advection: Callable[..., typing.Array] = (
           sigma_coordinates.centered_vertical_advection
@@ -52,6 +53,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     self.sim_units = sim_units
     self.orography = orography_module
     self.reference_temperatures = reference_temperatures
+    self.tracer_names = tracer_names
     self.vertical_advection = vertical_advection
     self.include_vertical_advection = include_vertical_advection
     self.equation_cls = equation_cls
@@ -76,47 +78,59 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
   def T_ref(self) -> typing.Array:
     return self.primitive_equation.T_ref
 
-  def _expand_log_surface_pressure(
-      self, state: primitive_equations.StateWithTime
-  ) -> primitive_equations.StateWithTime:
-    state_as_dict, from_dict_fn = pytree_utils.as_dict(state)
-    state_as_dict['log_surface_pressure'] = jnp.expand_dims(
-        state_as_dict['log_surface_pressure'], axis=0
+  def _to_primitive_equations_state(
+      self, inputs: dict[str, cx.Field]
+  ) -> primitive_equations.State:
+    """Converts a dict of fields to a primitive equations state."""
+    tracers_dict = {k: inputs[k].data for k in self.tracer_names}
+    log_surface_pressure = inputs['log_surface_pressure'].data[np.newaxis]
+    return primitive_equations.State(
+        divergence=inputs['divergence'].data,
+        vorticity=inputs['vorticity'].data,
+        temperature_variation=inputs['temperature_variation'].data,
+        tracers=tracers_dict,
+        log_surface_pressure=log_surface_pressure,
     )
-    return from_dict_fn(state_as_dict)
 
-  def _squeeze_log_surface_pressure(
-      self, state: primitive_equations.StateWithTime
-  ) -> primitive_equations.StateWithTime:
-    state_as_dict, from_dict_fn = pytree_utils.as_dict(state)
-    state_as_dict['log_surface_pressure'] = jnp.squeeze(
-        state_as_dict['log_surface_pressure'], axis=0
-    )
-    return from_dict_fn(state_as_dict)
+  def _from_primitive_equations_state(
+      self, state: primitive_equations.State
+  ) -> dict[str, cx.Field]:
+    sigma_levels, ylm_grid = self.sigma_levels, self.ylm_transform.modal_grid
+    tracers = {
+        k: cx.wrap(state.tracers[k], sigma_levels, ylm_grid)
+        for k in self.tracer_names
+    }
+    volume_field_names = ['divergence', 'vorticity', 'temperature_variation']
+    volume_fields = {
+        k: cx.wrap(getattr(state, k), sigma_levels, ylm_grid)
+        for k in volume_field_names
+    }
+    lsp = cx.wrap(jnp.squeeze(state.log_surface_pressure, axis=0), ylm_grid)
+    return volume_fields | tracers | {'log_surface_pressure': lsp}
 
   def explicit_terms(
       self, state: primitive_equations.StateWithTime
   ) -> primitive_equations.StateWithTime:
-    return self._squeeze_log_surface_pressure(
+    return self._from_primitive_equations_state(
         self.primitive_equation.explicit_terms(
-            self._expand_log_surface_pressure(state)
+            self._to_primitive_equations_state(state)
         )
     )
 
   def implicit_terms(
       self, state: primitive_equations.StateWithTime
   ) -> primitive_equations.StateWithTime:
-    return self._squeeze_log_surface_pressure(
+    return self._from_primitive_equations_state(
         self.primitive_equation.implicit_terms(
-            self._expand_log_surface_pressure(state)
+            self._to_primitive_equations_state(state)
         )
     )
 
   def implicit_inverse(
       self, state: primitive_equations.StateWithTime, step_size: float
   ) -> primitive_equations.StateWithTime:
-    return self._squeeze_log_surface_pressure(
+    return self._from_primitive_equations_state(
         self.primitive_equation.implicit_inverse(
-            self._expand_log_surface_pressure(state), step_size
+            self._to_primitive_equations_state(state), step_size
         )
     )

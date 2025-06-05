@@ -17,18 +17,18 @@
 import abc
 
 from flax import nnx
+from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import pytree_utils
-from neuralgcm.experimental.core import typing
+from neuralgcm.experimental.core import nnx_compat
 
 
 class StepFilter(nnx.Module, abc.ABC):
   """Base class for spatial filters."""
 
+  @abc.abstractmethod
   def __call__(
-      self, state: typing.Pytree, next_state: typing.Pytree
-  ) -> typing.Pytree:
+      self, state: dict[str, cx.Field], next_state: dict[str, cx.Field]
+  ) -> dict[str, cx.Field]:
     """Returns filtered ``inputs``."""
 
 
@@ -36,32 +36,39 @@ class NoFilter(StepFilter):
   """Filter that does nothing."""
 
   def __call__(
-      self, state: typing.Pytree, next_state: typing.Pytree
-  ) -> typing.Pytree:
+      self, state: dict[str, cx.Field], next_state: dict[str, cx.Field]
+  ) -> dict[str, cx.Field]:
     del state
     return next_state
 
 
+@nnx_compat.dataclass
 class ModalFixedGlobalMeanFilter(StepFilter):
   """Filter that removes the change in the global mean of certain keys."""
 
-  def __init__(
-      self,
-      keys: tuple[str, ...] = ('log_surface_pressure',),
-  ):
-    self.keys = keys
+  ylm_grid: coordinates.SphericalHarmonicGrid
+  keys: tuple[str, ...]
+
+  def __post_init__(self):
+    # TODO(dkochkov): consider adding `.sel` on Field to simplify this.
+    if self.ylm_grid.fields['total_wavenumber'].data[0] != 0:
+      raise ValueError(
+          'ModalFixedGlobalMeanFilter assumes total wavenumber to start with'
+          f' 0, but got {self.ylm_grid.fields["total_wavenumber"].data}'
+      )
 
   def __call__(
-      self, state: typing.Pytree, next_state: typing.Pytree
-  ) -> typing.Pytree:
-    state_dict, _ = pytree_utils.as_dict(state)
-    next_state_dict, from_dict_fn = pytree_utils.as_dict(next_state)
-    # TODO(dkochkov): implementation below is dangerous, as it assumes a
-    # specific layout of wavenumbers in arrays. Use grid from `state` once we
-    # pass it as dict of cx.Field objects.
+      self, state: dict[str, cx.Field], next_state: dict[str, cx.Field]
+  ) -> dict[str, cx.Field]:
+    ylm_grid = self.ylm_grid
     for key in self.keys:
-      global_mean = state_dict[key][..., 0]  # assuming modal
-      next_state_dict[key] = next_state_dict[key].at[..., 0].set(global_mean)
+      in_field = state[key].untag(ylm_grid)
+      get_global_mean = cx.cmap(lambda x: x[:, 0], out_axes=in_field.named_axes)
+      set_mean = cx.cmap(
+          lambda x, mean: x.at[:, 0].set(mean), out_axes=in_field.named_axes
+      )
+      global_mean = get_global_mean(in_field)
+      next_in_field = next_state[key].untag(ylm_grid)
+      next_state[key] = set_mean(next_in_field, global_mean).tag(ylm_grid)
 
-    outputs = from_dict_fn(next_state_dict)
-    return outputs
+    return next_state

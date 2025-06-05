@@ -61,6 +61,7 @@ class ObservationOperatorsTest(parameterized.TestCase):
         sim_units=self.sim_units,
         reference_temperatures=self.ref_temperatures,
         orography_module=self.orography_module,
+        tracer_names=['specific_humidity'],
     )
     zero_like = lambda c: cx.wrap(np.zeros(c.shape), c)
     self.prognostic_fields = {

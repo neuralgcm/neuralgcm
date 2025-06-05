@@ -25,9 +25,7 @@ from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_transforms
-from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
@@ -54,17 +52,22 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
   )
   prognostics_arg_key: str | int = 'prognostics'
 
-  def _compute_p_plus_e_rate(self, tendencies, prognostics) -> typing.Array:
-    to_nodal = self.ylm_transform.to_nodal_array
-    p_surface = jnp.exp(to_nodal(prognostics['log_surface_pressure']))
+  def _compute_p_plus_e_rate(
+      self,
+      tendencies: dict[str, cx.Field],
+      prognostics: dict[str, cx.Field],
+  ) -> dict[str, cx.Field]:
+    to_nodal = self.ylm_transform.to_nodal
+    p_surface = cx.cmap(jnp.exp)(to_nodal(prognostics['log_surface_pressure']))
     scale = p_surface / self.sim_units.gravity_acceleration
     moisture_tendencies_nodal = [
         to_nodal(v) for k, v in tendencies.items() if k in self.moisture_species
     ]
     moisture_tendencies_sum = sum(moisture_tendencies_nodal)
+    assert isinstance(moisture_tendencies_sum, cx.Field)
     # TODO(dkochkov): add sigma integral method to SigmaLevels.
-    p_plus_e = -scale * sigma_coordinates.sigma_integral(
-        moisture_tendencies_sum,
+    p_plus_e = -scale.data * sigma_coordinates.sigma_integral(
+        moisture_tendencies_sum.data,
         self.levels.sigma_levels,
         keepdims=False,
     )
@@ -149,10 +152,7 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
       raise ValueError(
           f'Prognostics must be a dictionary, got {type(prognostics)=} instead.'
       )
-    # here we do a dummy wrap to interface with observation operator
-    # interface. Once we start using Fields for intermediate representations
-    # this won't be needed as prognostics will already be fields.
-    return {k: cx.wrap(v) for k, v in prognostics.items()}
+    return prognostics
 
   def __call__(self, result, *args, **kwargs):
     tendencies = result

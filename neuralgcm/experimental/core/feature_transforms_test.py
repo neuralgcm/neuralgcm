@@ -129,7 +129,7 @@ class FeatureTransformsTest(parameterized.TestCase):
       )
       self._test_feature_module(
           dynamic_input_features,
-          {'time': jdt.to_datetime('2000-01-01T06')},
+          {'time': cx.wrap(jdt.to_datetime('2000-01-01T06'))},
       )
 
   def test_dynamic_input_features_inder_jit(self):
@@ -164,7 +164,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     )
     run(
         dynamic_input_features,
-        {'time': jdt.to_datetime('2000-01-01T06')},
+        {'time': cx.wrap(jdt.to_datetime('2000-01-01T06'))},
         in_data,
     )
 

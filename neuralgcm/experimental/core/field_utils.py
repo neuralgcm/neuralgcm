@@ -89,7 +89,9 @@ def combine_fields(
   concat_axes = {k: _get_concat_axis(v) for k, v in fields.items()}
   expand = cx.cmap(lambda x: x[np.newaxis])
   add_positional = lambda f, c: expand(f) if c is None else f.untag(*c.dims)
-  fields = [add_positional(f, concat_axes[k]) for k, f in fields.items()]
+  fields = [
+      add_positional(f, concat_axes[k]) for k, f in sorted(fields.items())
+  ]
   named_axes_set = set(tuple(sorted(f.named_axes.items())) for f in fields)
   if len(named_axes_set) == 1:
     out_axes = dict(named_axes_set.pop())

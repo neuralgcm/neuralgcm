@@ -101,13 +101,13 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     # Setting up basic observation operator for evaporation.
     state_shapes = pytree_utils.shape_structure(self.prognostics)
     tower_factory = functools.partial(
-        towers.UnaryFieldTower.build_using_factories,
-        net_in_dims=('d',),
-        net_out_dims=('d',),
+        towers.ForwardTower.build_using_factories,
+        inputs_in_dims=('d',),
+        out_dims=('d',),
         neural_net_factory=nnx.Linear,
     )
     surface_observation_operator_transform = (
-        learned_transforms.UnaryFieldTowerTransform.build_using_factories(
+        learned_transforms.ForwardTowerTransform.build_using_factories(
             input_shapes=state_shapes,
             targets={'evaporation': grid},
             tower_factory=tower_factory,

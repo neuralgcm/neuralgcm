@@ -18,6 +18,7 @@ import chex
 from dinosaur import spherical_harmonic
 import jax
 from jax import config  # pylint: disable=g-importing-member
+from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_transforms
@@ -104,6 +105,48 @@ class SphericalTransformsTest(parameterized.TestCase):
     self.assertIsInstance(padded_modal_grid, coordinates.SphericalHarmonicGrid)
     self.assertEqual(transform.modal_grid.total_wavenumbers, 23)
     self.assertEqual(transform.modal_grid.shape, (64, 32))
+
+  @parameterized.parameters(
+      dict(
+          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          truncation_rule='cubic',
+          spherical_harmonics_method='fast',
+          expected_modal_shape=(44, 23),
+          expected_nodal_shape=(64, 32),
+      ),
+      dict(
+          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          truncation_rule='linear',
+          spherical_harmonics_method='fast',
+          expected_modal_shape=(64, 33),
+          expected_nodal_shape=(64, 32),
+      ),
+      dict(
+          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          truncation_rule='linear',
+          spherical_harmonics_method='real',
+          expected_modal_shape=(63, 33),
+          expected_nodal_shape=(64, 32),
+      ),
+  )
+  def test_spherical_harmonics_transformations(
+      self,
+      f: cx.Field,
+      truncation_rule: spherical_transforms.TruncationRules,
+      spherical_harmonics_method: spherical_transforms.SphericalHarmonicMethods,
+      expected_modal_shape: tuple[int, ...],
+      expected_nodal_shape: tuple[int, ...],
+  ):
+    ylm_transforms = spherical_transforms.SphericalHarmonicsTransformations(
+        truncation_rule=truncation_rule,
+        spherical_harmonics_method=spherical_harmonics_method,
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(spmd_mesh=None),
+    )
+    modal = ylm_transforms.to_modal(f)
+    nodal = ylm_transforms.to_nodal(modal)
+    self.assertEqual(modal.shape, expected_modal_shape)
+    self.assertEqual(nodal.shape, expected_nodal_shape)
 
 
 if __name__ == '__main__':

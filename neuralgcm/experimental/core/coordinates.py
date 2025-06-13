@@ -1036,6 +1036,38 @@ class LayerLevels(cx.Coordinate):
 
 
 #
+# Wrapper coordinates
+#
+@jax.tree_util.register_static
+@dataclasses.dataclass(frozen=True)
+class CoordinateWithPadding(cx.Coordinate):
+  """Coordinate wrapper that represents a coordinate with padding."""
+
+  coordinate: cx.Coordinate
+  pad_sizes: dict[str, tuple[int, int]]
+
+  def __post_init__(self):
+    if set(self.coordinate.dims) != set(self.pad_sizes.keys()):
+      raise ValueError(
+          f'{self.pad_sizes=} are expected to specify pads for each dimension '
+          f'in {self.coordinate=}'
+      )
+
+  @property
+  def dims(self):
+    return tuple(f'padded_{d}' for d in self.coordinate.dims)
+
+  @property
+  def shape(self) -> tuple[int, ...]:
+    dims_and_shapes = zip(self.coordinate.dims, self.coordinate.shape)
+    return tuple(s + sum(self.pad_sizes[d]) for d, s in dims_and_shapes)
+
+  @property
+  def fields(self):
+    return {}
+
+
+#
 # Solver-specific coordinate combinations
 #
 

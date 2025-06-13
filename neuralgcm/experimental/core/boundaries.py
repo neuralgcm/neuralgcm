@@ -94,15 +94,12 @@ class LonLatBoundary(BoundaryCondition):
       return x
     lon_size, lat_size = x.shape
     lon_pad, lat_pad = pad_width
-    shift = lon_size // 2 - 1  # skip 1 shift which is recovered in reversal.
+    shift = lon_size // 2  # 180 degree rotation.
     before = jnp.roll(x[:, : lat_pad[0]], shift, axis=0)
     after = jnp.roll(x[:, (lat_size - lat_pad[1]) :], shift, axis=0)
-    # the reversal along longitude below corresponds to non self-crossing
-    # interpretation of the pole boundary, indicating that left and right
-    # before pole crossing are facing the "right" and "left" points at the
-    # same latitude by half-rotated longitude, implying the need to reverse
-    # the order in the ghost cells.
-    x = jnp.concatenate([before[::-1, :], x, after[::-1, :]], axis=1)
+    # The latitude is reversed so that the ghost cells start with the nearest
+    # neighbor to the original domain.
+    x = jnp.concatenate([before[:, ::-1], x, after[:, ::-1]], axis=1)
     return jnp.pad(x, (lon_pad, (0, 0)), mode='wrap')  # lon padding.
 
   def trim_array(

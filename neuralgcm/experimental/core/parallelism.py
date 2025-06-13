@@ -165,7 +165,7 @@ def rearrange_spmd_mesh(
 
   Returns:
     A new spmd mesh with trailing axes renamed to spmd_mesh_axis_names and
-    rearranged to correspond to partition data in a way consistent with
+    rearranged to correspond to data partitioning that is consistent with
     dim_partitions and input spmd_mesh.
   """
   partitions = tuple(
@@ -266,7 +266,7 @@ class Mesh:
       schema_name: Schema | None,
       dims_to_spmd_mesh_axes: dict[str, str],
   ) -> jax.sharding.Mesh | None:
-    """Returns rearranged & renamed spmd mesh representing the same partitions."""
+    """Returns rearranged/renamed spmd mesh representing the same partitions."""
     if self.spmd_mesh is None or schema_name is None:
       return None
     if schema_name not in self.field_partitions:

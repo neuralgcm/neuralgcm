@@ -106,7 +106,7 @@ class FixedLearnedObservationOperatorTest(parameterized.TestCase):
         standard_layers.Mlp.uniform, hidden_size=6, hidden_layers=2
     )
     tower_factory = functools.partial(
-        towers.UnaryFieldTower.build_using_factories,
+        towers.LayerTower.build_using_factories,
         net_in_dims=('d',),
         net_out_dims=('d',),
         neural_net_factory=net_factory,
@@ -149,7 +149,7 @@ class LearnedSparseScalarObservationFromNeighborsTest(parameterized.TestCase):
         standard_layers.MlpUniform, hidden_size=6, n_hidden_layers=2
     )
     tower_factory = functools.partial(
-        towers.UnaryFieldTower.build_using_factories,
+        towers.LayerTower.build_using_factories,
         net_in_dims=('d',),
         net_out_dims=('d',),
         neural_net_factory=layer_factory,

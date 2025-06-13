@@ -43,7 +43,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
   """
 
   targets: dict[str, cx.Coordinate]
-  tower: towers.UnaryFieldTower
+  tower: towers.LayerTower
   dims_to_align: tuple[str | cx.Coordinate, ...]
   in_transform: transforms.Transform = transforms.Identity()
   out_transform: transforms.Transform = transforms.Identity()
@@ -67,7 +67,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
       cls,
       input_shapes: dict[str, cx.Field],
       targets: dict[str, cx.Coordinate],
-      tower_factory: towers.UnaryFieldTowerFactory,
+      tower_factory: towers.LayerTowerFactory,
       dims_to_align: tuple[str | cx.Coordinate, ...],
       in_transform=transforms.Identity(),
       out_transform=transforms.Identity(),

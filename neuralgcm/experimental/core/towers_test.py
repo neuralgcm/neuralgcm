@@ -40,7 +40,7 @@ class UnaryFieldTowerTest(parameterized.TestCase):
     mlp = standard_layers.Mlp.uniform(
         input_size=7, output_size=13, hidden_size=8, hidden_layers=4, rngs=rngs
     )
-    tower = towers.UnaryFieldTower(
+    tower = towers.LayerTower(
         net_in_dims=('din',),
         net_out_dims=('dout',),
         apply_remat=False,
@@ -59,7 +59,7 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         hidden_size=8,
         hidden_layers=4,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.LayerTower.build_using_factories(
         input_size=7,
         output_size=13,
         net_in_dims=('din',),
@@ -80,7 +80,7 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         channels=[8, 8],
         kernel_sizes=5,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.LayerTower.build_using_factories(
         input_size=6,
         output_size=4,
         net_in_dims=('din', self.levels),
@@ -103,7 +103,7 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         kernel_size=(3, 3),
     )
     level_bounds = cx.LabeledAxis('sigma_bound', self.levels.boundaries[1:-1])
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.LayerTower.build_using_factories(
         input_size=self.levels.shape[0],  # since mapping over levels and grid.
         output_size=level_bounds.shape[0],
         net_in_dims=(self.coord,),
@@ -134,7 +134,7 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         post_encode_activation=jax.nn.relu,
         pre_decode_activation=jax.nn.gelu,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.LayerTower.build_using_factories(
         input_size=6,
         output_size=2,
         net_in_dims=('d',),
@@ -155,7 +155,7 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         channels=[8, 8],
         kernel_sizes=5,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.LayerTower.build_using_factories(
         input_size=8,
         output_size=4,
         net_in_dims=('d', self.levels),

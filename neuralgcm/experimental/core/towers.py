@@ -25,7 +25,7 @@ from neuralgcm.experimental.core import typing
 
 
 @nnx_compat.dataclass
-class UnaryFieldTower(nnx.Module):
+class LayerTower(nnx.Module):
   """Applies `neural_net` to a single input Field `f` over `net_in_dims`.
 
   The output Field is computed by applying vectorized `neural_net` to inputs
@@ -77,4 +77,4 @@ class UnaryFieldTower(nnx.Module):
 
 
 # Factory typically expects input_size, output_size args, and rngs kwarg.
-UnaryFieldTowerFactory = Callable[..., UnaryFieldTower]
+LayerTowerFactory = Callable[..., LayerTower]

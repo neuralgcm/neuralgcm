@@ -155,7 +155,7 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
   target_predictions: dict[str, cx.Coordinate]
   grid: coordinates.LonLatGrid
   grid_features: transforms.Transform
-  tower: towers.UnaryFieldTower
+  tower: towers.LayerTower
   prediction_transform: transforms.Transform = transforms.Identity()
   mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
@@ -167,7 +167,7 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
       *,
       grid: coordinates.LonLatGrid,
       grid_features: transforms.Transform,
-      tower_factory: towers.UnaryFieldTowerFactory,
+      tower_factory: towers.LayerTowerFactory,
       prediction_transform: transforms.Transform = transforms.Identity(),
       mesh: parallelism.Mesh,
       rngs: nnx.Rngs,

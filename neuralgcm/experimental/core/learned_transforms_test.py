@@ -53,7 +53,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
     self.levels = coordinates.SigmaLevels.equidistant(12)
     self.coord = cx.compose_coordinates(self.levels, self.grid)
     self.tower_factory = functools.partial(
-        towers.UnaryFieldTower.build_using_factories,
+        towers.LayerTower.build_using_factories,
         net_in_dims=('d',),
         net_out_dims=('d',),
         neural_net_factory=functools.partial(

@@ -27,12 +27,12 @@ from neuralgcm.experimental.core import transforms
 
 
 @nnx_compat.dataclass
-class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
-  """Transforms fields with UnaryFieldTower and splits the output to fields.
+class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
+  """Transforms fields with ForwardTower and splits the output to fields.
 
   Attributes:
     targets: A dictionary mapping output names to their coordinates.
-    tower: The UnaryFieldTower module to apply to the combined inputs.
+    tower: The ForwardTower module to apply to the combined inputs.
     dims_to_align: A tuple of dimsension names or coordinates used to align
       fields when combining inputs and splitting outputs.
     in_transform: Optional transform to be applied to inputs.
@@ -43,7 +43,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
   """
 
   targets: dict[str, cx.Coordinate]
-  tower: towers.UnaryFieldTower
+  tower: towers.ForwardTower
   dims_to_align: tuple[str | cx.Coordinate, ...]
   in_transform: transforms.Transform = transforms.Identity()
   out_transform: transforms.Transform = transforms.Identity()
@@ -55,7 +55,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
     apply_sharding = self.mesh.with_sharding_constraint
     in_features = self.in_transform(inputs)
     in_features = apply_sharding(in_features, self.feature_sharding_schema)
-    tag = self.tower.net_in_dims[0]
+    tag = self.tower.inputs_in_dims[0]
     in_field = field_utils.combine_fields(in_features, self.dims_to_align, tag)
     out_field = self.tower(in_field)
     out_fields = field_utils.split_to_fields(out_field, self.targets)
@@ -67,7 +67,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
       cls,
       input_shapes: dict[str, cx.Field],
       targets: dict[str, cx.Coordinate],
-      tower_factory: towers.UnaryFieldTowerFactory,
+      tower_factory: towers.ForwardTowerFactory,
       dims_to_align: tuple[str | cx.Coordinate, ...],
       in_transform=transforms.Identity(),
       out_transform=transforms.Identity(),
@@ -77,7 +77,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
       mesh: parallelism.Mesh,
       rngs,
   ):
-    """Builds a UnaryFieldTowerTransform using factories for submodules.
+    """Builds a ForwardTowerTransform using factories for submodules.
 
     Args:
       input_shapes: A dictionary of fields with the same shape structure as
@@ -85,7 +85,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
       targets: A dictionary mapping output field names to their coordinates.
         Used to determine the output size for the tower and for the `targets`
         attribute of the transform.
-      tower_factory: A factory function that creates the UnaryFieldTower. It
+      tower_factory: A factory function that creates the ForwardTower. It
         should accept input_size, output_size, and rngs as arguments.
       dims_to_align: A tuple of dimension names or coordinates used to align
         fields when combining inputs and splitting outputs.
@@ -97,7 +97,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
       rngs: The random number generators for initializing the tower.
 
     Returns:
-      An instance of UnaryFieldTowerTransform.
+      An instance of ForwardTowerTransform.
     """
     in_shapes = in_transform.output_shapes(input_shapes)
     in_field_shape = nnx.eval_shape(
@@ -126,7 +126,7 @@ class UnaryFieldTowerTransform(transforms.TransformABC, nnx.Module):
 class WeightedLandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
   """Combines FieldTowerTransformsTransforms for landd, sea and sea ice.
 
-  Outputs are computed by evaluating UnaryFieldTowerTransforms for each
+  Outputs are computed by evaluating ForwardTowerTransforms for each
   component, followed by a weighted sum based on the fraction of each land, sea
   and sea icea at each grid level.
 
@@ -145,9 +145,9 @@ class WeightedLandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
   """
 
   targets: dict[str, cx.Coordinate] = dataclasses.field(init=False)
-  land_transform: UnaryFieldTowerTransform
-  sea_transform: UnaryFieldTowerTransform
-  sea_ice_transform: UnaryFieldTowerTransform
+  land_transform: ForwardTowerTransform
+  sea_transform: ForwardTowerTransform
+  sea_ice_transform: ForwardTowerTransform
   land_sea_mask_transform: transforms.Transform
   sea_ice_value_transform: transforms.Transform
   mesh: parallelism.Mesh = dataclasses.field(kw_only=True)

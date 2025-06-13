@@ -112,7 +112,7 @@ class ObservationOperatorWithRenaming(ObservationOperator):
 class FixedLearnedObservationOperator(ObservationOperator):
   """Operator that computes fixed set of observations using state mapping."""
 
-  coordinate_mapping: learned_transforms.UnaryFieldTowerTransform
+  coordinate_mapping: learned_transforms.ForwardTowerTransform
 
   def observe(
       self,
@@ -155,7 +155,7 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
   target_predictions: dict[str, cx.Coordinate]
   grid: coordinates.LonLatGrid
   grid_features: transforms.Transform
-  tower: towers.UnaryFieldTower
+  tower: towers.ForwardTower
   prediction_transform: transforms.Transform = transforms.Identity()
   mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
@@ -167,7 +167,7 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
       *,
       grid: coordinates.LonLatGrid,
       grid_features: transforms.Transform,
-      tower_factory: towers.UnaryFieldTowerFactory,
+      tower_factory: towers.ForwardTowerFactory,
       prediction_transform: transforms.Transform = transforms.Identity(),
       mesh: parallelism.Mesh,
       rngs: nnx.Rngs,
@@ -248,7 +248,7 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
         k: cx.compose_coordinates(v, sparse_coord)
         for k, v in self.target_predictions.items()
     }
-    observe_sparse_transform = learned_transforms.UnaryFieldTowerTransform(
+    observe_sparse_transform = learned_transforms.ForwardTowerTransform(
         targets=target_predictions,
         tower=self.tower,
         dims_to_align=(sparse_coord,),

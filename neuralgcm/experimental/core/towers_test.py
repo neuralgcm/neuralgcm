@@ -26,8 +26,8 @@ from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import towers
 
 
-class UnaryFieldTowerTest(parameterized.TestCase):
-  """Tests UnaryFieldTower implementation."""
+class ForwardTowerTest(parameterized.TestCase):
+  """Tests ForwardTower implementation."""
 
   def setUp(self):
     super().setUp()
@@ -40,9 +40,9 @@ class UnaryFieldTowerTest(parameterized.TestCase):
     mlp = standard_layers.Mlp.uniform(
         input_size=7, output_size=13, hidden_size=8, hidden_layers=4, rngs=rngs
     )
-    tower = towers.UnaryFieldTower(
-        net_in_dims=('din',),
-        net_out_dims=('dout',),
+    tower = towers.ForwardTower(
+        inputs_in_dims=('din',),
+        out_dims=('dout',),
         apply_remat=False,
         neural_net=mlp,
     )
@@ -59,11 +59,11 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         hidden_size=8,
         hidden_layers=4,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.ForwardTower.build_using_factories(
         input_size=7,
         output_size=13,
-        net_in_dims=('din',),
-        net_out_dims=('dout',),
+        inputs_in_dims=('din',),
+        out_dims=('dout',),
         apply_remat=False,
         neural_net_factory=mlp_factory,
         rngs=nnx.Rngs(0),
@@ -80,11 +80,11 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         channels=[8, 8],
         kernel_sizes=5,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.ForwardTower.build_using_factories(
         input_size=6,
         output_size=4,
-        net_in_dims=('din', self.levels),
-        net_out_dims=('dout', self.levels),
+        inputs_in_dims=('din', self.levels),
+        out_dims=('dout', self.levels),
         apply_remat=False,
         neural_net_factory=cnn_level_factory,
         rngs=nnx.Rngs(0),
@@ -103,11 +103,11 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         kernel_size=(3, 3),
     )
     level_bounds = cx.LabeledAxis('sigma_bound', self.levels.boundaries[1:-1])
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.ForwardTower.build_using_factories(
         input_size=self.levels.shape[0],  # since mapping over levels and grid.
         output_size=level_bounds.shape[0],
-        net_in_dims=(self.coord,),
-        net_out_dims=(level_bounds, self.grid),
+        inputs_in_dims=(self.coord,),
+        out_dims=(level_bounds, self.grid),
         apply_remat=True,
         neural_net_factory=cnn_lon_lat_factory,
         rngs=nnx.Rngs(0),
@@ -134,11 +134,11 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         post_encode_activation=jax.nn.relu,
         pre_decode_activation=jax.nn.gelu,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.ForwardTower.build_using_factories(
         input_size=6,
         output_size=2,
-        net_in_dims=('d',),
-        net_out_dims=('dout',),
+        inputs_in_dims=('d',),
+        out_dims=('dout',),
         apply_remat=False,
         neural_net_factory=epd_factory,
         rngs=nnx.Rngs(0),
@@ -155,11 +155,11 @@ class UnaryFieldTowerTest(parameterized.TestCase):
         channels=[8, 8],
         kernel_sizes=5,
     )
-    tower = towers.UnaryFieldTower.build_using_factories(
+    tower = towers.ForwardTower.build_using_factories(
         input_size=8,
         output_size=4,
-        net_in_dims=('d', self.levels),
-        net_out_dims=('d', self.levels),
+        inputs_in_dims=('d', self.levels),
+        out_dims=('d', self.levels),
         apply_remat=False,
         neural_net_factory=cnn_level_factory,
         rngs=nnx.Rngs(0),

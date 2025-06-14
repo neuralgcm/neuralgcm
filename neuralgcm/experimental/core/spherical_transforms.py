@@ -14,7 +14,7 @@
 """Defines objects that transform between nodal and modal grids."""
 
 import dataclasses
-from typing import overload
+from typing import Literal, overload
 
 from dinosaur import spherical_harmonic
 import jax
@@ -26,6 +26,79 @@ from neuralgcm.experimental.core import typing
 
 # TODO(dkochkov): Consider dropping nodal_grid and modal_grid properties and
 # instead have them as arguments when grids contain explicit padding details.
+
+
+SphericalHarmonicMethods = Literal['fast', 'real']
+TruncationRules = Literal['linear', 'cubic']
+Grid = spherical_harmonic.Grid
+FastSphericalHarmonics = spherical_harmonic.FastSphericalHarmonics
+RealSphericalHarmonics = spherical_harmonic.RealSphericalHarmonics
+
+# fmt: off
+cubic_dino_grid_constructors = [
+    Grid.T21, Grid.T31, Grid.T42, Grid.T85, Grid.T106, Grid.T119, Grid.T170,
+    Grid.T213, Grid.T340, Grid.T425
+]
+linear_dino_grid_constructors = [
+    Grid.TL31, Grid.TL47, Grid.TL63, Grid.TL95, Grid.TL127, Grid.TL159,
+    Grid.TL179, Grid.TL255, Grid.TL639, Grid.TL1279
+]
+# fmt: on
+
+# Cubic shape-to-cls dicts.
+FAST_CUBIC_NODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=FastSphericalHarmonics).nodal_shape: grid
+    for grid in cubic_dino_grid_constructors
+}
+REAL_CUBIC_NODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=RealSphericalHarmonics).nodal_shape: grid
+    for grid in cubic_dino_grid_constructors
+}
+FAST_CUBIC_MODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=FastSphericalHarmonics).modal_shape: grid
+    for grid in cubic_dino_grid_constructors
+}
+REAL_CUBIC_MODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=RealSphericalHarmonics).modal_shape: grid
+    for grid in cubic_dino_grid_constructors
+}
+# Linear shape-to-cls dicts.
+FAST_LINEAR_NODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=FastSphericalHarmonics).nodal_shape: grid
+    for grid in linear_dino_grid_constructors
+}
+REAL_LINEAR_NODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=RealSphericalHarmonics).nodal_shape: grid
+    for grid in linear_dino_grid_constructors
+}
+FAST_LINEAR_MODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=FastSphericalHarmonics).modal_shape: grid
+    for grid in linear_dino_grid_constructors
+}
+REAL_LINEAR_MODAL_SHAPE_TO_GRID = {
+    grid(spherical_harmonics_impl=RealSphericalHarmonics).modal_shape: grid
+    for grid in linear_dino_grid_constructors
+}
+NODAL_SHAPE_TO_GRID = {
+    'fast': {
+        'linear': FAST_LINEAR_NODAL_SHAPE_TO_GRID,
+        'cubic': FAST_CUBIC_NODAL_SHAPE_TO_GRID,
+    },
+    'real': {
+        'linear': REAL_LINEAR_NODAL_SHAPE_TO_GRID,
+        'cubic': REAL_CUBIC_NODAL_SHAPE_TO_GRID,
+    },
+}
+MODAL_SHAPE_TO_GRID = {
+    'fast': {
+        'linear': FAST_LINEAR_MODAL_SHAPE_TO_GRID,
+        'cubic': FAST_CUBIC_MODAL_SHAPE_TO_GRID,
+    },
+    'real': {
+        'linear': REAL_LINEAR_MODAL_SHAPE_TO_GRID,
+        'cubic': REAL_CUBIC_MODAL_SHAPE_TO_GRID,
+    },
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -123,3 +196,143 @@ class SphericalHarmonicsTransform:
     x = x.untag(self.modal_grid)
     nodal = cx.cmap(self.to_nodal_array, out_axes=x.named_axes)(x)
     return nodal.tag(self.nodal_grid)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class YlmMapper:
+  """Family of spherical harmonic transforms specified by truncation rule.
+
+  This class provides a default way of specifying a collection of spherical
+  harmonics transforms specified by a truncation rule, spherical harmonic
+  implementation method and relevant parallelism mesh needed to infer paddding.
+
+  Attributes:
+    truncation_rule: The truncation rule used to match nodal and modal grids.
+    spherical_harmonics_method: Name of the spherical harmonics representations
+      implementation. Must be one of `fast` or `real`.
+    partition_schema_key: The key specifying the partition schema in the mesh.
+    mesh: The parallelism mesh used for sharding.
+    level_key: The dimension name to be used as levels in dinosaur mesh.
+    longitude_key: The dimension name to be used as longitudes in dinosaur mesh.
+    latitude_key: The dimension name to be used as latitudes in dinosaur mesh.
+    radius: The radius of the sphere.
+  """
+
+  truncation_rule: TruncationRules = 'cubic'
+  spherical_harmonics_method: SphericalHarmonicMethods = 'fast'
+  partition_schema_key: parallelism.Schema | None
+  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+  level_key: str = 'level'
+  longitude_key: str = 'longitude'
+  latitude_key: str = 'latitude'
+  radius: float = 1.0
+
+  @property
+  def dinosaur_spmd_mesh(self) -> jax.sharding.Mesh | None:
+    """Returns the SPMD mesh transformed to Dinosaur convention."""
+    dims_to_axes = {
+        self.level_key: 'z',
+        self.longitude_key: 'x',
+        self.latitude_key: 'y',
+    }
+    return self.mesh.rearrange_spmd_mesh(
+        self.partition_schema_key, dims_to_axes
+    )
+
+  def dinosaur_grid(
+      self,
+      grid: coordinates.LonLatGrid | coordinates.SphericalHarmonicGrid,
+  ) -> spherical_harmonic.Grid:
+    """Returns a dinosaur grid for `coord` based on the truncation rule."""
+    dino_mesh = self.dinosaur_spmd_mesh
+    if isinstance(grid, coordinates.LonLatGrid):
+      shape = tuple(s - p for s, p in zip(grid.shape, grid.lon_lat_padding))
+      constructors = NODAL_SHAPE_TO_GRID[self.spherical_harmonics_method]
+      grid_constructor = constructors[self.truncation_rule][shape]
+    elif isinstance(grid, coordinates.SphericalHarmonicGrid):
+      shape = tuple(s - p for s, p in zip(grid.shape, grid.wavenumber_padding))
+      constructors = MODAL_SHAPE_TO_GRID[self.spherical_harmonics_method]
+      grid_constructor = constructors[self.truncation_rule][shape]
+    else:
+      raise ValueError(
+          f'Unsupported {type(grid)=}, expected LonLatGrid or'
+          ' SphericalHarmonicGrid.'
+      )
+    method = coordinates.SPHERICAL_HARMONICS_METHODS[
+        self.spherical_harmonics_method
+    ]
+    return grid_constructor(
+        spmd_mesh=dino_mesh, spherical_harmonics_impl=method
+    )
+
+  def modal_grid(
+      self, grid: coordinates.LonLatGrid
+  ) -> coordinates.SphericalHarmonicGrid:
+    dino_grid = self.dinosaur_grid(grid)
+    return coordinates.SphericalHarmonicGrid.from_dinosaur_grid(dino_grid)
+
+  def nodal_grid(
+      self, ylm_grid: coordinates.SphericalHarmonicGrid
+  ) -> coordinates.LonLatGrid:
+    dino_grid = self.dinosaur_grid(ylm_grid)
+    return coordinates.LonLatGrid.from_dinosaur_grid(dino_grid)
+
+  def ylm_transform(
+      self, grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid
+  ) -> SphericalHarmonicsTransform:
+    if isinstance(grid, coordinates.SphericalHarmonicGrid):
+      ylm_grid = grid
+      nodal_grid = self.nodal_grid(ylm_grid)
+    elif isinstance(grid, coordinates.LonLatGrid):
+      nodal_grid = grid
+      ylm_grid = self.modal_grid(grid)
+    else:
+      raise ValueError(f'Unsupported {type(grid)=}')
+    return SphericalHarmonicsTransform(
+        nodal_grid,
+        ylm_grid,
+        mesh=self.mesh,
+        partition_schema_key=self.partition_schema_key,
+        level_key=self.level_key,
+        longitude_key=self.longitude_key,
+        latitude_key=self.latitude_key,
+        radius=self.radius,
+    )
+
+  @overload
+  def to_modal(self, x: cx.Field) -> cx.Field:
+    ...
+
+  @overload
+  def to_modal(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    ...
+
+  def to_modal(
+      self, x: cx.Field | dict[str, cx.Field]
+  ) -> cx.Field | dict[str, cx.Field]:
+    """Converts `x` to a modal coordinates."""
+    if isinstance(x, dict):
+      return {k: self.to_modal(v) for k, v in x.items()}
+
+    grid = cx.compose_coordinates(x.axes['longitude'], x.axes['latitude'])
+    return self.ylm_transform(grid).to_modal(x)
+
+  @overload
+  def to_nodal(self, x: cx.Field) -> cx.Field:
+    ...
+
+  @overload
+  def to_nodal(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    ...
+
+  def to_nodal(
+      self, x: cx.Field | dict[str, cx.Field]
+  ) -> cx.Field | dict[str, cx.Field]:
+    """Converts `x` to a nodal coordinates."""
+    if isinstance(x, dict):
+      return {k: self.to_nodal(v) for k, v in x.items()}
+
+    ylm_grid = cx.compose_coordinates(
+        x.axes['longitude_wavenumber'], x.axes['total_wavenumber']
+    )
+    return self.ylm_transform(ylm_grid).to_nodal(x)

@@ -21,9 +21,14 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
+from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import towers
+from neuralgcm.experimental.core import transformer_layers
+import numpy as np
 
 
 class ForwardTowerTest(parameterized.TestCase):
@@ -172,6 +177,171 @@ class ForwardTowerTest(parameterized.TestCase):
     )
     with self.assertRaises(ValueError):
       tower(transposed_inputs)
+
+
+class TransformerTowerTest(parameterized.TestCase):
+  """Tests TransformerTower implementation."""
+
+  def setUp(self):
+    super().setUp()
+    self.grid = coordinates.LonLatGrid.T21()
+    self.levels = coordinates.SigmaLevels.equidistant(12)
+    self.coord = cx.compose_coordinates(self.levels, self.grid)
+
+  def test_transformer_blocks_over_levels(self):
+    input_size, output_size, num_heads = 6, 3, 2
+    dense_factory = functools.partial(
+        standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=8
+    )
+    din = cx.DummyAxis('din', input_size)
+    dout = cx.DummyAxis('dout', output_size)
+    vectorized_x = cx.SizedAxis('x', 3)  # tower should vectorize over x.
+    neural_net_factory = functools.partial(
+        transformer_layers.TransformerBlocks.build_using_factories,
+        intermediate_sizes=[8, 8],
+        num_heads=num_heads,
+        dense_factory=dense_factory,
+        qkv_features=(num_heads * 3),
+        gating=lambda skip, x: x,
+    )
+    tower = towers.TransformerTower.build_using_factories(
+        input_size=input_size,
+        output_size=output_size,
+        neural_net_factory=neural_net_factory,
+        inputs_in_dims=('din', self.levels),
+        out_dims=('dout', self.levels),
+        positional_encoder=None,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = cx.wrap(
+        jnp.ones(din.shape + self.levels.shape + vectorized_x.shape),
+        din, self.levels, vectorized_x,
+    )
+    out = tower(inputs)
+    expected_out_coord = cx.compose_coordinates(dout, self.levels, vectorized_x)
+    self.assertEqual(cx.get_coordinate(out), expected_out_coord)
+    x_slice_0 = cx.cmap(lambda x: x[0])(out.untag(vectorized_x)).data
+    x_slice_1 = cx.cmap(lambda x: x[1])(out.untag(vectorized_x)).data
+    np.testing.assert_allclose(x_slice_0, x_slice_1)
+
+  def test_transformer_blocks_decode_over_levels(self):
+    input_size, output_size, num_heads = 8, 3, 2
+    dense_factory = functools.partial(
+        standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=8
+    )
+    neural_net_factory = functools.partial(
+        transformer_layers.TransformerBlocks.build_using_factories,
+        intermediate_sizes=[8, 8],
+        num_heads=num_heads,
+        dense_factory=dense_factory,
+        qkv_features=(num_heads * 3),
+        gating=lambda skip, x: x,
+    )
+    latents_levels = coordinates.SigmaLevels.equidistant(5)
+    tower = towers.TransformerTower.build_using_factories(
+        input_size=input_size,
+        output_size=output_size,
+        neural_net_factory=neural_net_factory,
+        inputs_in_dims=('din', self.levels),
+        out_dims=('dout', self.levels),
+        positional_encoder=None,
+        latents_in_dims=('din', latents_levels),
+        rngs=nnx.Rngs(0),
+    )
+    inputs = cx.wrap(
+        jnp.ones((input_size,) + self.levels.shape), 'din', self.levels
+    )
+    latents = cx.wrap(
+        jnp.ones((input_size,) + latents_levels.shape), 'din', latents_levels
+    )
+    out = tower(inputs, latents=latents)
+    dout = cx.DummyAxis('dout', output_size)
+    expected_out_coord = cx.compose_coordinates(dout, self.levels)
+    self.assertEqual(cx.get_coordinate(out), expected_out_coord)
+
+  def test_transformer_blocks_raises_on_inconsistent_vectorized_dims(self):
+    input_size, output_size, num_heads = 8, 3, 2
+    dense_factory = functools.partial(
+        standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=8
+    )
+    neural_net_factory = functools.partial(
+        transformer_layers.TransformerBlocks.build_using_factories,
+        intermediate_sizes=[8, 8],
+        num_heads=num_heads,
+        dense_factory=dense_factory,
+        qkv_features=(num_heads * 3),
+        gating=lambda skip, x: x,
+    )
+    latents_levels = coordinates.SigmaLevels.equidistant(5)
+    tower = towers.TransformerTower.build_using_factories(
+        input_size=input_size,
+        output_size=output_size,
+        neural_net_factory=neural_net_factory,
+        inputs_in_dims=('din', self.levels),
+        out_dims=('dout', self.levels),
+        positional_encoder=None,
+        latents_in_dims=('din', latents_levels),
+        rngs=nnx.Rngs(0),
+    )
+    vectorize_axis_1 = cx.SizedAxis('x', 3)
+    inputs = cx.wrap(
+        jnp.ones((input_size,) + self.levels.shape + vectorize_axis_1.shape),
+        'din', self.levels, vectorize_axis_1,
+    )
+    vectorize_axis_2 = cx.SizedAxis('y', 3)
+    latents = cx.wrap(
+        jnp.ones((input_size,) + latents_levels.shape + vectorize_axis_2.shape),
+        'din', latents_levels, vectorize_axis_2,
+    )
+    with self.assertRaisesRegex(
+        ValueError,
+        'Vectorized dimensions on .* do not match',
+    ):
+      tower(inputs, latents=latents)
+
+  def test_window_transformer_over_grid(self):
+    input_size, output_size, num_heads = 6, 3, 2
+    dense_factory = functools.partial(
+        standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=8
+    )
+    ylm_mapper = spherical_transforms.YlmMapper(
+        mesh=parallelism.Mesh(), partition_schema_key=None
+    )
+    lmax = 4
+    positional_encoder = transformer_layers.SphericalPositionalEncoder(
+        ylm_mapper, lmax
+    )
+    pe_channels = lmax**2
+    rngs = nnx.Rngs(0)
+    relative_bias_net = nnx.Linear(pe_channels, num_heads, rngs=rngs)
+    neural_net_factory = functools.partial(
+        transformer_layers.WindowTransformerBlocks.build_using_factories,
+        intermediate_sizes=[8, 8],
+        num_heads=num_heads,
+        relative_bias_net=relative_bias_net,
+        inputs_window_shape=(4, 4),
+        qkv_features=(num_heads * 3),
+        shift_windows=False,
+        dense_factory=dense_factory,
+        gating=lambda skip, x: x,
+        inputs_bc=boundaries.LonLatBoundary(),
+    )
+    tower = towers.TransformerTower.build_using_factories(
+        input_size=input_size,
+        output_size=output_size,
+        neural_net_factory=neural_net_factory,
+        inputs_in_dims=('din', self.grid),
+        out_dims=('dout', self.grid),
+        positional_encoder=positional_encoder,
+        rngs=rngs,
+    )
+    inputs = cx.wrap(
+        jnp.ones((input_size,) + self.grid.shape), 'din', self.grid
+    )
+    out = tower(inputs)
+    dout = cx.DummyAxis('dout', output_size)
+    expected_out_coord = cx.compose_coordinates(dout, self.grid)
+    self.assertEqual(cx.get_coordinate(out), expected_out_coord)
 
 
 if __name__ == '__main__':

@@ -31,29 +31,35 @@ class BoundariesTest(parameterized.TestCase):
     grid_sizes = np.prod(grid.shape)
     # reshape to lat,lon and transpose to make range increment along longitude.
     f = cx.wrap(np.arange(grid_sizes).reshape(grid.shape[::-1]).T, grid)
-    pad_sizes = {'longitude': (1, 1), 'latitude': (1, 1)}
+    pad_sizes = {'longitude': (1, 1), 'latitude': (2, 2)}
     padded_f = bc.pad(f, pad_sizes)
 
-    self.assertEqual(padded_f.shape, (66, 34))  # 64 + 1 + 1, 32 + 1 + 1.
+    self.assertEqual(padded_f.shape, (66, 36))  # 64 + 1 + 1, 32 + 2 + 2.
     np.testing.assert_array_equal(
-        padded_f.data[0, 1:-1], f.data[-1, :], err_msg='left_lon_padding'
+        padded_f.data[0, 2:-2], f.data[-1, :], err_msg='left_lon_padding'
     )
     np.testing.assert_array_equal(
-        padded_f.data[-1, 1:-1], f.data[0, :], err_msg='right_lon_padding'
+        padded_f.data[-1, 2:-2], f.data[0, :], err_msg='right_lon_padding'
     )
     np.testing.assert_array_equal(
-        padded_f.data[1:-1, -2], f.data[:, -1], err_msg='preserved_top_boundary'
+        padded_f.data[1:-1, -3], f.data[:, -1], err_msg='preserved_top_boundary'
     )
     np.testing.assert_array_equal(
-        padded_f.data[1:-1, 1], f.data[:, 0], err_msg='preserved_bot_boundary'
+        padded_f.data[1:-1, 2], f.data[:, 0], err_msg='preserved_bot_boundary'
     )
     # latitude boundary should be padded with values on the opposite side of the
     # pole. For 64 longitude points the diameter opposite side of 0 will be 32,
-    # with 31 being to the right of it (counter-clockwise increase) that pairs
-    # with the rightmost neighbor of `0` of value `1`.
-    # we check that [0, 1, 2] are paired with [32, 31, 30] here.
+    # with 33, ... being to the left of it (clockwise direction) that pairs
+    # with the following neighbors of `0` (i.e. `1`, `2`, ...).
     np.testing.assert_array_equal(
-        padded_f.data[1:4, 0], np.array([32, 31, 30]), err_msg='lat_boundary'
+        padded_f.data[1:-1, 1],
+        np.roll(f.data[:, 0], 32),
+        err_msg='lat_boundary_nearest',
+    )
+    np.testing.assert_array_equal(
+        padded_f.data[1:-1, 0],
+        np.roll(f.data[:, 1], 32),
+        err_msg='lat_boundary_next_nearest',
     )
 
   @parameterized.named_parameters(

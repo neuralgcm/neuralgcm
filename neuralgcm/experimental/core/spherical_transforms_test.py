@@ -18,6 +18,7 @@ import chex
 from dinosaur import spherical_harmonic
 import jax
 from jax import config  # pylint: disable=g-importing-member
+from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_transforms
@@ -104,6 +105,99 @@ class SphericalTransformsTest(parameterized.TestCase):
     self.assertIsInstance(padded_modal_grid, coordinates.SphericalHarmonicGrid)
     self.assertEqual(transform.modal_grid.total_wavenumbers, 23)
     self.assertEqual(transform.modal_grid.shape, (64, 32))
+
+  @parameterized.parameters(
+      dict(
+          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          truncation_rule='cubic',
+          spherical_harmonics_method='fast',
+          expected_modal_shape=(44, 23),
+          expected_nodal_shape=(64, 32),
+      ),
+      dict(
+          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          truncation_rule='linear',
+          spherical_harmonics_method='fast',
+          expected_modal_shape=(64, 33),
+          expected_nodal_shape=(64, 32),
+      ),
+      dict(
+          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          truncation_rule='linear',
+          spherical_harmonics_method='real',
+          expected_modal_shape=(63, 33),
+          expected_nodal_shape=(64, 32),
+      ),
+  )
+  def test_ylm_mapper(
+      self,
+      f: cx.Field,
+      truncation_rule: spherical_transforms.TruncationRules,
+      spherical_harmonics_method: spherical_transforms.SphericalHarmonicMethods,
+      expected_modal_shape: tuple[int, ...],
+      expected_nodal_shape: tuple[int, ...],
+  ):
+    ylm_mapper = spherical_transforms.YlmMapper(
+        truncation_rule=truncation_rule,
+        spherical_harmonics_method=spherical_harmonics_method,
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(spmd_mesh=None),
+    )
+    modal = ylm_mapper.to_modal(f)
+    nodal = ylm_mapper.to_nodal(modal)
+    self.assertEqual(modal.shape, expected_modal_shape)
+    self.assertEqual(nodal.shape, expected_nodal_shape)
+
+  def test_ylm_mapper_with_padding(self):
+    spmd_mesh = jax.sharding.Mesh(
+        devices=np.array(jax.devices()).reshape((2, 2, 2)),
+        axis_names=['z', 'x', 'y'],
+    )
+    field_partitions = {
+        'spatial': {
+            'longitude': 'x',
+            'longitude_wavenumber': 'x',
+            'total_wavenumber': 'y',
+            'latitude': 'y',
+            'level': 'z',
+        }
+    }
+    mesh = parallelism.Mesh(spmd_mesh, field_partitions=field_partitions)
+    with self.subTest('cubic_truncation'):
+      ylm_mapper = spherical_transforms.YlmMapper(
+          truncation_rule='cubic',
+          partition_schema_key='spatial',
+          mesh=mesh,
+      )
+      grid = coordinates.LonLatGrid.T21(
+          mesh=mesh, partition_schema_key='spatial'
+      )
+      f = cx.wrap(np.ones(grid.shape), grid)
+      modal_f = ylm_mapper.to_modal(f)
+      restored_nodal_f = ylm_mapper.to_nodal(modal_f)
+      expected_modal_grid = coordinates.SphericalHarmonicGrid.T21(
+          mesh=mesh, partition_schema_key='spatial'
+      )
+      self.assertEqual(cx.get_coordinate(modal_f), expected_modal_grid)
+      self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
+
+    with self.subTest('linear_truncation'):
+      ylm_mapper = spherical_transforms.YlmMapper(
+          truncation_rule='linear',
+          partition_schema_key='spatial',
+          mesh=mesh,
+      )
+      grid = coordinates.LonLatGrid.T21(
+          mesh=mesh, partition_schema_key='spatial'
+      )
+      f = cx.wrap(np.ones(grid.shape), grid)
+      modal_f = ylm_mapper.to_modal(f)
+      restored_nodal_f = ylm_mapper.to_nodal(modal_f)
+      expected_modal_grid = coordinates.SphericalHarmonicGrid.TL31(
+          mesh=mesh, partition_schema_key='spatial'
+      )
+      self.assertEqual(cx.get_coordinate(modal_f), expected_modal_grid)
+      self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
 
 
 if __name__ == '__main__':

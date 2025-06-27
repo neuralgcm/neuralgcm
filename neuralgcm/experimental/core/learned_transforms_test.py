@@ -36,15 +36,15 @@ import numpy as np
 
 
 # Aliases for readability.
-UnaryFieldTowerTransform = learned_transforms.UnaryFieldTowerTransform
+ForwardTowerTransform = learned_transforms.ForwardTowerTransform
 
 
 def ones_field_for_coord(coord: cx.Coordinate):
   return cx.wrap(np.ones(coord.shape), coord)
 
 
-class UnaryFieldTowerTransformTest(parameterized.TestCase):
-  """Tests different instantiations of UnaryFieldTowerTransform."""
+class ForwardTowerTransformTest(parameterized.TestCase):
+  """Tests different instantiations of ForwardTowerTransform."""
 
   def setUp(self):
     """Set up common parameters and configurations for tests."""
@@ -53,9 +53,9 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
     self.levels = coordinates.SigmaLevels.equidistant(12)
     self.coord = cx.compose_coordinates(self.levels, self.grid)
     self.tower_factory = functools.partial(
-        towers.UnaryFieldTower.build_using_factories,
-        net_in_dims=('d',),
-        net_out_dims=('d',),
+        towers.ForwardTower.build_using_factories,
+        inputs_in_dims=('d',),
+        out_dims=('d',),
         neural_net_factory=functools.partial(
             standard_layers.Mlp.uniform, hidden_size=6, hidden_layers=2
         ),
@@ -63,7 +63,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
     self.mesh = parallelism.Mesh()
 
   def test_tower_transform_as_surface_embeddings(self):
-    """Tests that UnaryFieldTowerTransform can work as surface embeddings."""
+    """Tests that ForwardTowerTransform can work as surface embeddings."""
     test_inputs = {
         'u': ones_field_for_coord(self.coord),
         'v': ones_field_for_coord(self.coord),
@@ -74,7 +74,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
         'a': cx.compose_coordinates(az, self.grid),
         'b': cx.compose_coordinates(bz, self.grid),
     }
-    embedding = UnaryFieldTowerTransform.build_using_factories(
+    embedding = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
         targets=embedding_coords,
         tower_factory=self.tower_factory,
@@ -94,7 +94,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
       chex.assert_trees_all_equal(actual, expected)
 
   def test_tower_transform_as_volume_embeddings(self):
-    """Tests that UnaryFieldTowerTransform can work as volume embeddings."""
+    """Tests that ForwardTowerTransform can work as volume embeddings."""
     features_coords = cx.compose_coordinates(
         cx.SizedAxis('in_features', 13), self.coord
     )
@@ -106,7 +106,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
     embedding_coords = {
         'atm_embedding': cx.compose_coordinates(z, self.coord),
     }
-    v_embedding = UnaryFieldTowerTransform.build_using_factories(
+    v_embedding = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
         targets=embedding_coords,
         tower_factory=self.tower_factory,
@@ -126,7 +126,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
       chex.assert_trees_all_equal(actual, expected)
 
   def test_tower_transform_maps_to_surface_and_volume_targets(self):
-    """Tests that UnaryFieldTowerTransform predicts surface & volume targets."""
+    """Tests that ForwardTowerTransform predicts surface & volume targets."""
     test_inputs = {
         'u': ones_field_for_coord(self.coord),
         'v': ones_field_for_coord(self.coord),
@@ -143,7 +143,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
         'latitude': feature_transforms.LatitudeFeatures(self.grid),
         'prognostics': transforms.Select(r'(?!time).*'),
     })
-    parameterization = UnaryFieldTowerTransform.build_using_factories(
+    parameterization = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
         targets=target_coords,
         tower_factory=self.tower_factory,
@@ -214,7 +214,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
     input_shapes = pytree_utils.shape_structure(inputs)
     rngs = nnx.Rngs(0)
 
-    ice_transform = UnaryFieldTowerTransform.build_using_factories(
+    ice_transform = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
         targets=output_coords,
         tower_factory=self.tower_factory,
@@ -223,7 +223,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
         mesh=self.mesh,
         rngs=rngs,
     )
-    land_transform = UnaryFieldTowerTransform.build_using_factories(
+    land_transform = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
         targets=output_coords,
         tower_factory=self.tower_factory,
@@ -232,7 +232,7 @@ class UnaryFieldTowerTransformTest(parameterized.TestCase):
         mesh=self.mesh,
         rngs=rngs,
     )
-    sea_transform = UnaryFieldTowerTransform.build_using_factories(
+    sea_transform = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
         targets=output_coords,
         tower_factory=self.tower_factory,

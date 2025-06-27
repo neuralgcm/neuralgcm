@@ -56,7 +56,7 @@ class PressureLevelObservationOperator(
   pressure_levels: coordinates.PressureLevels
   sim_units: units.SimUnits
   tracer_names: Sequence[str]
-  observation_correction: learned_transforms.UnaryFieldTowerTransform | None
+  observation_correction: learned_transforms.ForwardTowerTransform | None
   mesh: parallelism.Mesh
 
   def observe(
@@ -141,7 +141,7 @@ class SigmaLevelObservationOperator(
   target_sigma_levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
   tracer_names: Sequence[str]
-  observation_correction: learned_transforms.UnaryFieldTowerTransform | None
+  observation_correction: learned_transforms.ForwardTowerTransform | None
   mesh: parallelism.Mesh
 
   def observe(

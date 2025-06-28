@@ -82,7 +82,7 @@ class Evaluator(Generic[M]):
         else collections.defaultdict(lambda: self.aggregators)
     )  # defaultdict effectively implements sharing of single getter/aggregator.
     agg_states = {}
-    for k, metric in self.metrics.items():
+    for k, metric in sorted(self.metrics.items()):
       agg_states[k] = self._evaluate_single(
           metric, aggregators[k], getters[k], predictions, targets
       )
@@ -103,7 +103,7 @@ class Evaluator(Generic[M]):
     if agg_states is None:
       agg_states = self.evaluate(predictions, targets)
     total_loss = cx.wrap(0.0)
-    for loss_key, loss in self.metrics.items():
+    for loss_key, loss in sorted(self.metrics.items()):
       assert isinstance(loss, base.Loss)  # make pytype happy.
       metric_values = agg_states[loss_key].metric_values(loss)
       term_total = loss.total(metric_values)

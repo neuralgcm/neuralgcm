@@ -123,10 +123,140 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
 
 
 @nnx_compat.dataclass
-class WeightedLandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
-  """Combines FieldTowerTransformsTransforms for landd, sea and sea ice.
+class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
+  """Transforms fields with TransformerTower and splits the output to fields.
 
-  Outputs are computed by evaluating ForwardTowerTransforms for each
+  Attributes:
+    targets: A dictionary mapping output names to their coordinates.
+    tower: The TransformerTower to apply to generated inputs, latents and mask.
+    inputs_transform: Transform to extract fields that make up inputs.
+    latents_transform: Transform to extract fields that make up latents input.
+    mask_values_transform: Transform to extract fields that make up the
+      attention mask.
+    dims_to_align: A tuple of dimsension names or coordinates used to align
+      fields when combining inputs and splitting outputs.
+    feature_sharding_schema: Optional features sharding schema.
+    result_sharding_schema: Optional result sharding schema.
+    mesh: The `parallelism.Mesh` used for sharding.
+  """
+
+  targets: dict[str, cx.Coordinate]
+  tower: towers.TransformerTower
+  input_dims_to_align: tuple[str | cx.Coordinate, ...]
+  inputs_transform: transforms.Transform = transforms.Identity()
+  latents_transform: transforms.Transform = transforms.Empty()
+  mask_values_transform: transforms.Transform = transforms.Empty()
+  out_transform: transforms.Transform = transforms.Identity()
+  latent_dims_to_align: tuple[str | cx.Coordinate, ...] | None = None
+  feature_sharding_schema: str | None = None
+  result_sharding_schema: str | None = None
+  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    feature_schema = self.feature_sharding_schema
+    result_schema = self.result_sharding_schema
+    with_features_sharding = (
+        lambda x: self.mesh.with_sharding_constraint(x, feature_schema)
+    )
+    with_results_sharding = (
+        lambda x: self.mesh.with_sharding_constraint(x, result_schema)
+    )
+    z_mask_dims_to_align = self.latent_dims_to_align or self.input_dims_to_align
+    c_tag = self.tower.inputs_in_dims[0]  # tag for the channel dimension.
+    f_combine = lambda f, dims: (
+        field_utils.combine_fields(with_features_sharding(f), dims, c_tag)
+        if f else None
+    )
+    x = f_combine(self.inputs_transform(inputs), self.input_dims_to_align)
+    z = f_combine(self.latents_transform(inputs), z_mask_dims_to_align)
+    mask_dims_to_align = self.latent_dims_to_align or self.input_dims_to_align
+    mask = f_combine(self.mask_values_transform(inputs), mask_dims_to_align)
+    out_field = self.tower(inputs=x, latents=z, mask=mask)
+    out_fields = field_utils.split_to_fields(out_field, self.targets)
+    out_fields = with_results_sharding(out_fields)
+    return self.out_transform(out_fields)
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_shapes: dict[str, cx.Field],
+      targets: dict[str, cx.Coordinate],
+      tower_factory: towers.TransformerTowerFactory,
+      input_dims_to_align: tuple[str | cx.Coordinate, ...],
+      inputs_transform: transforms.Transform = transforms.Identity(),
+      latents_transform: transforms.Transform = transforms.Empty(),
+      mask_values_transform: transforms.Transform = transforms.Empty(),
+      out_transform: transforms.Transform = transforms.Identity(),
+      latent_dims_to_align: tuple[str | cx.Coordinate, ...] | None = None,
+      feature_sharding_schema: str | None = None,
+      result_sharding_schema: str | None = None,
+      *,
+      mesh: parallelism.Mesh,
+      rngs,
+  ):
+    """Builds a TransformerTowerTransform using factories for submodules.
+
+    Args:
+      input_shapes: A dictionary of fields with the same shape structure as
+        expected inputs. Used to determine the input sizes for the tower.
+      targets: A dictionary mapping output field names to their coordinates.
+        Used to determine the output size for the tower and for the `targets`
+        attribute of the transform.
+      tower_factory: A factory function that creates the TransformerTower. It
+        should accept input_size, output_size, and rngs as arguments.
+      input_dims_to_align: A tuple of dimension names or coordinates used to
+        align fields when combining the main inputs for the tower.
+      inputs_transform: Optional transform to be applied to inputs to extract
+        fields that will form the main `inputs` to the tower.
+      latents_transform: Optional transform to extract fields that will form the
+        `latents` input to the tower. Defaults to `transforms.Empty()`.
+      mask_values_transform: Optional transform to extract fields that will form
+        the `mask` for the tower's attention mechanism. Defaults to
+        `transforms.Empty()`.
+      out_transform: Optional transform to be applied to module outputs.
+      latent_dims_to_align: Optional tuple of dimension names or coordinates
+        used to align fields when combining latents. If None, and latents are
+        used, `input_dims_to_align` might be implicitly used or behavior might
+        depend on tower implementation.
+      feature_sharding_schema: Optional features sharding schema.
+      result_sharding_schema: Optional result sharding schema.
+      mesh: The `parallelism.Mesh` used for sharding.
+      rngs: The random number generators for initializing the tower.
+
+    Returns:
+      An instance of TransformerTowerTransform.
+    """
+    inputs_in_shapes = inputs_transform.output_shapes(input_shapes)
+    inputs_field_shape = nnx.eval_shape(
+        field_utils.combine_fields, inputs_in_shapes, input_dims_to_align
+    )
+    out_shapes = field_utils.shape_struct_fields_from_coords(targets)
+    out_field_shape = nnx.eval_shape(
+        field_utils.combine_fields, out_shapes, input_dims_to_align,
+    )
+    input_size = inputs_field_shape.positional_shape[0]
+    output_size = out_field_shape.positional_shape[0]
+    tower = tower_factory(input_size, output_size, rngs=rngs)
+    return cls(
+        targets=targets,
+        tower=tower,
+        input_dims_to_align=input_dims_to_align,
+        inputs_transform=inputs_transform,
+        latents_transform=latents_transform,
+        mask_values_transform=mask_values_transform,
+        latent_dims_to_align=latent_dims_to_align,
+        out_transform=out_transform,
+        feature_sharding_schema=feature_sharding_schema,
+        result_sharding_schema=result_sharding_schema,
+        mesh=mesh,
+    )
+
+
+@nnx_compat.dataclass
+class WeightedLandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
+  """Combines FieldTowerTransforms for land, sea and sea ice.
+
+  Outputs are computed by evaluating ForwardTower for each
   component, followed by a weighted sum based on the fraction of each land, sea
   and sea icea at each grid level.
 

@@ -25,6 +25,7 @@ These transformations are most often used in two different settings:
 from __future__ import annotations
 
 import abc
+import itertools
 import re
 from typing import Callable, Literal, Protocol, Sequence
 
@@ -33,13 +34,16 @@ import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import normalizations
+from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
+import numpy as np
 
 
 class TransformParams(nnx.Variable):
@@ -222,6 +226,143 @@ class Islice(TransformABC):
     return {k: cx.cmap(slice_fn)(v.untag(self.dim)) for k, v in inputs.items()}
 
 
+@nnx_compat.dataclass
+class Sel(TransformABC):
+  """Selects a slice and an index along a specified dimensions."""
+
+  sel_arg: dict[str, slice | float | int | np.ndarray | None]
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    """Applies sel operation to all Fields in inputs."""
+    if len(self.sel_arg) != 1:
+      raise ValueError('Sel only supports 1d slice.')
+    # TODO(dkochkov): use .sel method of Field once added.
+    dim, selection = tuple(*self.sel_arg.items())
+    slices = {}
+    for k, field in inputs.items():
+      if dim in field.dims and selection is not None:
+        if isinstance(selection, slice):
+          raise NotImplementedError('Sel with slice is not supported yet')
+        matches = field.coord_fields[dim].data == selection
+        indices = np.argwhere(matches).astype(int).ravel()
+        f = field.untag(dim)
+        # pylint: disable=cell-var-from-loop
+        if indices.size > 1 or indices.size == 0:
+          raise ValueError('Currently only single value slices are supported.')
+        elif indices.size == 1:
+          slices[k] = cx.cmap(lambda x: x[indices.squeeze()])(f)
+          assert not slices[k].positional_shape  # should never happen.
+        # pylint: enable=cell-var-from-loop
+      else:
+        slices[k] = field
+    return slices
+
+
+def _get_shared_axis(
+    inputs: dict[str, cx.Field], axis: str | cx.Coordinate
+) -> cx.Coordinate | str:
+  """Returns shared coordinate or axis_name corresponding to `axis`."""
+  # TODO(dkochkov): Always return cx.Coordinate for consistency?
+  if isinstance(axis, cx.Coordinate) and axis.ndim != 1:
+    raise ValueError(f'shared axis must be 1d, got {axis.ndim=}')
+  ax_name = axis if isinstance(axis, str) else axis.dims[0]
+  candidates = set(
+      v.axes.get(ax_name, ax_name if ax_name in v.dims else None)
+      for v in inputs.values()
+  )
+  candidates = candidates | set([ax_name])  # add fallback to ax_name.
+  if None in candidates:
+    raise ValueError(
+        f'Cannot get shared axis for dim {ax_name} in {inputs=} because it is '
+        'not present in all fields.'
+    )
+  ax = ax_name
+  candidates.remove(ax_name)  # guaranteed to be present since added explicitly.
+  if len(candidates) > 1:
+    raise ValueError(f'Encountered multiple {candidates=} for axis {ax_name}')
+  if len(candidates) == 1:
+    ax = candidates.pop()
+  return ax
+
+
+@nnx_compat.dataclass
+class ApplyToKeys(TransformABC):
+  """Wrapper transform that is applied to a subset of keys.
+
+  This is a helper transform that applies `transform` to `keys` and keeps the
+  rest of the inputs unchanged. It is equivalent to:
+  merge(select(inputs, !keys), transform(select(inputs, keys)))
+  """
+
+  transform: Transform
+  keys: Sequence[str]
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    to_transform = {k: v for k, v in inputs.items() if k in self.keys}
+    keep_as_is = {k: v for k, v in inputs.items() if k not in self.keys}
+    return self.transform(to_transform) | keep_as_is
+
+
+@nnx_compat.dataclass
+class ApplyOverAxisWithScan(TransformABC):
+  """Wrapper transform that applies `transform` over `axis` using scan."""
+
+  transform: Transform
+  axis: str | cx.Coordinate
+  apply_remat: bool = False
+
+  def _out_dims_order(
+      self, in_dims: tuple[str, ...], out_dims: tuple[str, ...]
+  ) -> tuple[str, ...]:
+    """Returns new dimensions order that aligns with in_dims where possible."""
+    backfill_dims = [d for d in out_dims if d not in in_dims]
+    backfill_iter = iter(backfill_dims)
+    merged_dims = (
+        d if d in out_dims else next(backfill_iter, None) for d in in_dims
+    )
+    full_iterator = itertools.chain(merged_dims, backfill_iter)
+    return tuple(x for x in full_iterator if x is not None)
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    ax = _get_shared_axis(inputs, self.axis)  # raises if ax is not 1d.
+    original_order = {k: v.dims for k, v in inputs.items()}
+    inputs = {k: v.order_as(self.axis, ...) for k, v in inputs.items()}
+    inputs = cx.untag(
+        inputs, ax.dims[0] if isinstance(ax, cx.Coordinate) else ax
+    )  # already checked ax.ndim == 1.
+
+    def _process(transform, x):
+      if self.apply_remat:
+        processed = nnx.remat(transform)(x)
+      else:
+        processed = transform(x)
+      return transform, processed
+
+    scan_over_axis = nnx.scan(
+        _process,
+        in_axes=(nnx.Carry, 0),
+        out_axes=(nnx.Carry, 0),
+    )
+    self.transform, scanned = scan_over_axis(self.transform, inputs)
+    scanned = cx.tag(scanned, ax)
+    scanned = {
+        k: v.order_as(*self._out_dims_order(original_order[k], v.dims))
+        for k, v in scanned.items()
+    }
+    return scanned
+
+
+@nnx_compat.dataclass
+class AddShardingConstraint(TransformABC):
+  """Adds a sharding constraint to all fields in `inputs`."""
+
+  mesh: parallelism.Mesh
+  schema: str | tuple[str, ...]
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    return self.mesh.with_sharding_constraint(inputs, self.schema)
+
+
 class ShiftAndNormalize(TransformABC):
   """Applies (x - shift) / scale to all input fields when reverse is False.
 
@@ -299,8 +440,19 @@ class ClipWavenumbers(TransformABC):
   wavenumbers_to_clip: int = 1
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    """Returns `inputs` where only last sigma level is retained."""
+    """Returns `inputs` with top `wavenumbers_to_clip` set to zero."""
     return self.grid.clip_wavenumbers(inputs, self.wavenumbers_to_clip)
+
+
+@nnx_compat.dataclass
+class Regrid(TransformABC):
+  """Applies `self.regridder` to `inputs`."""
+
+  regridder: interpolators.BaseRegridder
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    """Returns `inputs` regridded with `self.regridder`."""
+    return self.regridder(inputs)
 
 
 @nnx_compat.dataclass
@@ -385,12 +537,23 @@ class Redimensionalize(TransformABC):
 
 
 @nnx_compat.dataclass
+class RemovePrefix(TransformABC):
+  """Transforms inputs by removing `prefix` from dictionary keys."""
+
+  prefix: str
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    return {k.removeprefix(self.prefix): v for k, v in inputs.items()}
+
+
+@nnx_compat.dataclass
 class TanhClip(TransformABC):
   """Clips inputs to (-scale, scale) range via tanh function.
 
   Attributes:
     scale: A positive float that determines the range of the outputs.
   """
+
   scale: float
 
   def __post_init__(self):

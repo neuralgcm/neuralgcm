@@ -103,7 +103,7 @@ class AggregationState:
       return {}
 
     return jax.tree.map(
-        lambda x, w: x / w,
+        lambda x, w: x / cx.cmap(functools.partial(jnp.clip, min=1e-8))(w),
         self.sum_weighted_statistics,
         self.sum_weights,
         is_leaf=cx.is_field,

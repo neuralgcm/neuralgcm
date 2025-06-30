@@ -23,7 +23,7 @@ authors = [
     {name = "Google LLC", email = "noreply@google.com"},
 ]
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "dinosaur>=1.3.3",
@@ -37,6 +37,9 @@ dependencies = [
     "tensorflow_probability",
     "xarray",
 ]
+
+[project.urls]
+source-code = "https://github.com/neuralgcm/neuralgcm"
 
 [project.optional-dependencies]
 tests = [

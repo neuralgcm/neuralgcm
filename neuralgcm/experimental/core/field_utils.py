@@ -29,7 +29,7 @@ def _validate_aligned_dims(
 ) -> None:
   """Validates that all fields in `fields` are aligned with `dims_to_align`."""
   uniques, counts = np.unique(aligned_dims, return_counts=True)
-  if counts.max() > 1:
+  if counts.size > 0 and counts.max() > 1:
     repeated_dims = [str(x) for x in uniques[counts > 1]]
     raise ValueError(
         f'`dims_to_align` must be unique, but got {repeated_dims=}.'

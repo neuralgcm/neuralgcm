@@ -15,12 +15,31 @@
 """Modules that interpolate data from one coordinate system to another."""
 
 import dataclasses
+from typing import Protocol, overload
 
+from dinosaur import horizontal_interpolation
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import typing
+
+
+class BaseRegridder(Protocol):
+  """Base class for regridders."""
+
+  @overload
+  def __call__(self, inputs: cx.Field) -> cx.Field:
+    ...
+
+  @overload
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    ...
+
+  def __call__(
+      self, inputs: cx.Field | dict[str, cx.Field]
+  ) -> cx.Field | dict[str, cx.Field]:
+    ...
 
 
 @dataclasses.dataclass(frozen=True)
@@ -40,9 +59,9 @@ class SpectralRegridder:
     lon_slice = slice(0, target_lon_wavenumbers)
     total_slice = slice(0, target_total_wavenumbers)
     field = field.untag('longitude_wavenumber', 'total_wavenumber')
-    result = cx.cmap(
-        lambda x: x[lon_slice, total_slice], field.named_axes
-    )(field)
+    result = cx.cmap(lambda x: x[lon_slice, total_slice], field.named_axes)(
+        field
+    )
     return result.tag(self.target_coords)
 
   def pad_to_target_wavenumbers(
@@ -88,3 +107,75 @@ class SpectralRegridder:
         inputs,
         is_leaf=is_field,
     )
+
+
+@dataclasses.dataclass
+class ConservativeRegridder:
+  """Regrids fields between two LonLatGrids using conservative interpolation."""
+
+  target_grid: coordinates.LonLatGrid
+  skipna: bool = False
+
+  def lat_weights(self, source_grid: coordinates.LonLatGrid):
+    """Conservative regridding weights for the latitude dimension."""
+    s_lat = jnp.deg2rad(source_grid.fields['latitude'].data)
+    t_lat = jnp.deg2rad(self.target_grid.fields['latitude'].data)
+    return horizontal_interpolation.conservative_latitude_weights(s_lat, t_lat)
+
+  def lon_weights(self, source_grid: coordinates.LonLatGrid):
+    """Conservative regridding weights for the longitude dimension."""
+    s_lon = jnp.deg2rad(source_grid.fields['longitude'].data)
+    t_lon = jnp.deg2rad(self.target_grid.fields['longitude'].data)
+    return horizontal_interpolation.conservative_longitude_weights(s_lon, t_lon)
+
+  def _regrid_2d(
+      self, array: jax.Array, source_grid: coordinates.LonLatGrid
+  ) -> jax.Array:
+    """Applies conservative regridding to a 2D array."""
+
+    def _mean(data: jax.Array) -> jax.Array:
+      return jnp.einsum(
+          'ab,cd,bd->ac',
+          self.lon_weights(source_grid),
+          self.lat_weights(source_grid),
+          data,
+          precision='float32',
+      )
+
+    not_nulls = jnp.logical_not(jnp.isnan(array))
+    mean = _mean(jnp.where(not_nulls, array, 0))
+    not_null_fraction = _mean(not_nulls)
+
+    if self.skipna:
+      return mean / not_null_fraction  # intended NaN if not_null_fraction == 0
+    else:
+      # If not_null_fraction is not close to 1, it means some source cells
+      # were NaN. In this case, the target cell becomes NaN.
+      return jnp.where(
+          jnp.isclose(not_null_fraction, 1.0, rtol=1e-3),
+          mean / not_null_fraction,
+          jnp.nan,
+      )
+
+  @overload
+  def __call__(self, inputs: cx.Field) -> cx.Field:
+    ...
+
+  @overload
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    ...
+
+  def __call__(
+      self, inputs: cx.Field | dict[str, cx.Field]
+  ) -> cx.Field | dict[str, cx.Field]:
+    """Regrids a dictionary of fields to the target grid."""
+    if isinstance(inputs, dict):
+      return {k: self.__call__(v) for k, v in inputs.items()}
+
+    x = inputs
+    lon_lat_dims = ('longitude', 'latitude')
+    source_grid = cx.compose_coordinates(*[x.axes.get(d) for d in lon_lat_dims])
+    x = inputs.untag(source_grid)
+    regrid_fn = cx.cmap(self._regrid_2d, x.named_axes)
+    x = regrid_fn(x, source_grid)
+    return x.tag(self.target_grid)

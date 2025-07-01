@@ -17,10 +17,10 @@
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import coordax as cx
 from flax import nnx
 import jax
 import jax_datetime as jdt
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.atmosphere import observation_operators
 from neuralgcm.experimental.core import coordinates

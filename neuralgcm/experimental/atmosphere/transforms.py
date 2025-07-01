@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import functools
 
+import coordax as cx
 from dinosaur import spherical_harmonic
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism

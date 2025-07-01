@@ -20,9 +20,9 @@ import datetime
 import functools
 from typing import Any, Callable, Generic, TypeVar
 
+import coordax as cx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import scales
 import numpy as np
 import pandas as pd

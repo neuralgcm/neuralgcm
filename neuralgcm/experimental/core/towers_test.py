@@ -17,10 +17,10 @@ import functools
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
@@ -215,7 +215,9 @@ class TransformerTowerTest(parameterized.TestCase):
     )
     inputs = cx.wrap(
         jnp.ones(din.shape + self.levels.shape + vectorized_x.shape),
-        din, self.levels, vectorized_x,
+        din,
+        self.levels,
+        vectorized_x,
     )
     out = tower(inputs)
     expected_out_coord = cx.compose_coordinates(dout, self.levels, vectorized_x)
@@ -286,12 +288,16 @@ class TransformerTowerTest(parameterized.TestCase):
     vectorize_axis_1 = cx.SizedAxis('x', 3)
     inputs = cx.wrap(
         jnp.ones((input_size,) + self.levels.shape + vectorize_axis_1.shape),
-        'din', self.levels, vectorize_axis_1,
+        'din',
+        self.levels,
+        vectorize_axis_1,
     )
     vectorize_axis_2 = cx.SizedAxis('y', 3)
     latents = cx.wrap(
         jnp.ones((input_size,) + latents_levels.shape + vectorize_axis_2.shape),
-        'din', latents_levels, vectorize_axis_2,
+        'din',
+        latents_levels,
+        vectorize_axis_2,
     )
     with self.assertRaisesRegex(
         ValueError,

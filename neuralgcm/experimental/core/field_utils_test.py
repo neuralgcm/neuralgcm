@@ -16,8 +16,8 @@ import re
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 import jax
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import field_utils
 import numpy as np
 

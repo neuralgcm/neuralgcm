@@ -15,13 +15,12 @@
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
 import dataclasses
-
 from typing import Literal
 
+import coordax as cx
 from dinosaur import sigma_coordinates
 from flax import nnx
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
@@ -110,8 +109,8 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
     precipitation_scaling: Scaling strategy for the precipitation field. Must be
       one of `rate`, `mass_rate` or `cumulative`. If using `cumulative` scaling,
       `dt` must be set.
-    evaporation_scaling: Scaling strategy for the evaporation field. Must be
-      one of `rate`, `mass_rate` or `cumulative`. If using `cumulative` scaling,
+    evaporation_scaling: Scaling strategy for the evaporation field. Must be one
+      of `rate`, `mass_rate` or `cumulative`. If using `cumulative` scaling,
       `dt` must be set.
     dt: Timestep by which the precipitation is scaled (only used when
       `precipitation_scaling` is set to `cumulative`).

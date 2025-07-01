@@ -18,9 +18,9 @@ import functools
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 from flax import nnx
 from jax import config  # pylint: disable=g-importing-member
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import feature_transforms
 from neuralgcm.experimental.core import learned_transforms
@@ -155,16 +155,14 @@ class LearnedSparseScalarObservationFromNeighborsTest(parameterized.TestCase):
         neural_net_factory=layer_factory,
     )
     prediction_targets = {'temperature': cx.Scalar(), 'wind_speed': cx.Scalar()}
-    self.operator = (
-        observation_operators.LearnedSparseScalarObservationFromNeighbors.build_using_factories(
-            target_predictions=prediction_targets,
-            grid=self.grid,
-            grid_features=feature_module,
-            tower_factory=tower_factory,
-            input_shapes={},
-            mesh=parallelism.Mesh(None),
-            rngs=nnx.Rngs(0),
-        )
+    self.operator = observation_operators.LearnedSparseScalarObservationFromNeighbors.build_using_factories(
+        target_predictions=prediction_targets,
+        grid=self.grid,
+        grid_features=feature_module,
+        tower_factory=tower_factory,
+        input_shapes={},
+        mesh=parallelism.Mesh(None),
+        rngs=nnx.Rngs(0),
     )
 
   def test_output_structure(self):

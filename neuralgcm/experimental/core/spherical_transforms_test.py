@@ -15,10 +15,10 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 from dinosaur import spherical_harmonic
 import jax
 from jax import config  # pylint: disable=g-importing-member
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_transforms

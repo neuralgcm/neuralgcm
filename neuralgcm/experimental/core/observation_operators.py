@@ -18,9 +18,9 @@ import abc
 import copy
 import dataclasses
 
+import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import nnx_compat

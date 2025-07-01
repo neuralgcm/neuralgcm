@@ -19,9 +19,9 @@ import re
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 import jax
 from jax import config  # pylint: disable=g-importing-member
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import parallelism
 import numpy as np
 
@@ -107,14 +107,10 @@ class MeshTest(parameterized.TestCase):
     array_vertical = mesh.with_sharding_constraint(input_array, 'vertical')
     actual_shard_shape = array_vertical.sharding.shard_shape(shape)
     self.assertEqual(actual_shard_shape, (16 // (2 * 2 * 2), 8, 14))
-    array_horizontal = mesh.with_sharding_constraint(
-        input_array, 'horizontal'
-    )
+    array_horizontal = mesh.with_sharding_constraint(input_array, 'horizontal')
     actual_shard_shape = array_horizontal.sharding.shard_shape(shape)
     self.assertEqual(actual_shard_shape, (16, 8 // (2 * 2), 14 // 2))
-    array_replicated = mesh.with_sharding_constraint(
-        input_array, 'replicated'
-    )
+    array_replicated = mesh.with_sharding_constraint(input_array, 'replicated')
     actual_shard_shape = array_replicated.sharding.shard_shape(shape)
     self.assertEqual(actual_shard_shape, shape)
 
@@ -231,7 +227,7 @@ class HelperFunctionsTest(parameterized.TestCase):
     actual = parallelism.rearrange_spmd_mesh(spmd_mesh, partition, dim_to_ax)
     expected = jax.sharding.Mesh(
         np.swapaxes(devices.reshape((1, 1, 1, 2, 4)), 3, 4),
-        axis_names=('e', 'a', 'z', 'x', 'y')
+        axis_names=('e', 'a', 'z', 'x', 'y'),
     )
     self.assertEqual(actual, expected)
 
@@ -276,7 +272,8 @@ class HelperFunctionsTest(parameterized.TestCase):
     )
     array_partitions = {
         'physics_3d': (None, ('x', 'z'), 'y'),
-        'physics_2d': (('x', 'z'), 'y')}
+        'physics_2d': (('x', 'z'), 'y'),
+    }
     mesh = parallelism.Mesh(
         spmd_mesh=spmd_mesh, array_partitions=array_partitions
     )

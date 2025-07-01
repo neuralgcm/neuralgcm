@@ -16,8 +16,8 @@
 
 import abc
 
+import coordax as cx
 from flax import nnx
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 

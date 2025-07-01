@@ -16,9 +16,9 @@
 
 import dataclasses
 
+import coordax as cx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import typing
 
@@ -40,9 +40,9 @@ class SpectralRegridder:
     lon_slice = slice(0, target_lon_wavenumbers)
     total_slice = slice(0, target_total_wavenumbers)
     field = field.untag('longitude_wavenumber', 'total_wavenumber')
-    result = cx.cmap(
-        lambda x: x[lon_slice, total_slice], field.named_axes
-    )(field)
+    result = cx.cmap(lambda x: x[lon_slice, total_slice], field.named_axes)(
+        field
+    )
     return result.tag(self.target_coords)
 
   def pad_to_target_wavenumbers(

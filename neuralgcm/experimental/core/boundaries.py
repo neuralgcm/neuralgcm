@@ -15,10 +15,10 @@
 """Defines boundary conditions for standard computational domains."""
 
 import abc
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing

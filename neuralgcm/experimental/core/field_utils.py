@@ -18,9 +18,9 @@ import functools
 import itertools
 from typing import Sequence
 
+import coordax as cx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 import numpy as np
 
 

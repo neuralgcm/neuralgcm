@@ -16,9 +16,9 @@
 
 import dataclasses
 
+import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
@@ -85,8 +85,8 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
       targets: A dictionary mapping output field names to their coordinates.
         Used to determine the output size for the tower and for the `targets`
         attribute of the transform.
-      tower_factory: A factory function that creates the ForwardTower. It
-        should accept input_size, output_size, and rngs as arguments.
+      tower_factory: A factory function that creates the ForwardTower. It should
+        accept input_size, output_size, and rngs as arguments.
       dims_to_align: A tuple of dimension names or coordinates used to align
         fields when combining inputs and splitting outputs.
       in_transform: Optional transform to be applied to inputs.

@@ -16,9 +16,9 @@ from typing import Callable
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import coordax as cx
+from coordax import testing as coordax_testing
 import jax
-from neuralgcm.experimental import coordax as cx
-from neuralgcm.experimental.coordax import testing as coordax_testing
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 import numpy as np

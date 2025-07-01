@@ -19,11 +19,11 @@ import abc
 import dataclasses
 from typing import Callable
 
+import coordax as cx
 import fiddle as fdl
 from flax import nnx
 import jax
 import jax_datetime as jdt
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import dynamic_io

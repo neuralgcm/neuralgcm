@@ -16,9 +16,9 @@
 import dataclasses
 from typing import Literal, overload
 
+import coordax as cx
 from dinosaur import spherical_harmonic
 import jax
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import typing

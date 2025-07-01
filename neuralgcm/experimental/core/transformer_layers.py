@@ -22,11 +22,11 @@ import itertools
 import math
 from typing import Callable, Protocol, Self, Sequence
 
+import coordax as cx
 import einops
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
@@ -609,8 +609,8 @@ class TransformerBase(nnx.Module, abc.ABC):
       use_bias_in_attention: If True, `MultiHeadAttention` includes bias.
       pre_normalization_factory: factory for pre-normalization layers.
       post_normalization_factory: factory for post-normalization layers.
-      gating: Gating function(s). Defaults to no gating. If None, a
-        "where possible" gating strategy is used.
+      gating: Gating function(s). Defaults to no gating. If None, a "where
+        possible" gating strategy is used.
       dense_factory: Factory for dense layers post-attention.
       normalize_qk: whether to add layer norm prior to computing query and key.
       normalize_v: whether to add layer norm prior to computing value.
@@ -1043,7 +1043,9 @@ class WindowTransformerBlocks(TransformerBase):
           self.inputs_bc,
       )
       kv_pe_windows = self._to_windows(
-          kv_pos_encoding, self.kv_window_shape, self.kv_bc,
+          kv_pos_encoding,
+          self.kv_window_shape,
+          self.kv_bc,
       )
       attention_bias = self._attention_bias(q_pe_windows, kv_pe_windows)
       result = attention(
@@ -1084,7 +1086,9 @@ class WindowTransformerBlocks(TransformerBase):
       if mask is not None:
         # adding shifting, see comment above similar transform on query above.
         mask = self._from_windows(
-            mask, self.kv_window_shape, self.kv_bc,
+            mask,
+            self.kv_window_shape,
+            self.kv_bc,
             spatial_shape=kv_shape[1:],
         )
         mask = self._to_windows(
@@ -1284,7 +1288,7 @@ class SphericalPositionalEncoder(nnx.Module):
     grid = cx.compose_coordinates(*[inputs.axes.get(d) for d in lon_lat_dims])
     if not isinstance(grid, coordinates.LonLatGrid):
       raise ValueError(
-          f'SphericalPositionalEncoder generates encoding for LonLatGrid data '
+          'SphericalPositionalEncoder generates encoding for LonLatGrid data '
           f'but inputs has coordinates {grid=}'
       )
     l_max, l_min = self.l_max, self.l_min

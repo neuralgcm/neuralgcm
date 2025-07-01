@@ -16,8 +16,8 @@
 
 import copy
 
+import coordax as cx
 from flax import nnx
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.atmosphere import transforms as atm_transforms
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism

@@ -17,11 +17,11 @@
 import collections
 from typing import TypeVar, cast
 
+import coordax as cx
 from dinosaur import spherical_harmonic
 from dinosaur import xarray_utils as dino_xarray_utils
 import jax
 import jax_datetime as jdt
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import scales

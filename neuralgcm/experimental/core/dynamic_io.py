@@ -17,11 +17,11 @@
 import abc
 import functools
 
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import typing
 import numpy as np

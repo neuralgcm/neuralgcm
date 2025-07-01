@@ -17,10 +17,10 @@ import abc
 from collections.abc import Sequence
 import zlib
 
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing

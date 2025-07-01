@@ -8,8 +8,6 @@ packages = [
     "neuralgcm.experimental",
     "neuralgcm.experimental.atmosphere",
     "neuralgcm.experimental.core",
-    "neuralgcm.experimental.coordax",
-    "neuralgcm.experimental.jax_solar",
     "neuralgcm.experimental.xreader",
     "neuralgcm.legacy",
 ]
@@ -49,12 +47,14 @@ tests = [
     "pytest",
 ]
 experimental = [
+    "coordax",
     "einops",
     "etils",
     "fiddle",
     "flax",
     "grain",
     "jax-datetime",
+    "jax-solar",
     "orbax",
     "treescope",
 ]

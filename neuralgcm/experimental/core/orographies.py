@@ -14,10 +14,10 @@
 
 """Modules that hold orographic data."""
 
+import coordax as cx
 from dinosaur import xarray_utils as dino_xarray_utils
 from flax import nnx
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import spatial_filters

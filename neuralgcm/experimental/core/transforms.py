@@ -28,10 +28,10 @@ import abc
 import re
 from typing import Callable, Literal, Protocol, Sequence
 
+import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
 import jax_datetime as jdt
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import normalizations
@@ -391,6 +391,7 @@ class TanhClip(TransformABC):
   Attributes:
     scale: A positive float that determines the range of the outputs.
   """
+
   scale: float
 
   def __post_init__(self):

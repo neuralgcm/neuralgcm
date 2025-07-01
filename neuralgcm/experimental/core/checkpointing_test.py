@@ -19,10 +19,10 @@ import tempfile
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 from fiddle.experimental import auto_config
 from flax import nnx
 import jax
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import checkpointing
 from neuralgcm.experimental.core import coordinates

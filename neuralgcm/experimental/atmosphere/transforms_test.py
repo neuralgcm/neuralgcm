@@ -17,9 +17,9 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 import jax
 import jax_datetime as jdt
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.atmosphere import transforms as atmos_transforms
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism

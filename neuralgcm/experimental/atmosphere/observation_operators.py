@@ -18,9 +18,9 @@ import copy
 import dataclasses
 from typing import Sequence
 
+import coordax as cx
 from dinosaur import primitive_equations as dinosaur_primitive_equations
 import jax
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.atmosphere import state_conversion
 from neuralgcm.experimental.core import coordinates
@@ -119,9 +119,7 @@ class PressureLevelObservationOperator(
 
 
 @dataclasses.dataclass
-class SigmaLevelObservationOperator(
-    observation_operators.ObservationOperator
-):
+class SigmaLevelObservationOperator(observation_operators.ObservationOperator):
   """Operator that predicts sigma-level observations on lon-lat grids.
 
   This operator is compatible with models that use primitive equation
@@ -162,7 +160,7 @@ class SigmaLevelObservationOperator(
     time = inputs.pop('time')
     target_coords = coordinates.DinosaurCoordinates(
         horizontal=self.ylm_transform.nodal_grid,
-        vertical=self.target_sigma_levels
+        vertical=self.target_sigma_levels,
     )
     # TODO(dkochkov): make primitive_equation_to_uvtz work with flat structure
     # to avoid the need to nesting tracers.

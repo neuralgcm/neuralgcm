@@ -17,10 +17,10 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import module_utils
 import numpy as np
@@ -148,6 +148,7 @@ class DiagnosticsTest(parameterized.TestCase):
       }
       actual_final = diagnostic.format_diagnostics(None)
       chex.assert_trees_all_close(expected_final, actual_final)
+
 
 if __name__ == '__main__':
   jax.config.parse_flags_with_absl()

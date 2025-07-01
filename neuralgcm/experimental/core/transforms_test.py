@@ -17,8 +17,8 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 import jax
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import transforms
 import numpy as np
@@ -63,13 +63,16 @@ class TransformsTest(parameterized.TestCase):
     data = 0.3 + 0.5 * jax.random.normal(rng, shape=(b.shape + x.shape))
     inputs = {'data': cx.wrap(data, b, x)}
     normalize = transforms.ShiftAndNormalize(
-        shift=cx.wrap(np.mean(data)), scale=cx.wrap(np.std(data)),
+        shift=cx.wrap(np.mean(data)),
+        scale=cx.wrap(np.std(data)),
     )
     out = normalize(inputs)
     np.testing.assert_allclose(np.mean(out['data'].data), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.std(out['data'].data), 1.0, atol=1e-6)
     inverse_normalize = transforms.ShiftAndNormalize(
-        shift=cx.wrap(np.mean(data)), scale=cx.wrap(np.std(data)), reverse=True,
+        shift=cx.wrap(np.mean(data)),
+        scale=cx.wrap(np.std(data)),
+        reverse=True,
     )
     reconstructed = inverse_normalize(out)
     np.testing.assert_allclose(reconstructed['data'].data, data, atol=1e-6)
@@ -78,6 +81,7 @@ class TransformsTest(parameterized.TestCase):
     x = cx.SizedAxis('x', 3)
 
     class AddOne(transforms.TransformABC):
+
       def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
         return {k: v + 1 for k, v in inputs.items()}
 

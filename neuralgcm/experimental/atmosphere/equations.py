@@ -16,11 +16,11 @@
 
 from typing import Callable, Sequence
 
+import coordax as cx
 from dinosaur import coordinate_systems
 from dinosaur import primitive_equations
 from dinosaur import sigma_coordinates
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_transforms

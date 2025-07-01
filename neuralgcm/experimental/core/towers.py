@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+import coordax as cx
 from flax import nnx
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import transformer_layers
@@ -146,7 +146,7 @@ class TransformerTower(nnx.Module):
         lambda y: () if y is None else tuple(sorted(y.named_shape.items()))
     )
     named_shapes = set([named_shape(x), named_shape(z), named_shape(mask)])
-    if (len(named_shapes - set([()])) > 1):
+    if len(named_shapes - set([()])) > 1:
       raise ValueError(
           f'Vectorized dimensions on {x, z, mask} do not match'
           f' {[named_shape(x), named_shape(z), named_shape(mask)]}'

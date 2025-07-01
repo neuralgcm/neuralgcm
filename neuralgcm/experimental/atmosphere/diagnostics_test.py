@@ -19,10 +19,10 @@ import functools
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.atmosphere import diagnostics as atmos_diagnostics
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import learned_transforms

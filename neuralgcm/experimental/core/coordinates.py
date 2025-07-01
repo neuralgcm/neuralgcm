@@ -18,15 +18,15 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-from typing import Any, cast, Iterable, Literal, Self, TYPE_CHECKING
+from typing import Any, Iterable, Literal, Self, TYPE_CHECKING, cast
 
+import coordax as cx
 from dinosaur import coordinate_systems as dinosaur_coordinates
 from dinosaur import sigma_coordinates
 from dinosaur import spherical_harmonic
 from dinosaur import vertical_interpolation
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 import numpy as np
 import treescope
 import xarray
@@ -505,9 +505,7 @@ class SphericalHarmonicGrid(cx.Coordinate):
         for i, (k, v) in enumerate(zip(self.dims, [ms, ls]))
     }
 
-  def clip_wavenumbers(
-      self, inputs: Any, n: int
-  ) -> Any:
+  def clip_wavenumbers(self, inputs: Any, n: int) -> Any:
     if n <= 0:
       raise ValueError(f'`n` must be >= 0; got {n}.')
 

@@ -16,11 +16,10 @@
 
 import abc
 import dataclasses
-
 from typing import Any, Callable
 
+import coordax as cx
 import jax
-from neuralgcm.experimental import coordax as cx
 
 
 @dataclasses.dataclass
@@ -53,6 +52,7 @@ class CoordQuerySpec(DataSpec):
   expected_query = {'burgers': {'y': x_coordinate}}
   ```
   """
+
   ...
 
 
@@ -69,6 +69,7 @@ class FieldQuerySpec(DataSpec):
   expected_query = {'burgers': {'time_to_eval_at': input_time}}
   ```
   """
+
   ...
 
 
@@ -80,6 +81,7 @@ class QueryOnlySpec(DataSpec):
   class are dropped. A common use-case is specifying queries for which no data
   exists. e.g. production runs.
   """
+
   ...
 
 
@@ -91,6 +93,7 @@ class InputOnlySpec(DataSpec):
   class are dropped. A common use-case is labeling dynamic input data
   (e.g. sea ice cover) that is required to run the model.
   """
+
   ...
 
 
@@ -119,6 +122,7 @@ def as_query(
   """
   is_coord_query = lambda x: isinstance(x, (CoordQuerySpec, QueryOnlySpec))
   is_field_query = lambda x: isinstance(x, FieldQuerySpec)
+
   def get_query(s, x):
     if is_coord_query(s):
       return s.coord

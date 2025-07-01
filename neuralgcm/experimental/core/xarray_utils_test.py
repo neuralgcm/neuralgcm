@@ -18,9 +18,9 @@ import dataclasses
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import coordax as cx
 import jax
 import jax_datetime as jdt
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import xarray_utils
@@ -52,7 +52,9 @@ class CustomCoord(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'pi': cx.wrap((np.pi*np.ones(self.sz))**np.arange(self.sz), self)}
+    return {
+        'pi': cx.wrap((np.pi * np.ones(self.sz)) ** np.arange(self.sz), self)
+    }
 
   @classmethod
   def from_xarray(cls, dims: tuple[str, ...], coords: xarray.Coordinates):

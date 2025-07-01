@@ -16,8 +16,8 @@
 
 from typing import Sequence
 
+import coordax as cx
 import jax
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import time_integrators

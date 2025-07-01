@@ -17,12 +17,12 @@
 import dataclasses
 import functools
 
+import coordax as cx
 from dinosaur import primitive_equations as dinosaur_primitive_equations
 from dinosaur import spherical_harmonic
 from dinosaur import vertical_interpolation
 from dinosaur import xarray_utils as dinosaur_xarray_utils
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies

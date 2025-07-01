@@ -18,13 +18,13 @@ import dataclasses
 import math
 from typing import Self, Type, TypeGuard
 
+import coordax as cx
 import einops
 import fiddle as fdl
 from fiddle import selectors
 from fiddle import tagging
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
 import numpy as np

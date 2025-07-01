@@ -18,10 +18,10 @@ from __future__ import annotations
 
 from typing import Sequence
 
+import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
-from neuralgcm.experimental import coordax as cx
-from neuralgcm.experimental import jax_solar
+import jax_solar
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import nnx_compat

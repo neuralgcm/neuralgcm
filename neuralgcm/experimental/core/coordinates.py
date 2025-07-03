@@ -98,8 +98,7 @@ class TimeDelta(cx.Coordinate):
 
   @property
   def fields(self):
-    # TODO(shoyer): support jax_datetime.Timedelta arrays inside coordax.Field
-    return {}
+    return {'timedelta': cx.wrap(self.deltas, self)}
 
   def to_xarray(self) -> dict[str, xarray.Variable]:
     variables = super().to_xarray()

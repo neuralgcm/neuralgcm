@@ -23,14 +23,17 @@ from flax import nnx
 import jax
 import jax_datetime as jdt
 from neuralgcm.experimental import coordax as cx
+from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import feature_transforms
 from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import towers
+from neuralgcm.experimental.core import transformer_layers
 from neuralgcm.experimental.core import transforms
 import numpy as np
 
@@ -254,6 +257,92 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         cx.get_coordinate(out['surface_embedding']), embedding_coord
     )
     self.assertFalse(np.isnan(out['surface_embedding'].data).any())
+
+
+class TransformerTowerTransformTest(parameterized.TestCase):
+  """Tests different instantiations of TransformerTowerTransform."""
+
+  def setUp(self):
+    """Set up common parameters and configurations for tests."""
+    super().setUp()
+    self.grid = coordinates.LonLatGrid.T21()
+    self.levels = coordinates.SigmaLevels.equidistant(12)
+    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.mesh = parallelism.Mesh()
+
+  def test_transformer_tower_predicts_surface_and_volume_targets(self):
+    """Tests TransformerTowerTransform predicts surface & volume targets."""
+    test_inputs = {
+        'u': ones_field_for_coord(self.coord),
+        'v': ones_field_for_coord(self.coord),
+    }
+
+    # Define target coordinates for both a volume and a surface field.
+    target_levels = coordinates.SigmaLevels.equidistant(5)
+    target_coord = cx.compose_coordinates(target_levels, self.grid)
+    target_coords = {
+        'tendency_of_u': target_coord,
+        'tendency_of_surface_pressure': self.grid,
+    }
+
+    # Configure the TransformerTower
+    rngs = nnx.Rngs(0)
+    num_heads = 2
+    ylm_mapper = spherical_transforms.YlmMapper(
+        mesh=self.mesh, partition_schema_key=None
+    )
+    positional_encoder = transformer_layers.SphericalPositionalEncoder(
+        ylm_mapper, l_max=4
+    )
+    relative_bias_net = nnx.Linear(
+        positional_encoder.l_max**2, num_heads, rngs=rngs
+    )
+    dense_factory = functools.partial(
+        standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=16
+    )
+    neural_net_factory = functools.partial(
+        transformer_layers.WindowTransformerBlocks.build_using_factories,
+        intermediate_sizes=[8, 8],
+        num_heads=num_heads,
+        relative_bias_net=relative_bias_net,
+        inputs_window_shape=(4, 4),
+        qkv_features=(num_heads * 3),
+        shift_windows=True,
+        dense_factory=dense_factory,
+        gating=None,
+        inputs_bc=boundaries.LonLatBoundary(),
+    )
+    tower_factory = functools.partial(
+        towers.TransformerTower.build_using_factories,
+        neural_net_factory=neural_net_factory,
+        positional_encoder=positional_encoder,
+        inputs_in_dims=('channel', self.grid),
+        out_dims=('channel', self.grid),
+    )
+
+    # Build the TransformerTowerTransform
+    input_shapes = pytree_utils.shape_structure(test_inputs)
+    transformer_tower_transform = (
+        learned_transforms.TransformerTowerTransform.build_using_factories(
+            input_shapes=input_shapes,
+            targets=target_coords,
+            tower_factory=tower_factory,
+            input_dims_to_align=(self.grid,),
+            mesh=self.mesh,
+            rngs=rngs,
+        )
+    )
+
+    with self.subTest('output_shapes'):
+      out = transformer_tower_transform(test_inputs)
+      actual = pytree_utils.shape_structure(out)
+      expected = field_utils.shape_struct_fields_from_coords(target_coords)
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('output_shapes_method'):
+      actual = transformer_tower_transform.output_shapes(input_shapes)
+      expected = field_utils.shape_struct_fields_from_coords(target_coords)
+      chex.assert_trees_all_equal(actual, expected)
 
 
 if __name__ == '__main__':

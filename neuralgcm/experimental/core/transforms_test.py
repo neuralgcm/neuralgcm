@@ -20,6 +20,9 @@ import chex
 import jax
 from neuralgcm.experimental import coordax as cx
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import interpolators
+from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import transforms
 import numpy as np
 
@@ -198,6 +201,53 @@ class TransformsTest(parameterized.TestCase):
     )
     actual = clip_transform(inputs)
     chex.assert_trees_all_equal(actual, expected)
+
+  def test_apply_to_keys(self):
+    x = cx.SizedAxis('x', 3)
+    inputs = {
+        'a': cx.wrap(np.array([1.0, 2.0, 3.0]), x),
+        'b': cx.wrap(np.array([4.0, 5.0, 6.0]), x),
+    }
+    shift_and_norm = transforms.ShiftAndNormalize(
+        shift=cx.wrap(1.0), scale=cx.wrap(2.0)
+    )
+    apply_to_a = transforms.ApplyToKeys(transform=shift_and_norm, keys=['a'])
+    actual = apply_to_a(inputs)
+    expected = {
+        'a': cx.wrap(np.array([0.0, 0.5, 1.0]), x),
+        'b': inputs['b'],
+    }
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_apply_over_axis_with_scan(self):
+    nodal_grid = coordinates.LonLatGrid.T21()
+    modal_grid = coordinates.SphericalHarmonicGrid.T21()
+    mesh = parallelism.Mesh()
+    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+        nodal_grid, modal_grid, mesh, None
+    )
+    to_modal = transforms.ToModal(ylm_transform)
+    time = cx.SizedAxis('time', 5)
+    inputs = {
+        'u': cx.wrap(np.ones(time.shape + nodal_grid.shape), time, nodal_grid),
+    }
+    expected = to_modal(inputs)
+    scan_transform = transforms.ApplyOverAxisWithScan(
+        transform=to_modal, axis='time'
+    )
+    actual = scan_transform(inputs)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_regrid_conservative(self):
+    source_grid = coordinates.LonLatGrid.TL63()
+    target_grid = coordinates.LonLatGrid.T21()
+    inputs = {'u': cx.wrap(np.ones(source_grid.shape), source_grid)}
+    transform = transforms.Regrid(
+        regridder=interpolators.ConservativeRegridder(target_grid)
+    )
+    expected = {'u': cx.wrap(np.ones(target_grid.shape), target_grid)}
+    actual = transform(inputs)
+    chex.assert_trees_all_close(actual, expected)
 
   def test_streaming_stats_normalization_scalar(self):
     b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 7)

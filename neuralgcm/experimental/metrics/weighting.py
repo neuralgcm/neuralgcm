@@ -86,7 +86,8 @@ class GridAreaWeighting(Weighting):
       dummy = cx.wrap(np.ones(grid.shape), grid)
       weights = weights.broadcast_like(dummy)
     elif isinstance(grid, coordinates.SphericalHarmonicGrid):
-      weights = cx.wrap(np.ones(grid.shape), grid)
+      # avoid counting padding towards overall weight by using mask.
+      weights = grid.fields['mask'].astype(jnp.float32)
     else:
       if self.skip_missing:
         weights = cx.wrap(1.0)

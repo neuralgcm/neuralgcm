@@ -162,7 +162,7 @@ class MultiMetric(Metric):
   ) -> dict[str, cx.Field]:
     """Computes values for each term and returns a flattened dictionary."""
     all_metric_values = {}
-    for term_name, metric_term in self.terms.items():
+    for term_name, metric_term in sorted(self.terms.items()):
       term_statistic_values = {
           k: statistic_values[k]
           for k in metric_term.statistics
@@ -175,7 +175,7 @@ class MultiMetric(Metric):
           )
       )
       # pylint: enable=protected-access
-      for metric_name, value in term_values.items():
+      for metric_name, value in sorted(term_values.items()):
         all_metric_values[f'{term_name}.{metric_name}'] = value
     return all_metric_values
 
@@ -218,7 +218,7 @@ class PerVariableLoss(Loss, PerVariableMetric):
 
     total_loss = 0.0
     ws = collections.defaultdict(lambda: 1.0) | (self.variable_weights or {})
-    for var_name, value in metric_values.items():
+    for var_name, value in sorted(metric_values.items()):
       total_loss += ws[var_name] * value
     return total_loss
 
@@ -258,7 +258,7 @@ class SumLoss(Loss):
   ) -> dict[str, cx.Field]:
     """Computes values for each term and returns a flattened dictionary."""
     all_metric_values = {}
-    for term_name, loss_term in self.terms.items():
+    for term_name, loss_term in sorted(self.terms.items()):
       # Get the stats required by the loss term, using its internal names.
       term_statistic_values = {
           k: statistic_values[k] for k in loss_term.statistics
@@ -278,7 +278,7 @@ class SumLoss(Loss):
   ) -> cx.Field:
     """Computes total loss by summing weighted term totals."""
     term_totals = {}
-    for term_name, loss_term in self.terms.items():
+    for term_name, loss_term in sorted(self.terms.items()):
       term_metric_values = {
           k.split('.', 1)[1]: v
           for k, v in metric_values.items()
@@ -288,7 +288,7 @@ class SumLoss(Loss):
 
     final_loss = 0.0
     ws = collections.defaultdict(lambda: 1.0) | (self.term_weights or {})
-    for term_name, term_total_loss in term_totals.items():
+    for term_name, term_total_loss in sorted(term_totals.items()):
       final_loss += ws[term_name] * term_total_loss
     return final_loss
 
@@ -301,7 +301,7 @@ class SumLoss(Loss):
     all_debug_terms = {}
     total = self.total(metric_values)
     ws = collections.defaultdict(lambda: 1.0) | (self.term_weights or {})
-    for term_name, loss_term in self.terms.items():
+    for term_name, loss_term in sorted(self.terms.items()):
       term_metric_values = {
           k.split('.', 1)[1]: v
           for k, v in metric_values.items()
@@ -322,6 +322,6 @@ class SumLoss(Loss):
       sub_debug_terms = loss_term.debug_terms(
           term_mean_stats, term_metric_values
       )
-      for k, v in sub_debug_terms.items():
+      for k, v in sorted(sub_debug_terms.items()):
         all_debug_terms[f'{term_name}.{k}'] = v
     return all_debug_terms

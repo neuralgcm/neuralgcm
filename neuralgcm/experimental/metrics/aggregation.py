@@ -128,7 +128,7 @@ class AggregationState:
       return metrics.values_from_mean_statistics(mean_stats)
     return {
         k: metric.values_from_mean_statistics(mean_stats)
-        for k, metric in metrics.items()
+        for k, metric in sorted(metrics.items())
     }
 
 
@@ -198,8 +198,8 @@ class Aggregator:
     """Aggregate `statistics` with configured weightings and binnings."""
     sum_weighted_stats_result = collections.defaultdict(dict)
     sum_weights_result = collections.defaultdict(dict)
-    for stat_name, statistic_values in statistics.items():
-      for term_name, stat_field in statistic_values.items():
+    for stat_name, statistic_values in sorted(statistics.items()):
+      for term_name, stat_field in sorted(statistic_values.items()):
         # TODO(dkochkov): Could weights averaging be done more efficiently by
         # exposing the outer product structure?
         weight_field = cx.wrap_like(np.ones(stat_field.shape), stat_field)

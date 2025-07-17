@@ -499,10 +499,14 @@ class SphericalHarmonicGrid(cx.Coordinate):
     m_pad, l_pad = self.wavenumber_padding
     ms = jnp.pad(unpadded_ms, (0, m_pad))
     ls = jnp.pad(unpadded_ls, (0, l_pad))
-    return {
+    axes_fields = {
         k: cx.wrap(v, cx.SelectedAxis(self, i))
         for i, (k, v) in enumerate(zip(self.dims, [ms, ls]))
     }
+    unpadded_mask = self._ylm_grid.mask
+    mask = jnp.pad(unpadded_mask, ((0, m_pad), (0, l_pad)))
+    mask_field = cx.wrap(mask, self)
+    return axes_fields | {'mask': mask_field}
 
   def clip_wavenumbers(self, inputs: Any, n: int) -> Any:
     if n <= 0:

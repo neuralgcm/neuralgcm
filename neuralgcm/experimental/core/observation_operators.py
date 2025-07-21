@@ -112,7 +112,7 @@ class ObservationOperatorWithRenaming(ObservationOperator):
 class FixedLearnedObservationOperator(ObservationOperator):
   """Operator that computes fixed set of observations using state mapping."""
 
-  coordinate_mapping: learned_transforms.ForwardTowerTransform
+  coordinate_mapping: transforms.Transform = transforms.Identity()
 
   def observe(
       self,

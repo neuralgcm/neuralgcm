@@ -14,6 +14,7 @@
 """Utilities for implementing SPMD model parallelism."""
 
 import collections
+import copy
 import dataclasses
 import math
 from typing import Self, Type, TypeGuard
@@ -495,6 +496,8 @@ def update_mesh_properties(
 
   def _is_mesh(key: TagOrMeshType) -> TypeGuard[Type[Mesh]]:
     return issubclass(key, Mesh)
+
+  fiddle_config = copy.deepcopy(fiddle_config)
 
   for key, spmd_mesh in spmd_mesh_updates.items():
     if _is_tag(key):

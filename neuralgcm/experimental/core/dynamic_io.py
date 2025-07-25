@@ -84,7 +84,7 @@ class DynamicInputSlice(DynamicInputModule):
     time = inputs['time']
     if time.ndim != 1 or time.dims[0] != 'timedelta':
       raise ValueError(f'Expected time to be 1D timedelta, got {time.dims=}')
-    self.time = DynamicInputValue(time.data)
+    self.time.value = time.data
     data_dict = {}
     for k, expected_coord in self.keys_to_coords.items():
       if k not in inputs:
@@ -101,7 +101,7 @@ class DynamicInputSlice(DynamicInputModule):
             f' {expected_coord=}'
         )
       data_dict[k] = v
-    self.data = DynamicInputValue(data_dict)
+    self.data.value = data_dict
 
   def output_shapes(self) -> typing.Pytree:
     return {

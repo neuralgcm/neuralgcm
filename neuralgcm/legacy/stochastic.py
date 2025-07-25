@@ -26,10 +26,8 @@ import gin
 import haiku as hk
 import jax
 import jax.numpy as jnp
-import tensorflow_probability.substrates.jax as tfp
 
 
-tfb = tfp.bijectors
 tree_map = jax.tree_util.tree_map
 tree_leaves = jax.tree_util.tree_leaves
 
@@ -517,7 +515,7 @@ class GaussianRandomFieldModule(GaussianRandomField, hk.Module):
     if initial_variance is None:
       variance = None
     elif variance_bound in {None, 'None'}:  # Allow strings for gin.
-      variance = convert_hk_param_to_positive_scalar(
+      variance = convert_param_to_positive_scalar(
           variance_raw, initial_variance
       )
     else:
@@ -526,7 +524,7 @@ class GaussianRandomFieldModule(GaussianRandomField, hk.Module):
       _assert_positive_or_none(
           variance_bound - initial_variance, 'variance_bound - initial_variance'
       )
-      variance = convert_hk_param_to_bounded_scalar(
+      variance = convert_to_bounded_scalar(
           variance_raw,
           initial_variance,
           low=0.0,
@@ -542,11 +540,11 @@ class GaussianRandomFieldModule(GaussianRandomField, hk.Module):
         dt=dt,
         physics_specs=physics_specs,
         aux_features=aux_features,
-        correlation_time=convert_hk_param_to_positive_scalar(
+        correlation_time=convert_param_to_positive_scalar(
             correlation_time_raw,
             maybe_nondimensionalize(initial_correlation_time, physics_specs),
         ),
-        correlation_length=convert_hk_param_to_positive_scalar(
+        correlation_length=convert_param_to_positive_scalar(
             correlation_length_raw,
             maybe_nondimensionalize(initial_correlation_length, physics_specs),
         ),
@@ -706,7 +704,7 @@ class BatchGaussianRandomFieldModule(hk.Module):
     if n_fixed_fields:
       correlation_lengths_raw = jnp.concatenate([
           correlation_lengths_raw, jnp.zeros([n_fixed_fields])])
-    self._correlation_lengths = convert_hk_param_to_positive_scalar(
+    self._correlation_lengths = convert_param_to_positive_scalar(
         correlation_lengths_raw, initial_correlation_lengths
     )
 
@@ -721,7 +719,7 @@ class BatchGaussianRandomFieldModule(hk.Module):
     if n_fixed_fields:
       correlation_times_raw = jnp.concatenate([
           correlation_times_raw, jnp.zeros([n_fixed_fields])])
-    self._correlation_times = convert_hk_param_to_positive_scalar(
+    self._correlation_times = convert_param_to_positive_scalar(
         correlation_times_raw, initial_correlation_times
     )
 
@@ -1168,29 +1166,36 @@ class SumOfCenteredLognormalRandomFieldsModule(
 ################################################################################
 
 
-def convert_hk_param_to_positive_scalar(
+def convert_param_to_positive_scalar(
     param: jax.Array,
     initial_value: Numeric,
 ) -> jax.Array:
-  """Converts Haiku [batch] scalar parameter to scalar value using Softplus."""
+  """Converts [batch] scalar parameter to scalar value using Softplus."""
   return initial_value * make_positive_scalar(param)
 
 
-def convert_hk_param_to_bounded_scalar(
+def _sigmoid(low: Numeric, high: Numeric, x: jax.Array) -> jax.Array:
+  """Numerically stable sigmoid, adapted from tfp.bijectors.Sigmoid."""
+  diff = high - low
+  left = low + diff * jax.nn.sigmoid(x)
+  right = high - diff * jax.nn.sigmoid(-x)
+  return jnp.where(x < 0, left, right)
+
+
+def _inv_sigmoid(low: Numeric, high: Numeric, x: jax.Array) -> jax.Array:
+  """Inverse sigmoid, adapted from tfp.bijectors.Sigmoid."""
+  return jnp.log(x - low) - jnp.log(high - x)
+
+
+def convert_to_bounded_scalar(
     param: jax.Array,
     initial_value: Numeric,
     low: Numeric,
     high: Numeric,
 ) -> jax.Array:
-  """Converts a Haiku [batch] scalar parameter to scalar value using Sigmoid."""
-  bijector = tfb.Sigmoid(low=low, high=high)
-  # Since param initializes at 0, at initialization,
-  #  bijector.forward(offset + param)
-  #  = bijector.forward(offset)
-  #  = bijector.forward(bijector.inverse(initial_value))
-  #  = initial_value.
-  offset = bijector.inverse(initial_value)
-  return bijector.forward(offset + param)
+  """Converts a [batch] scalar parameter to scalar value using Sigmoid."""
+  offset = _inv_sigmoid(low, high, initial_value)
+  return _sigmoid(low, high, offset + param)
 
 
 def nondimensionalize(

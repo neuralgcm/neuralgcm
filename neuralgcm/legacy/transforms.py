@@ -27,7 +27,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.legacy import filters
 import numpy as np
-import tensorflow_probability.substrates.jax as tfp
 
 
 KeyWithCosLatFactor = typing.KeyWithCosLatFactor
@@ -274,28 +273,6 @@ class ClipTransform(hk.Module):
     return self.coords.horizontal.clip_wavenumbers(
         inputs, self.wavenumbers_to_clip
     )
-
-
-@gin.register
-class SinhArcsinhTransform(hk.Module):
-  """Transform that magnifies or suppresses inputs with large magnitudes."""
-
-  def __init__(
-      self,
-      coords: coordinate_systems.CoordinateSystem,
-      dt: float,
-      physics_specs: Any,
-      aux_features: typing.AuxFeatures,
-      tailweight: float = 1.0,
-      name: Optional[str] = None,
-  ):
-    del coords, dt, physics_specs, aux_features  # unused.
-    super().__init__(name=name)
-    self.tailweight = tailweight
-
-  def __call__(self, inputs: typing.PyTreeState) -> typing.PyTreeState:
-    f = tfp.bijectors.SinhArcsinh(tailweight=self.tailweight).forward
-    return jax.tree_util.tree_map(f, inputs)
 
 
 @gin.register

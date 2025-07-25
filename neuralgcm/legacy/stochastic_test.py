@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for stochastic."""
+import logging
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -24,7 +25,10 @@ import haiku as hk
 import jax
 from neuralgcm.legacy import stochastic
 import numpy as np
-import tensorflow_probability.substrates.jax as tfp
+try:
+  import tensorflow_probability.substrates.jax as tfp  # pylint: disable=g-import-not-at-top
+except ModuleNotFoundError:
+  tfp = None
 
 
 tree_map = jax.tree_util.tree_map
@@ -50,6 +54,9 @@ class BaseRandomFieldTest(parameterized.TestCase):
       coords,
   ):
     """Checks the correlation length of random field."""
+    if tfp is None:
+      logging.warning('tfp not installed, skipping correlation length check')
+
     unused_n_samples, n_lngs, n_lats = nodal_samples.shape
     expected_corr_frac = expected_correlation_length / (
         2 * np.pi * coords.horizontal.radius
@@ -240,7 +247,7 @@ class BaseRandomFieldTest(parameterized.TestCase):
     )
     field_trajectory = jax.device_get(field_trajectory)
 
-    if run_correlation_time_check and variance is not None:
+    if tfp is not None and run_correlation_time_check and variance is not None:
       with self.subTest('trajectory_correlation_time'):
         # Mean autocorrelation at the lat=lng=0 point.
         acorr = tfp.stats.auto_correlation(
@@ -282,6 +289,8 @@ class BaseRandomFieldTest(parameterized.TestCase):
     """Checks random field values x and y are independent."""
     self.assertEqual(x.ndim, 2)
     self.assertEqual(y.ndim, 2)
+    if tfp is not None:
+      logging.warning('tfp not installed, skipping independent check')
     # corr[i, j] = Correlation(x[:, i], y[:, j])
     corr = tfp.stats.correlation(x, y, sample_axis=0, event_axis=1)
     standard_error = 2 / np.sqrt(x.shape[0])  # product of two iid χ²
@@ -1204,11 +1213,11 @@ class SumOfGaussianRandomFieldsModuleTest(parameterized.TestCase):
 
 class ParameterConversionTest(parameterized.TestCase):
 
-  def test_convert_hk_param_to_positive_scalar(self):
+  def test_convert_param_to_positive_scalar(self):
     initial_value = 0.9
 
     def convert(param):
-      return stochastic.convert_hk_param_to_positive_scalar(
+      return stochastic.convert_param_to_positive_scalar(
           param, initial_value=initial_value
       )
 
@@ -1217,13 +1226,13 @@ class ParameterConversionTest(parameterized.TestCase):
     for x in np.linspace(-2.0, 2.0, 10):
       self.assertGreater(convert(x), 0.0)
 
-  def test_convert_hk_param_to_bounded_scalar(self):
+  def test_convert_param_to_bounded_scalar(self):
     low = 0.1
     high = 2.2
     initial_value = 0.9
 
     def convert(param):
-      return stochastic.convert_hk_param_to_bounded_scalar(
+      return stochastic.convert_param_to_bounded_scalar(
           param, initial_value=initial_value, low=low, high=high
       )
 

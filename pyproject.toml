@@ -32,7 +32,6 @@ dependencies = [
     "numpy",
     "optax",
     "pandas",
-    "tensorflow_probability",
     "xarray",
 ]
 

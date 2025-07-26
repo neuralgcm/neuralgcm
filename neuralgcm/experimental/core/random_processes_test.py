@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests that random processes generate values with expected stats."""
 
+import logging
 import math
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -26,7 +27,10 @@ from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
-import tensorflow_probability.substrates.jax as tfp
+try:
+  import tensorflow_probability.substrates.jax as tfp  # pylint: disable=g-import-not-at-top
+except ModuleNotFoundError:
+  tfp = None
 
 
 @absltest.skipThisClass('Base class')
@@ -45,6 +49,8 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       grid,
   ):
     """Checks the correlation length of random field."""
+    if tfp is None:
+      logging.warning('tfp not installed, skipping correlation length check')
     unused_n_samples, n_lngs, n_lats = samples.shape
     expected_corr_frac = expected_correlation_length / (2 * np.pi * grid.radius)
     acorr_lat = tfp.stats.auto_correlation(
@@ -222,7 +228,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     )
     field_trajectory = jax.device_get(field_trajectory)
 
-    if run_correlation_time_check and variance is not None:
+    if tfp is not None and run_correlation_time_check and variance is not None:
       with self.subTest('trajectory_correlation_time'):
         # Mean autocorrelation at the lat=lng=0 point.
         acorr = tfp.stats.auto_correlation(
@@ -264,6 +270,8 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     """Checks random field values x and y are independent."""
     self.assertEqual(x.ndim, 2)
     self.assertEqual(y.ndim, 2)
+    if tfp is not None:
+      logging.warning('tfp not installed, skipping independent check')
     # corr[i, j] = Correlation(x[:, i], y[:, j])
     corr = tfp.stats.correlation(x, y, sample_axis=0, event_axis=1)
     standard_error = 2 / np.sqrt(x.shape[0])  # product of two iid χ²
@@ -663,15 +671,16 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       )
       self.assertLess(sample.max(), maxval)
       self.assertGreaterEqual(sample.min(), minval)
-    with self.subTest('advance_is_uncorrelated_from_initial_state'):
-      sample = uniform.state_values().data
-      uniform.advance()
-      advanced_sample = uniform.state_values().data
-      corr = tfp.stats.correlation(
-          sample, advanced_sample, sample_axis=(0, 1), event_axis=None
-      )
-      standard_error = 2 / np.sqrt(math.prod(sample.shape))
-      np.testing.assert_array_less(corr, 4 * standard_error)
+    if tfp is not None:
+      with self.subTest('advance_is_uncorrelated_from_initial_state'):
+        sample = uniform.state_values().data
+        uniform.advance()
+        advanced_sample = uniform.state_values().data
+        corr = tfp.stats.correlation(
+            sample, advanced_sample, sample_axis=(0, 1), event_axis=None
+        )
+        standard_error = 2 / np.sqrt(math.prod(sample.shape))
+        np.testing.assert_array_less(corr, 4 * standard_error)
 
   @parameterized.named_parameters(
       dict(

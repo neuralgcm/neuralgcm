@@ -26,10 +26,8 @@ import gin
 import haiku as hk
 import jax
 import jax.numpy as jnp
-import tensorflow_probability.substrates.jax as tfp
 
 
-tfb = tfp.bijectors
 tree_map = jax.tree_util.tree_map
 tree_leaves = jax.tree_util.tree_leaves
 
@@ -1172,8 +1170,21 @@ def convert_hk_param_to_positive_scalar(
     param: jax.Array,
     initial_value: Numeric,
 ) -> jax.Array:
-  """Converts Haiku [batch] scalar parameter to scalar value using Softplus."""
+  """Converts [batch] scalar parameter to scalar value using Softplus."""
   return initial_value * make_positive_scalar(param)
+
+
+def _sigmoid(low: Numeric, high: Numeric, x: jax.Array) -> jax.Array:
+  """Numerically stable sigmoid, adapted from tfp.bijectors.Sigmoid."""
+  diff = high - low
+  left = low + diff * jax.nn.sigmoid(x)
+  right = high - diff * jax.nn.sigmoid(-x)
+  return jnp.where(x < 0, left, right)
+
+
+def _inv_sigmoid(low: Numeric, high: Numeric, x: jax.Array) -> jax.Array:
+  """Inverse sigmoid, adapted from tfp.bijectors.Sigmoid."""
+  return jnp.log(x - low) - jnp.log(high - x)
 
 
 def convert_hk_param_to_bounded_scalar(
@@ -1182,15 +1193,9 @@ def convert_hk_param_to_bounded_scalar(
     low: Numeric,
     high: Numeric,
 ) -> jax.Array:
-  """Converts a Haiku [batch] scalar parameter to scalar value using Sigmoid."""
-  bijector = tfb.Sigmoid(low=low, high=high)
-  # Since param initializes at 0, at initialization,
-  #  bijector.forward(offset + param)
-  #  = bijector.forward(offset)
-  #  = bijector.forward(bijector.inverse(initial_value))
-  #  = initial_value.
-  offset = bijector.inverse(initial_value)
-  return bijector.forward(offset + param)
+  """Converts a [batch] scalar parameter to scalar value using Sigmoid."""
+  offset = _inv_sigmoid(low, high, initial_value)
+  return _sigmoid(low, high, offset + param)
 
 
 def nondimensionalize(

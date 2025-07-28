@@ -19,6 +19,7 @@ from absl.testing import parameterized
 import chex
 from flax import nnx
 import jax
+import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import random_processes
@@ -26,7 +27,23 @@ from neuralgcm.experimental.core import spherical_transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
-import tensorflow_probability.substrates.jax as tfp
+import scipy.stats
+
+
+def _auto_correlation_1d(series):
+  centered = series - jnp.mean(series)
+  autocov = jax.scipy.signal.correlate(centered, centered, precision='float32')
+  autocov = autocov[series.shape[0] - 1 :]
+  autocorr = autocov / autocov[0]
+  return autocorr
+
+
+def auto_correlation(series: jax.typing.ArrayLike, axis: int) -> jax.Array:
+  """JAX based implementation of tfp.stats.auto_correlation."""
+  if series.ndim != 2:
+    raise ValueError('series must be 2D')
+  i = (axis + 1) % 2  # vectorize along the other axis
+  return jax.vmap(_auto_correlation_1d, in_axes=i, out_axes=i)(series)
 
 
 @absltest.skipThisClass('Base class')
@@ -47,11 +64,8 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     """Checks the correlation length of random field."""
     unused_n_samples, n_lngs, n_lats = samples.shape
     expected_corr_frac = expected_correlation_length / (2 * np.pi * grid.radius)
-    acorr_lat = tfp.stats.auto_correlation(
-        # Mean autocorrelation in the lat direction at the longitude=0 line.
-        samples[:, 0, :],
-        axis=-1,
-    ).mean(axis=0)
+    # Mean autocorrelation in the lat direction at the longitude=0 line.
+    acorr_lat = auto_correlation(samples[:, 0, :], axis=-1).mean(axis=0)
     # There are 2 * n_lats points in the circumference.
     fractional_corr_len_lat = np.argmax(acorr_lat < 0) / (2 * n_lats)
     self.assertBetween(
@@ -59,8 +73,8 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
         expected_corr_frac * 0.5,
         expected_corr_frac * 3,
     )
-    acorr_lng = tfp.stats.auto_correlation(
-        # Mean autocorrelation in the lng direction at the latitude=0 line.
+    # Mean autocorrelation in the lng direction at the latitude=0 line.
+    acorr_lng = auto_correlation(
         samples[:, :, n_lats // 2],
         axis=-1,
     ).mean(axis=0)
@@ -225,7 +239,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     if run_correlation_time_check and variance is not None:
       with self.subTest('trajectory_correlation_time'):
         # Mean autocorrelation at the lat=lng=0 point.
-        acorr = tfp.stats.auto_correlation(
+        acorr = auto_correlation(
             field_trajectory[:, :, n_lngs // 2, 0], axis=0
         ).mean(axis=1)
         sample_decorr_time = dt * np.argmax(acorr < 0)
@@ -264,8 +278,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     """Checks random field values x and y are independent."""
     self.assertEqual(x.ndim, 2)
     self.assertEqual(y.ndim, 2)
-    # corr[i, j] = Correlation(x[:, i], y[:, j])
-    corr = tfp.stats.correlation(x, y, sample_axis=0, event_axis=1)
+    corr = scipy.stats.pearsonr(x, y, axis=0).statistic
     standard_error = 2 / np.sqrt(x.shape[0])  # product of two iid χ²
     np.testing.assert_array_less(corr, 4 * standard_error)
 
@@ -667,9 +680,7 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       sample = uniform.state_values().data
       uniform.advance()
       advanced_sample = uniform.state_values().data
-      corr = tfp.stats.correlation(
-          sample, advanced_sample, sample_axis=(0, 1), event_axis=None
-      )
+      corr = scipy.stats.pearsonr(sample, advanced_sample, axis=None).statistic
       standard_error = 2 / np.sqrt(math.prod(sample.shape))
       np.testing.assert_array_less(corr, 4 * standard_error)
 
@@ -705,9 +716,7 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       sample = normal.state_values().data
       normal.advance()
       advanced_sample = normal.state_values().data
-      corr = tfp.stats.correlation(
-          sample, advanced_sample, sample_axis=(0, 1), event_axis=None
-      )
+      corr = scipy.stats.pearsonr(sample, advanced_sample, axis=None).statistic
       standard_error = 2 / np.sqrt(math.prod(sample.shape))
       np.testing.assert_array_less(corr, 4 * standard_error)
 

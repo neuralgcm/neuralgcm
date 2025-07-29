@@ -79,7 +79,7 @@ class RandomProcessModule(nnx.Module, abc.ABC):
   @property
   def event_shape(self) -> tuple[int, ...]:
     """Shape of the random process event."""
-    return tuple()
+    return ()
 
 
 class UniformUncorrelated(RandomProcessModule):

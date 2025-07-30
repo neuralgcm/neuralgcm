@@ -242,14 +242,6 @@ class ForecastSystem(nnx.Module, abc.ABC):
         ' dynamic_inputs_from_xarray.'
     )
 
-  def data_from_xarray(
-      self, nested_data: dict[str, xarray.Dataset]
-  ) -> tuple[typing.Pytree, typing.Pytree]:
-    """Converts xarray dataset to data for the model."""
-    inputs = self.inputs_from_xarray(nested_data)
-    dynamic_inputs = self.dynamic_inputs_from_xarray(nested_data)
-    return inputs, dynamic_inputs
-
   @classmethod
   def from_fiddle_config(
       cls,

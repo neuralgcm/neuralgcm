@@ -1,0 +1,30 @@
+name: Publish to PyPI
+
+on:
+  # Triggers when commits are pushed to the main branch, e.g., by merging a PR
+  push:
+    branches: [ main ]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  # Auto-publish when version is increased
+  publish-job:
+    # Only try to publish if:
+    # * Repo is self (prevents running from forks)
+    # * Branch is `main`
+    if: |
+      github.repository == 'neuralgcm/neuralgcm'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 30
+
+    steps:
+    # Publish the package (if local `__version__` > pip version)
+    - uses: etils-actions/pypi-auto-publish@v1
+      with:
+        pypi-token: ${{ secrets.PYPI_API_TOKEN }}
+        gh-token: ${{ secrets.GITHUB_TOKEN }}
+        parse-changelog: false

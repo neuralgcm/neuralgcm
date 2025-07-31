@@ -16,7 +16,7 @@ package-data = {neuralgcm = ["data/*"]}
 [project]
 name = "neuralgcm"
 description = "Neural General Circulation Models for Weather and Climate"
-version = "1.2.1"  # keep in sync with __version__ in neuralgcm/__init__.py
+version = "1.2.2"  # keep in sync with __version__ in neuralgcm/__init__.py
 authors = [
     {name = "Google LLC", email = "noreply@google.com"},
 ]

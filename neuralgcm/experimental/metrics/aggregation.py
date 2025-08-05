@@ -155,6 +155,10 @@ class Aggregator:
     skip_missing: If True, `dims_to_reduce` that are not present in a given
       field will be skipped. If False, a `ValueError` is raised.
     skipna: If True, NaNs will be omitted in the aggregation.
+    keep_weights_for_nans: If True, weights corresponding to NaN values are
+      retained. Such behavior might be desired when computing the loss, where
+      a NaN value is slipped without increasing the relative weight of the other
+      entries in the statistics. Has effective only when `skipna` is True.
   """
 
   # TODO(dkochkov): Consider introducing a Protocol for added flexibility.
@@ -165,6 +169,7 @@ class Aggregator:
   bin_by: Sequence[binning.Binning] | None = None
   skip_missing: bool = True
   skipna: bool = False
+  keep_weights_for_nans: bool = False
 
   def aggregation_fn(
       self,
@@ -210,7 +215,8 @@ class Aggregator:
           # TODO(dkochkov): Consider requiring explicit nan mask.
           nan_mask = cx.cmap(jnp.isnan)(stat_field)
           stat_field = cx.cmap(_apply_nan_mask)(stat_field, nan_mask)
-          weight_field = cx.cmap(_apply_nan_mask)(weight_field, nan_mask)
+          if not self.keep_weights_for_nans:
+            weight_field = cx.cmap(_apply_nan_mask)(weight_field, nan_mask)
 
         sum_weighted_stats_result[stat_name][term_name] = self.aggregation_fn(
             stat_field, field_name=term_name

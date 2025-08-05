@@ -85,7 +85,8 @@ class EvaluatorsTest(parameterized.TestCase):
     self.assertEqual(list(agg_states.keys()), ['loss_metric'])
     aggregation_state = agg_states['loss_metric']
     expected_crps_stats = [
-        'EnergySkill_ensemble_beta_1.0', 'EnergySpread_ensemble_beta_1.0'
+        'EnergySkill_ensemble_beta_1.0',
+        'EnergySpread_ensemble_beta_1.0',
     ]
     self.assertEqual(
         list(aggregation_state.sum_weighted_statistics.keys()),
@@ -133,17 +134,37 @@ class EvaluatorsTest(parameterized.TestCase):
     targets = {'x': cx.wrap(np.array([1.0, 5.0, np.nan]), dim)}
 
     loss = deterministic_losses.MAE()
-    evaluator = evaluators.Evaluator(
-        metrics={'mae': loss},
-        getters=transforms.Identity(),
-        aggregators=aggregation.Aggregator(
-            dims_to_reduce=['spatial'], weight_by=[], skipna=True
-        ),
-    )
-    total_loss = evaluator.evaluate_total(predictions, targets)
-    # MAE should only be computed for the first two entries, ignoring the NaN.
-    # mae = (abs(1 - 1) + abs(2 - 5)) / 2 = 1.5
-    np.testing.assert_almost_equal(total_loss.data, 1.5)
+    with self.subTest('keep_weights_false'):
+      evaluator = evaluators.Evaluator(
+          metrics={'mae': loss},
+          getters=transforms.Identity(),
+          aggregators=aggregation.Aggregator(
+              dims_to_reduce=['spatial'],
+              weight_by=[],
+              skipna=True,
+              keep_weights_for_nans=False,
+          ),
+      )
+      total_loss = evaluator.evaluate_total(predictions, targets)
+      # MAE should only be computed for the first two entries, ignoring the NaN.
+      # mae = (abs(1 - 1) + abs(2 - 5)) / 2 = 1.5
+      np.testing.assert_almost_equal(total_loss.data, 1.5)
+
+    with self.subTest('keep_weights_true'):
+      evaluator = evaluators.Evaluator(
+          metrics={'mae': loss},
+          getters=transforms.Identity(),
+          aggregators=aggregation.Aggregator(
+              dims_to_reduce=['spatial'],
+              weight_by=[],
+              skipna=True,
+              keep_weights_for_nans=True,
+          ),
+      )
+      total_loss = evaluator.evaluate_total(predictions, targets)
+      # When keep_weights_for_nans=True, weights are not adjusted, so
+      # mae = (abs(1 - 1) + abs(2 - 5)) / 3 = 1.0
+      np.testing.assert_almost_equal(total_loss.data, 1.0)
 
   def test_evaluator_multiple_terms_with_weighting(self):
     ens = cx.SizedAxis('ensemble', 2)

@@ -186,13 +186,15 @@ class CoordFeatures(transforms.TransformABC):
   ):
     self.coords = coords
     self.features = {
-        k: param_type(cx.wrap(initializer(rngs.params(), c.shape), c))
+        k: param_type(initializer(rngs.params(), c.shape))
         for k, c in coords.items()
     }
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
-    return {k: v.value for k, v in self.features.items()}
+    return {
+        k: cx.wrap(v.value, self.coords[k]) for k, v in self.features.items()
+    }
 
   def update_features_from_data(
       self,
@@ -200,11 +202,10 @@ class CoordFeatures(transforms.TransformABC):
       sim_units: units.SimUnits,
   ):
     """Updates `self.features` with data from dataset."""
-    for key, feature_value in self.features.items():
+    for key, feature in self.features.items():
       if key in dataset:
         da = dataset[key]
         data_units = units.parse_units(da.attrs['units'])
-        da.data = sim_units.nondimensionalize(da.values * data_units)
-        candidate = coordinates.field_from_xarray(da)
-        candidate = candidate.order_as(self.coords[key])
-        self.features[key] = type(feature_value)(candidate)
+        da = da.copy(data=sim_units.nondimensionalize(da.values * data_units))
+        candidate = coordinates.field_from_xarray(da).order_as(self.coords[key])
+        feature.value = candidate.data

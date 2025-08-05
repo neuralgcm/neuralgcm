@@ -14,7 +14,7 @@
 
 """Tests for checkpointing routines."""
 
-import tempfile
+import os.path
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -27,7 +27,6 @@ from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import checkpointing
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import random_processes
-import orbax.checkpoint as ocp
 
 
 class MockForecastSystem(api.ForecastSystem):
@@ -61,20 +60,18 @@ def build_model():
   return model
 
 
-@absltest.skipThisClass('Re-enable once fiddle is updated on github.')
 class CheckpointingTest(parameterized.TestCase):
 
   def test_save_and_load_roundtrip(self):
+    path = os.path.join(self.create_tempdir(), 'checkpoint')
     model_cfg = build_model.as_buildable()
     model = api.ForecastSystem.from_fiddle_config(model_cfg)
-    model.update_metadata('fiddle_config', model_cfg)
-    with tempfile.TemporaryDirectory() as path:
-      path = ocp.test_utils.erase_and_create_empty(path)
-      checkpointing.save_checkpoint(model, path / 'checkpoint')
-      restored_model = checkpointing.load_model(path / 'checkpoint')
+    checkpointing.save_checkpoint(model, path)
+    restored_model = checkpointing.load_model_checkpoint(path)
     restored_model_params = nnx.state(restored_model)
     expected_model_params = nnx.state(model)
     chex.assert_trees_all_equal(restored_model_params, expected_model_params)
+    self.assertEqual(model_cfg, restored_model.fiddle_config)
 
 
 if __name__ == '__main__':

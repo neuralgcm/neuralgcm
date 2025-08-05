@@ -49,7 +49,8 @@ experimental = [
     "coordax",
     "einops",
     "etils",
-    "fiddle",
+    # TODO(shoyer): use pypi version when there is a newer release than 0.3.0
+    "fiddle @ git+https://github.com/google/fiddle.git",
     "flax",
     "grain",
     "jax-datetime",

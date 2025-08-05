@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-from typing import Callable
+from typing import Any, Callable
 
 import coordax as cx
 import fiddle as fdl
@@ -57,13 +57,18 @@ def calculate_sub_steps(
 class ForecastSystem(nnx.Module, abc.ABC):
   """Base class for forecast systems."""
 
-  _metadata: dict = dataclasses.field(default_factory=dict, kw_only=True)  # pylint: disable=g-bare-generic
+  _metadata: dict[str, Any] = dataclasses.field(
+      default_factory=dict, init=False
+  )
   mesh: parallelism.Mesh = dataclasses.field(
       default_factory=parallelism.Mesh, kw_only=True
   )
+  fiddle_config: fdl.Config[ForecastSystem] | None = dataclasses.field(
+      default=None, init=False
+  )
 
   @property
-  def metadata(self):
+  def metadata(self) -> dict[str, Any]:
     """Returns optional metadata associated with the model."""
     return self._metadata
 
@@ -265,6 +270,8 @@ class ForecastSystem(nnx.Module, abc.ABC):
       ) = None,
   ):
     """Builds a model from a fiddle config with updated mesh properties."""
+    # TODO(shoyer): Consider moving this method into a dedicated config module
+    # (maybe also with some utilities from checkpointing).
     if not issubclass(config.__fn_or_cls__, ForecastSystem):
       raise ValueError(
           f'Fiddle config defines {config.__fn_or_cls__} '
@@ -276,4 +283,6 @@ class ForecastSystem(nnx.Module, abc.ABC):
         array_partitions_updates=array_partitions_updates,
         field_partitions_updates=field_partitions_updates,
     )
-    return fdl.build(model_config)
+    model = fdl.build(model_config)
+    model.fiddle_config = config
+    return model

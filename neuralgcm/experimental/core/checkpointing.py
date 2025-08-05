@@ -15,7 +15,9 @@
 
 import asyncio
 from concurrent import futures
+import dataclasses
 import functools
+import json
 from typing import Any, Optional, Sequence
 
 from etils import epath
@@ -24,7 +26,10 @@ from fiddle.experimental import serialization
 from flax import nnx
 import jax
 from neuralgcm.experimental.core import api
+from neuralgcm.experimental.core import diagnostics
+from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import random_processes
 import orbax.checkpoint as ocp
 
 
@@ -32,89 +37,36 @@ ParamInfo = ocp.type_handlers.ParamInfo
 Metadata = ocp.metadata.value.Metadata
 
 
-class FiddleConfigHandler(ocp.type_handlers.TypeHandler):
-  """A wrapper around serialization of fdl.Config to the json format."""
-
-  def __init__(self, filename: str | None = None, primary_host: int | None = 0):
-    """Initializes FiddleConfigHandler.
-
-    Args:
-      filename: optional file name given to the written file; defaults to
-        'fiddle_config'
-      primary_host: the host id of the primary host.  Default to 0.  If it's set
-        to None, then all hosts will be considered as primary.  It's useful in
-        the case that all hosts are only working with local storage.
-    """
-    self._filename = filename or 'fiddle_config'
-    self._primary_host = primary_host
-    self._executor = futures.ThreadPoolExecutor(max_workers=1)
-
-  def _save_fn(self, x, directory):
-    if ocp.utils.is_primary_host(self._primary_host):
-      path = directory / self._filename
-      path.write_text(x)
-    return 0
-
-  def typestr(self) -> str:
-    return 'Config'
-
-  async def serialize(
-      self,
-      values: Sequence[Any],
-      infos: Sequence[ParamInfo],
-      args: Sequence[ocp.SaveArgs] | None = None,
-  ) -> list[futures.Future]:  # pylint: disable=g-bare-generic
-    """Serializes the given fdl.Config to the json format."""
-    del args  # Unused in this example.
-    ocp_futures = []
-    for value, info in zip(values, infos):
-      # make sure the per-key directory is present as OCDBT doesn't create one
-      info.path.mkdir(exist_ok=True)  # pylint: disable=attribute-error
-      ocp_futures.append(
-          self._executor.submit(
-              functools.partial(self._write_config, value, info.path)
-          )
-      )
-    return ocp_futures
-
-  async def deserialize(
-      self,
-      infos: Sequence[ParamInfo],
-      args: Optional[Sequence[ocp.RestoreArgs]] = None,
-  ):
-    del args  # Unused in this example.
-    ocp_futures = []
-    for info in infos:
-      ocp_futures.append(
-          await asyncio.get_event_loop().run_in_executor(
-              self._executor,
-              functools.partial(self._from_serialized, info.path),
-          )
-      )
-    return await asyncio.gather(*ocp_futures)
-
-  async def metadata(self, infos: Sequence[ParamInfo]) -> Sequence[Metadata]:
-    return [Metadata(name=info.name, directory=info.path) for info in infos]
-
-  def _write_config(self, config: fdl.Config, path: epath.Path):
-    serialized_conifig = serialization.dump_json(config, indent=4)
-    self._save_fn(serialized_conifig, path)
-    return path
-
-  async def _from_serialized(self, path: epath.Path):
-    path = path / self._filename
-    serialized_config = path.read_text()
-    return serialization.load_json(serialized_config)
+@dataclasses.dataclass(frozen=True)
+class _SplitState:
+  params: nnx.GraphState
+  non_params: nnx.GraphState
 
 
-ocp.type_handlers.register_type_handler(
-    fdl.Config, FiddleConfigHandler(), override=True
+UNSAVED_VARIABLE_TYPES = (
+    diagnostics.DiagnosticValue,
+    dynamic_io.DynamicInputValue,
+    random_processes.RandomnessValue,
 )
 
 
-def load_model(
+def split_model_state_for_saving(model: nnx.Module) -> _SplitState:
+  """Extracts model state to save from an nnx.Module."""
+  # TODO(shoyer): Consider adding a base-class for temporary variables in
+  # in neuralgcm.experimental. This would allow for collecting them together
+  # with nnx.state() and similar utilities.
+  params, *_, non_params = nnx.state(
+      model, nnx.Param, *UNSAVED_VARIABLE_TYPES, ...
+  )
+  return _SplitState(params=params, non_params=non_params)
+
+
+_STATE_KEY = 'state'
+_CONFIG_KEY = 'fiddle_config'
+
+
+def load_model_checkpoint(
     path: str | epath.PathLike,
-    checkpointer: ocp.Checkpointer | None = None,
     spmd_mesh_updates: (
         dict[parallelism.TagOrMeshType, jax.sharding.Mesh | None] | None
     ) = None,
@@ -126,51 +78,46 @@ def load_model(
     ) = None,
 ) -> api.ForecastSystem:
   """Loades a ForecastSystem model from a checkpoint."""
-  restore_arg = ocp.args.PyTreeRestore
-  ckpt_args = {'params': restore_arg, 'metadata': restore_arg}
-  if checkpointer is None:
-    checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
-  restored = checkpointer.restore(
-      path, args=ocp.args.Composite(metadata=ckpt_args.pop('metadata'))
-  )
-  metadata = restored['metadata']
-  if 'fiddle_config' not in metadata:
-    raise NotImplementedError(
-        'Checkpoints without fiddle_config are not supported yet.'
-    )
-  cfg = metadata['fiddle_config']
-  # Note: nnx.eval_shape doesn't seem to work here because numerics
-  # components might make use of init values beyond shape.
+  checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
+
+  # Create model from checkpoint metadata.
+  config_args = ocp.args.Composite(**{_CONFIG_KEY: ocp.args.JsonRestore()})
+  model_config_dict = checkpointer.restore(path, config_args)[_CONFIG_KEY]
+  model_config = serialization.load_json(json.dumps(model_config_dict))
   model = api.ForecastSystem.from_fiddle_config(
-      cfg,
+      model_config,
       spmd_mesh_updates=spmd_mesh_updates,
       array_partitions_updates=array_partitions_updates,
       field_partitions_updates=field_partitions_updates,
   )
-  model.update_metadata('fiddle_config', cfg)
-  params_state = nnx.state(model)
-  params = checkpointer.restore(
-      path,
-      args=ocp.args.Composite(params=ckpt_args['params'](params_state)),
-  )['params']
-  nnx.update(model, params)
+
+  # Set model parameters from checkpoint.
+  state_tuple = split_model_state_for_saving(model)
+  state = nnx.merge_state(state_tuple.params, state_tuple.non_params)
+  state_args = ocp.args.Composite(**{_STATE_KEY: ocp.args.PyTreeRestore(state)})
+  restored = checkpointer.restore(path, state_args)[_STATE_KEY]
+  nnx.update(model, restored)
   return model
 
 
 def save_checkpoint(
-    model: nnx.Module,
+    model: api.ForecastSystem,
     path: str | epath.PathLike,
+    fiddle_config: fdl.Config[api.ForecastSystem] | None = None,
 ):
   """Saves model to a checkpoint."""
-  metadata = getattr(model, 'metadata', {})
-  if 'fiddle_config' not in metadata:
-    raise ValueError('fiddle_config is a required metadata for serialization.')
-  save_arg = ocp.args.PyTreeSave
-  ckpt_args = {'params': save_arg, 'metadata': save_arg}
-  ckpt_items = {'params': nnx.state(model), 'metadata': metadata}
-  ckpt_state = {k: arg(ckpt_items[k]) for k, arg in ckpt_args.items()}
+  if fiddle_config is None:
+    fiddle_config = model.fiddle_config
+
+  if not isinstance(fiddle_config, fdl.Config):
+    raise TypeError(f'must supply a fiddle.Config, got {fiddle_config=}')
+
+  state_tuple = split_model_state_for_saving(model)
+  state = nnx.merge_state(state_tuple.params, state_tuple.non_params)
+  model_config_dict = json.loads(serialization.dump_json(fiddle_config))
+  args = ocp.args.Composite(**{
+      _STATE_KEY: ocp.args.PyTreeSave(state),
+      _CONFIG_KEY: ocp.args.JsonSave(model_config_dict),
+  })
   checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
-  checkpointer.save(
-      path,
-      ocp.args.Composite(**ckpt_state),
-  )
+  checkpointer.save(path, args)

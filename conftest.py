@@ -12,11 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Configure FLAGS with default values for absltest."""
-from absl import app
-import chex
+import sys
 
-try:
-  chex.set_n_cpu_devices(8)
-  app.run(lambda argv: None)
-except SystemExit:
-  pass
+from absl import flags
+import chex
+import pytest
+
+
+chex.set_n_cpu_devices(8)
+
+
+@pytest.fixture(scope='session', autouse=True)
+def parse_flags():
+  # Only pass the first item, because pytest flags shouldn't be parsed as absl
+  # flags.
+  flags.FLAGS(sys.argv[:1])

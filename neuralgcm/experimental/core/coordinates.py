@@ -1036,6 +1036,84 @@ class LayerLevels(cx.Coordinate):
     return cls(n_layers=n_layers)
 
 
+def validate_nonnegative_depth(centers: Iterable[float] | np.ndarray):
+  if not np.min(centers) >= 0:
+    raise ValueError('SoilLevels coordinate should have non-negative depth.')
+
+
+def validate_increasing_depth(centers: Iterable[float] | np.ndarray):
+  if not np.min(np.diff(centers)) > 0:
+    raise ValueError(
+        'SoilLevels coordinate should have monotonically increasing depth,'
+        ' starting at the soil surface.'
+    )
+
+
+@jax.tree_util.register_static
+@dataclasses.dataclass(frozen=True)
+class SoilLevels(cx.Coordinate):
+  """Coordinates that discretize the vertical depth of the soil layer.
+
+  Attributes:
+    centers: center depth of each soil layer, starting at the level closest to
+      the soil surface. Must be monotonically increasing.
+  """
+
+  centers: np.ndarray
+
+  def __init__(self, centers: Iterable[float] | np.ndarray):
+    validate_nonnegative_depth(centers)
+    validate_increasing_depth(centers)
+    centers = np.asarray(centers, dtype=np.float32)
+    object.__setattr__(self, 'centers', centers)
+
+  @property
+  def dims(self):
+    return ('soil_levels',)
+
+  @property
+  def shape(self) -> tuple[int, ...]:
+    return self.centers.shape
+
+  @property
+  def fields(self):
+    return {'soil_levels': cx.wrap(self.centers, self)}
+
+  def asdict(self) -> dict[str, Any]:
+    return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}
+
+  def _components(self):
+    return (ArrayKey(self.centers),)
+
+  def __eq__(self, other):
+    return (
+        isinstance(other, SoilLevels)
+        and self._components() == other._components()
+    )
+
+  def __hash__(self) -> int:
+    return hash(self._components())
+
+  @classmethod
+  def with_era5_levels(cls):
+    return cls(centers=[3.5, 17.5, 64, 194.5])
+
+  @classmethod
+  def from_xarray(
+      cls,
+      dims: tuple[str, ...],
+      coords: xarray.Coordinates,
+  ) -> Self | cx.NoCoordinateMatch:
+    dim = dims[0]
+    if dim != 'soil_levels':
+      return cx.NoCoordinateMatch(f'Leading dimension {dim!r} != "soil_levels"')
+    name = dim
+    if coords[name].ndim != 1:
+      return cx.NoCoordinateMatch('SoilLevels coordinate is not a 1D array')
+    got = coords[name].data
+    return cls(centers=got)
+
+
 #
 # Wrapper coordinates
 #
@@ -1085,7 +1163,9 @@ class DinosaurCoordinates(cx.CartesianProduct):
 
   coordinates: tuple[cx.Coordinate, ...] = dataclasses.field(init=False)
   horizontal: LonLatGrid | SphericalHarmonicGrid = dataclasses.field()
-  vertical: SigmaLevels | PressureLevels | LayerLevels = dataclasses.field()
+  vertical: SigmaLevels | PressureLevels | LayerLevels | SoilLevels = (
+      dataclasses.field()
+  )
   dycore_partition_spec: jax.sharding.PartitionSpec = P('z', 'x', 'y')
   physics_partition_spec: jax.sharding.PartitionSpec = P(None, ('x', 'z'), 'y')
 

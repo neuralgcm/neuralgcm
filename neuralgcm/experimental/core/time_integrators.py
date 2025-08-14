@@ -27,19 +27,6 @@ import tree_math
 # pylint: disable=unexpected-keyword-arg
 
 
-def repeated(fn: typing.StepFn, steps: int) -> typing.StepFn:
-  """Returns a function that applies `fn` `steps` times."""
-  if steps == 1:
-    return fn
-
-  return nnx.scan(fn, length=steps, in_axes=nnx.Carry, out_axes=nnx.Carry)
-
-
-# TODO(dkochkov): Remove this once we migrate to using `Timedelta` everywhere.
-# Alias for fixing rounding errors in sim_time.
-maybe_fix_sim_time_roundoff = time_integration.maybe_fix_sim_time_roundoff
-
-
 class ExplicitODE(time_integration.ExplicitODE, nnx.Module):
   """Module wrapper for ExplicitODE.
 

@@ -32,7 +32,6 @@ from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import random_processes
-from neuralgcm.experimental.core import time_integrators
 from neuralgcm.experimental.core import typing
 import numpy as np
 import pandas as pd
@@ -51,6 +50,15 @@ def calculate_sub_steps(
         f'the internal model timestep {timestep}'
     )
   return round(time_step_ratio)
+
+
+# Default model state axes specifies which model variables are carried through
+# scan iterations and which are closed over.
+DEFAULT_MODEL_STATE_AXES = nnx.StateAxes({
+    diagnostics.DiagnosticValue: nnx.Carry,
+    random_processes.RandomnessValue: nnx.Carry,
+    ...: None,
+})
 
 
 @nnx_compat.dataclass
@@ -190,40 +198,51 @@ class ForecastSystem(nnx.Module, abc.ABC):
       start_with_input: bool = True,
       post_process_fn: Callable[..., typing.Pytree] = lambda x, **kwargs: x,
       dynamic_inputs: typing.Pytree | None = None,
+      model_state_axes_spec: nnx.StateAxes | None = None,
   ) -> tuple[typing.ModelState, typing.Pytree]:
     self.update_dynamic_inputs(dynamic_inputs)
     nnx.update(self, state.diagnostics)
     nnx.update(self, state.randomness)
+    # model_state_axes_spec specifies which model variables are carried through
+    # the time integration and which are closed over.
+    if model_state_axes_spec is None:
+      # By default we carry diagnostics and randomness, and close over the rest.
+      model_state_axes_spec = DEFAULT_MODEL_STATE_AXES
 
     if timedelta is None:
       timedelta = self.timestep
     inner_steps = calculate_sub_steps(self.timestep, timedelta)
 
-    def _inner_step(model_and_prognostics):
-      model, prognostics = model_and_prognostics
-      next_prognostics = model.advance_prognostics(prognostics)
-      return (model, next_prognostics)
+    def _inner_step(model, prognostics):
+      return model.advance_prognostics(prognostics)
 
-    inner_step = time_integrators.repeated(_inner_step, inner_steps)
+    if inner_steps > 1:
+      inner_step_fn = nnx.scan(
+          _inner_step,
+          length=inner_steps,
+          in_axes=(model_state_axes_spec, nnx.Carry),
+          out_axes=nnx.Carry,
+      )
+    else:
+      inner_step_fn = _inner_step
 
-    def _step(model_and_state):
-      model, model_state = model_and_state
-      model, next_prognostics = inner_step((model, model_state.prognostics))
+    def _step(model, model_state):
+      next_prognostics = inner_step_fn(model, model_state.prognostics)
       diagnostic = nnx.clone(nnx.state(model, diagnostics.DiagnosticValue))
       randomness = nnx.clone(nnx.state(model, random_processes.RandomnessValue))
       next_model_state = typing.ModelState(
           next_prognostics, diagnostic, randomness
       )
       frame = model_state if start_with_input else next_model_state
-      return (model, next_model_state), post_process_fn(frame, model=model)
+      return next_model_state, post_process_fn(frame, model=model)
 
     unroll_fn = nnx.scan(
         _step,
         length=outer_steps,
-        in_axes=nnx.Carry,
+        in_axes=(model_state_axes_spec, nnx.Carry),
         out_axes=(nnx.Carry, 0),
     )
-    (_, final_state), intermediates = unroll_fn((self, state))
+    final_state, intermediates = unroll_fn(self, state)
     steps = int(not start_with_input) + np.arange(outer_steps)
     time = coordinates.TimeDelta(steps * timedelta)
     intermediates = cx.tag(intermediates, time)

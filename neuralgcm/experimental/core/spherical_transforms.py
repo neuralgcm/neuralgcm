@@ -102,8 +102,8 @@ MODAL_SHAPE_TO_GRID = {
 
 
 @dataclasses.dataclass(frozen=True)
-class SphericalHarmonicsTransform:
-  """Spherical harmonic transform specified by grids and parallelism mesh."""
+class FixedYlmMapping:
+  """Fixed spherical harmonic transform specified by grids."""
 
   lon_lat_grid: coordinates.LonLatGrid
   ylm_grid: coordinates.SphericalHarmonicGrid
@@ -198,6 +198,11 @@ class SphericalHarmonicsTransform:
     return nodal.tag(self.nodal_grid)
 
 
+# TODO(dkochkov): Remove this alias once all new models have been updated to use
+# the updated name.
+FixedYlmMapping = FixedYlmMapping
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class YlmMapper:
   """Family of spherical harmonic transforms specified by truncation rule.
@@ -279,7 +284,7 @@ class YlmMapper:
 
   def ylm_transform(
       self, grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid
-  ) -> SphericalHarmonicsTransform:
+  ) -> FixedYlmMapping:
     if isinstance(grid, coordinates.SphericalHarmonicGrid):
       ylm_grid = grid
       nodal_grid = self.nodal_grid(ylm_grid)
@@ -288,7 +293,7 @@ class YlmMapper:
       ylm_grid = self.modal_grid(grid)
     else:
       raise ValueError(f'Unsupported {type(grid)=}')
-    return SphericalHarmonicsTransform(
+    return FixedYlmMapping(
         nodal_grid,
         ylm_grid,
         mesh=self.mesh,

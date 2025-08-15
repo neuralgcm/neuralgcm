@@ -1231,7 +1231,7 @@ class WindowTransformerBlocks(TransformerBase):
 
 
 def spherical_harmonic_lon_lat_encodings(
-    ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+    ylm_transform: spherical_transforms.FixedYlmMapping,
     l_max: int,
     l_min: int = 0,
 ):

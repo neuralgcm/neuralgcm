@@ -77,7 +77,7 @@ def uvtz_to_primitive_equations(
 
 def primitive_equations_to_uvtz(
     source_state: dinosaur_primitive_equations.StateWithTime,
-    ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+    ylm_transform: spherical_transforms.FixedYlmMapping,
     sigma_levels: coordinates.SigmaLevels,
     pressure_levels: coordinates.PressureLevels,
     primitive_equations: equations.PrimitiveEquations,
@@ -229,7 +229,7 @@ def sigma_to_primitive_equations(
 
 def primitive_equations_to_sigma(
     source_state: dinosaur_primitive_equations.StateWithTime,
-    ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+    ylm_transform: spherical_transforms.FixedYlmMapping,
     sigma_levels: coordinates.SigmaLevels,
     primitive_equations: equations.PrimitiveEquations,
     orography: orographies.Orography,

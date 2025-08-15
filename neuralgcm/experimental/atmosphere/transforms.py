@@ -36,7 +36,7 @@ from neuralgcm.experimental.core import typing
 class ToModalWithDivCurl(transforms.TransformABC):
   """Module that converts inputs to modal replacing velocity with div/curl."""
 
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: spherical_transforms.FixedYlmMapping
   u_key: str = 'u_component_of_wind'
   v_key: str = 'v_component_of_wind'
 
@@ -82,7 +82,7 @@ class ToModalWithDivCurl(transforms.TransformABC):
 class PressureOnSigmaFeatures(transforms.TransformABC):
   """Feature module that computes pressure."""
 
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: spherical_transforms.FixedYlmMapping
   sigma: coordinates.SigmaLevels
   feature_name: str = 'pressure'
 
@@ -99,7 +99,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       surface_field_names: tuple[str, ...] = tuple(),
       volume_field_names: tuple[str, ...] = tuple(),
       compute_gradients_transform: (

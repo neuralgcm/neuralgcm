@@ -45,7 +45,7 @@ class ModalSpatialFilter(SpatialFilter):
 class ExponentialModalFilter(ModalSpatialFilter):
   """Modal filter that removes high frequency components."""
 
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: spherical_transforms.FixedYlmMapping
   attenuation: float = 16.0
   order: int = 18
   cutoff: float = 0.0
@@ -67,7 +67,7 @@ class ExponentialModalFilter(ModalSpatialFilter):
   @classmethod
   def from_timescale(
       cls,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       dt: float | typing.Quantity | typing.Numeric,
       timescale: float | typing.Quantity | typing.Numeric,
       order: int = 18,
@@ -97,7 +97,7 @@ class SequentialModalFilter(ModalSpatialFilter):
   """Modal filter that applies multiple filters sequentially."""
 
   filters: Sequence[ModalSpatialFilter]
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: spherical_transforms.FixedYlmMapping
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:
     for modal_filter in self.filters:

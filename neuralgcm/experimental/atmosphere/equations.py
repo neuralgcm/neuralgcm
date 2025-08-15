@@ -35,7 +35,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       sigma_levels: coordinates.SigmaLevels,
       sim_units: units.SimUnits,
       reference_temperatures: Sequence[float],

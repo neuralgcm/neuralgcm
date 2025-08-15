@@ -70,7 +70,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     self.tendencies = {k: 0.1 * v for k, v in self.prognostics.items()}
 
   def test_extract_precipitation_plus_evaporation(self):
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
@@ -90,7 +90,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
 
   def test_extract_precipitation_and_evaporation(self):
     mesh = parallelism.Mesh()
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,

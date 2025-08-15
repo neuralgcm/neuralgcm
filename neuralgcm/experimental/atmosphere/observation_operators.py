@@ -50,7 +50,7 @@ class PressureLevelObservationOperator(
   """
 
   primitive_equation: equations.PrimitiveEquations
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: spherical_transforms.FixedYlmMapping
   sigma_levels: coordinates.SigmaLevels
   orography: orographies.ModalOrography
   pressure_levels: coordinates.PressureLevels
@@ -133,7 +133,7 @@ class SigmaLevelObservationOperator(observation_operators.ObservationOperator):
   """
 
   primitive_equation: equations.PrimitiveEquations
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: spherical_transforms.FixedYlmMapping
   sigma_levels: coordinates.SigmaLevels
   orography: orographies.ModalOrography
   target_sigma_levels: coordinates.SigmaLevels

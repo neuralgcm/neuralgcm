@@ -183,7 +183,7 @@ class EvaluatorsTest(parameterized.TestCase):
 
     #
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=grid,
         ylm_grid=ylm_grid,
         mesh=parallelism.Mesh(),

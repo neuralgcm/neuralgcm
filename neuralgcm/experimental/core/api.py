@@ -55,9 +55,9 @@ def calculate_sub_steps(
 # Default model state axes specifies which model variables are carried through
 # scan iterations and which are closed over.
 DEFAULT_MODEL_STATE_AXES = nnx.StateAxes({
-    diagnostics.DiagnosticValue: nnx.Carry,
-    random_processes.RandomnessValue: nnx.Carry,
-    ...: None,
+    dynamic_io.DynamicInputValue: None,  # close over the dynamic inputs.
+    nnx.Param: None,
+    ...: nnx.Carry,
 })
 
 

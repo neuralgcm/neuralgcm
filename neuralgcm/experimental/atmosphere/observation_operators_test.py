@@ -36,7 +36,7 @@ class ObservationOperatorsTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     n_sigma = 12
-    self.ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    self.ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,

@@ -645,7 +645,9 @@ class StreamingStatsNormalization(TransformABC):
 class ToModal(TransformABC):
   """Transforms inputs from nodal to modal space."""
 
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: (
+      spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  )
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     modal_outputs = {}
@@ -658,7 +660,9 @@ class ToModal(TransformABC):
 class ToNodal(TransformABC):
   """Transforms inputs from modal to nodal space."""
 
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: (
+      spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  )
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     nodal_outputs = {}
@@ -678,7 +682,7 @@ class ToModalWithFilteredGradients:
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       filter_attenuations: tuple[float, ...] = tuple(),
   ):
     self.ylm_transform = ylm_transform

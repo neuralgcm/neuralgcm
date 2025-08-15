@@ -12,10 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """High performance inference API for NeuralGCM models."""
+# Type inference on xarray.DataTree.subtree crashes pytype! Re-enable after
+# this upstream fix is merged: https://github.com/pydata/xarray/pull/10644
+# pytype: skip-file
 
 import dataclasses
+import math
 
 import dask.array
+from flax import nnx
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
 import numpy as np
@@ -41,8 +46,30 @@ def _query_to_dummy_datatree(query: typing.Query) -> xarray.DataTree:
   return xarray.DataTree.from_dict(outputs)
 
 
+# TODO(shoyer): Add these methods upstream onto xarray.DataTree.
+# TODO(shoyer): Fix these typing issues upstream in xarray.DataTree
+
+
+def _datatree_expand_dims(
+    tree: xarray.DataTree, **kwargs: int | list | np.ndarray
+) -> xarray.DataTree:
+  """Expand dimensions in a DataTree."""
+  return tree.map_over_datasets(lambda ds: ds.expand_dims(**kwargs))  # type: ignore[bad-return-type]
+
+
+def _datatree_rename(
+    tree: xarray.DataTree, renames: dict[str, str]
+) -> xarray.DataTree:
+  """Rename variables and coordinates in a DataTree."""
+  return tree.map_over_datasets(  # type: ignore[bad-return-type]
+      lambda ds: ds.rename({k: v for k, v in renames.items() if k in ds})
+  )
+
+
 @dataclasses.dataclass
 class InferenceRunner:
+  """High performance inference runner for NeuralGCM models."""
+
   model: api.ForecastSystem
   inputs: NestedData
   dynamic_inputs: NestedData  # if needed separately from inputs
@@ -55,12 +82,13 @@ class InferenceRunner:
   )  # or potentially dict[str, timedelta] for nested outputs
   output_duration: np.timedelta64
   output_chunks: dict[str, int]  # should have a sane defaults
+  zarr_format: int | None = None
 
   def setup(self) -> None:
     """Call once to setup metadata in output Zarr(s)."""
     # Our strategy here is to create a DataTree where all variables are empty
     # dask.array objects, similar xarray_beam.make_template()
-    dummy_outputs = _query_to_dummy_datatree(self.output_query)
+    template = _query_to_dummy_datatree(self.output_query)
     lead_times = np.arange(0, self.output_duration, self.output_freq)
     expanded_dims = {
         'init_time': self.init_times.astype('datetime64[ns]'),
@@ -71,15 +99,19 @@ class InferenceRunner:
 
     # The use of expand_dims() here replicates
     # xarray_beam.replace_template_dims().
-    expanded_outputs: xarray.DataTree = dummy_outputs.map_over_datasets(  # type: ignore
-        lambda ds: ds.expand_dims(expanded_dims).chunk(self.output_chunks)
-    )
+    template = _datatree_expand_dims(template, **expanded_dims)
+    template = template.chunk(self.output_chunks)
+
     # TODO(shoyer): Consider checking if the output Zarr file with the correct
     # metadata already exists, and if so, skipping setup.
+
     # TODO(shoyer): Determine if there's anything we need to do to work around
     # idempotency issues in Zarr, or if using Zarr v3 is sufficient:
     # https://github.com/zarr-developers/zarr-python/issues/1435
-    expanded_outputs.to_zarr(self.output_path, compute=False)
+
+    # TODO(shoyer): Switch to Zarr v3, which will require setting a default fill
+    # value explicitly: https://github.com/pydata/xarray/issues/10646
+    template.to_zarr(self.output_path, compute=False, zarr_format=2)
 
   @property
   def task_count(self) -> int:
@@ -98,3 +130,53 @@ class InferenceRunner:
     Raises:
       SomeException: if setup() has not been completed first.
     """
+    if self.ensemble_size is not None:
+      raise NotImplementedError('ensembles are not implemented yet')
+
+    init_time = self.init_times[task_id].astype('datetime64[ns]')
+    # TODO(shoyer): Can we get the number of time-steps to include in model
+    # inputs from the model (or at least an InferenceRunner property) instead of
+    # hard-coding it here?
+    selected_inputs = {
+        k: v.sel(time=[init_time]) for k, v in self.inputs.items()
+    }
+
+    @nnx.jit
+    def assimilate(model, input_obs):
+      return model.assimilate(input_obs)
+
+    def observe(state, model):
+      return model.observe(state, self.output_query)
+
+    @nnx.jit
+    def unroll(model, state):
+      return model.unroll(
+          state,
+          outer_steps=math.ceil(self.output_duration / self.output_freq),
+          timedelta=self.output_freq,
+          post_process_fn=observe,
+      )
+
+    # TODO(shoyer): Add dynamic_inputs and rng arguments.
+    input_obs = self.model.observations_from_xarray(selected_inputs)
+    state = assimilate(self.model, input_obs)
+    # TODO(shoyer): Call unroll() in a loop, writing outputs to Zarr as we go
+    # and checkpointing `state`.
+    _, trajectory_slice = unroll(self.model, state)
+    outputs = self.model.data_to_xarray(trajectory_slice)
+
+    outputs_tree = xarray.DataTree.from_dict(outputs)
+    outputs_tree = _datatree_expand_dims(outputs_tree, init_time=[init_time])
+    # TODO(shoyer): Rename TimeDelta to LeadTime in
+    # neuralgcm.experimental.core.coordinates.
+    outputs_tree = _datatree_rename(outputs_tree, {'timedelta': 'lead_time'})
+    # Remove variables that don't have an init_time dimension. These shouldn't
+    # be written to disk again.
+    node: xarray.DataTree
+    for node in outputs_tree.subtree:
+      for name, variable in node.variables.items():
+        if 'init_time' not in variable.dims:
+          del node[name]
+    # TODO(shoyer): See if we can get region='auto' to work.
+    region = {'init_time': slice(task_id, task_id + 1)}
+    outputs_tree.to_zarr(self.output_path, mode='r+', region=region)

@@ -12,17 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
+import functools
+
 from absl.testing import absltest
 import coordax as cx
 import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
+from neuralgcm.experimental.core import xarray_utils
 from neuralgcm.experimental.inference import runner as runnerlib
 import numpy as np
 import xarray
 
 
+@dataclasses.dataclass
 class MockForecastSystem(api.ForecastSystem):
+  required_input_specs: dict[str, dict[str, cx.Coordinate]]
+
+  @property
+  def timestep(self) -> np.timedelta64:
+    return np.timedelta64(1, "h")
 
   def assimilate_prognostics(
       self,
@@ -31,7 +41,12 @@ class MockForecastSystem(api.ForecastSystem):
       rng: typing.PRNGKeyArray | None = None,
       initial_state: typing.ModelState | None = None,
   ) -> typing.Prognostics:
-    return observations["state"]
+    return jax.tree.map(
+        # TODO(shoyer): create a .isel() method on Field?
+        cx.cmap(lambda x: x[-1]),
+        cx.untag(observations["state"], "timedelta"),
+        is_leaf=cx.is_field,
+    )
 
   def advance_prognostics(
       self, prognostics: typing.Prognostics
@@ -46,22 +61,47 @@ class MockForecastSystem(api.ForecastSystem):
     del query  # ignored for now
     return {"state": prognostics}
 
+  # TODO(shoyer): Move these methods upstream onto the base api.ForecastSystem?
+
+  def observations_from_xarray(
+      self,
+      nested_data: dict[str, xarray.Dataset],
+  ) -> dict[str, dict[str, cx.Field]]:
+    nested_data = xarray_utils.ensure_timedelta_axis(nested_data)
+    return xarray_utils.read_fields_from_xarray(
+        nested_data, self.required_input_specs
+    )
+
+  def data_to_xarray(
+      self,
+      data: dict[str, dict[str, cx.Field]],
+  ) -> dict[str, xarray.Dataset]:
+    return {k: xarray_utils.fields_to_xarray(v) for k, v in data.items()}
+
 
 class RunnerTest(absltest.TestCase):
 
   def test_inference_runner_setup(self):
     output_path = self.create_tempdir().full_path
-    init_times = np.arange(
-        np.datetime64("2025-01-01"),
-        np.datetime64("2025-01-04"),
-        np.timedelta64(1, "D"),
+    init_times = np.array(
+        [np.datetime64("2025-01-01"), np.datetime64("2025-01-02")]
     )
     runner = runnerlib.InferenceRunner(
-        model=MockForecastSystem(),
+        model=MockForecastSystem(
+            required_input_specs={
+                "state": {
+                    "foo": cx.Scalar(),
+                    "bar": cx.LabeledAxis("x", np.array([0.1, 0.2, 0.3])),
+                }
+            }
+        ),
         inputs={
             "state": xarray.Dataset(
-                {"foo": 0.0, "bar": ("x", np.array([1.0, 2.0, 3.0]))},
-                coords={"x": np.array([0.1, 0.2, 0.3])},
+                {
+                    "foo": (("time",), np.array([0.0, 10.0])),
+                    "bar": (("time", "x"), np.array(2 * [[1.0, 2.0, 3.0]])),
+                },
+                coords={"time": init_times, "x": np.array([0.1, 0.2, 0.3])},
             )
         },
         dynamic_inputs={},
@@ -75,22 +115,47 @@ class RunnerTest(absltest.TestCase):
             }
         },
         output_freq=np.timedelta64(6, "h"),
-        output_duration=np.timedelta64(10, "D"),
+        output_duration=np.timedelta64(1, "D"),
         output_chunks={"lead_time": 4, "init_time": 1},
     )
     runner.setup()
+    self.assertEqual(runner.task_count, 2)
 
-    tree = xarray.open_datatree(output_path, engine="zarr")
-    actual_coords = tree["state"].coords.to_dataset()
-    expected_lead_times = np.arange(0, 240, 6) * np.timedelta64(1, "h")
-    expected_coords = xarray.Dataset(
+    expected_lead_times = np.arange(0, 24, 6) * np.timedelta64(1, "h")
+    nans = functools.partial(np.full, fill_value=np.nan)
+    root_node = xarray.Dataset(
         coords={
             "init_time": init_times.astype("datetime64[ns]"),
             "lead_time": expected_lead_times.astype("timedelta64[ns]"),
-            "x": np.array([0.1, 0.2, 0.3]),
-        }
+        },
     )
-    xarray.testing.assert_equal(actual_coords, expected_coords)
+    child_node = xarray.Dataset(
+        {
+            "foo": (("init_time", "lead_time"), nans((2, 4))),
+            "bar": (("init_time", "lead_time", "x"), nans((2, 4, 3))),
+        },
+        coords={"x": np.array([0.1, 0.2, 0.3])},
+    )
+    expected = xarray.DataTree.from_dict({"/": root_node, "/state": child_node})
+    actual = xarray.open_datatree(output_path, engine="zarr")
+    xarray.testing.assert_equal(actual, expected)
+
+    for task_id in range(runner.task_count):
+      runner.run(task_id)
+
+    h = np.array([0.0, 6.0, 12.0, 18.0])
+    expected_foo = np.stack([h, 10 + h])
+    expected_bar = np.stack(2 * [np.stack([h + 1, h + 2, h + 3], axis=1)])
+    child_node = xarray.Dataset(
+        {
+            "foo": (("init_time", "lead_time"), expected_foo),
+            "bar": (("init_time", "lead_time", "x"), expected_bar),
+        },
+        coords={"x": np.array([0.1, 0.2, 0.3])},
+    )
+    expected = xarray.DataTree.from_dict({"/": root_node, "/state": child_node})
+    actual = xarray.open_datatree(output_path, engine="zarr")
+    xarray.testing.assert_equal(actual, expected)
 
 
 if __name__ == "__main__":

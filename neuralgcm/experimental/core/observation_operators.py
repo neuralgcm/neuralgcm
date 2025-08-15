@@ -85,6 +85,21 @@ class DataObservationOperator(ObservationOperator):
 
 
 @dataclasses.dataclass
+class TransformObservationOperator(ObservationOperator):
+  """Operator that returns transformed inputs as observations."""
+
+  transform: transforms.Transform
+
+  def observe(
+      self,
+      inputs: dict[str, cx.Field],
+      query: dict[str, cx.Field | cx.Coordinate],
+  ) -> typing.Observation:
+    data_observation = DataObservationOperator(self.transform(inputs))
+    return data_observation.observe({}, query)
+
+
+@dataclasses.dataclass
 class ObservationOperatorWithRenaming(ObservationOperator):
   """Operator wrapper that converts between different naming conventions.
 
@@ -106,6 +121,10 @@ class ObservationOperatorWithRenaming(ObservationOperator):
     observation = self.operator.observe(inputs, renamed_query)
     inverse_renaming_dict = {v: k for k, v in self.renaming_dict.items()}
     return {inverse_renaming_dict.get(k, k): v for k, v in observation.items()}
+
+
+# TODO(dkochkov): This operator is deprecated, remove it once all new models
+# have been transitioned to use TransformObservationOperator.
 
 
 @dataclasses.dataclass

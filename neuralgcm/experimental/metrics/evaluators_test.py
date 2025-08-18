@@ -26,6 +26,7 @@ from neuralgcm.experimental.metrics import deterministic_losses
 from neuralgcm.experimental.metrics import deterministic_metrics
 from neuralgcm.experimental.metrics import evaluators
 from neuralgcm.experimental.metrics import probabilistic_losses
+from neuralgcm.experimental.metrics import scaling
 from neuralgcm.experimental.metrics import weighting
 import numpy as np
 
@@ -128,6 +129,24 @@ class EvaluatorsTest(parameterized.TestCase):
     # total = 0.3 * 2.5 + 0.7 * 1.5 = 0.75 + 1.05 = 1.8
     np.testing.assert_almost_equal(total_loss.data, 1.8)
 
+  def test_evaluator_with_scaling(self):
+    dim = cx.SizedAxis('spatial', 2)
+    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+
+    loss = deterministic_losses.MAE()
+    scaler = scaling.ConstantScaler(cx.wrap(np.array([2.0, 1.0]), dim))
+    evaluator = evaluators.Evaluator(
+        metrics={'loss': loss},
+        aggregators=aggregation.Aggregator(
+            dims_to_reduce=['spatial'], weight_by=[], scale_by=[scaler]
+        ),
+    )
+    self.assertTrue(evaluator.is_loss_evaluator)
+    total_loss = evaluator.evaluate_total(predictions, targets)
+    # mae = (2 * abs(2-1) + 1 * abs(3-1)) / 2 = 2.0
+    np.testing.assert_almost_equal(total_loss.data, 2.0)
+
   def test_evaluator_with_skipna(self):
     dim = cx.SizedAxis('spatial', 3)
     predictions = {'x': cx.wrap(np.array([1.0, 2.0, 3.0]), dim)}
@@ -192,7 +211,7 @@ class EvaluatorsTest(parameterized.TestCase):
     nodal_getter = transforms.Identity()
     modal_getter = transforms.Sequential([
         transforms.ToModal(ylm_transform),
-        transforms.ClipWavenumbers(grid=ylm_grid, wavenumbers_to_clip=2),
+        transforms.ClipWavenumbers({ylm_grid: 2}),
     ])
     area_weighting = weighting.GridAreaWeighting()
     variable_weighting = weighting.PerVariableWeighting(

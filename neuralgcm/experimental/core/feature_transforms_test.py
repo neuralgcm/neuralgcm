@@ -66,7 +66,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     self._test_feature_module(latitude_features, None)
 
   def test_orography_features(self):
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
@@ -82,7 +82,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     self._test_feature_module(orography_features, None)
 
   def test_orography_with_grads_features(self):
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
@@ -181,7 +181,7 @@ class FeatureTransformsTest(parameterized.TestCase):
   @parameterized.named_parameters(
       dict(
           testcase_name='T21_grid',
-          ylm_transform=spherical_transforms.SphericalHarmonicsTransform(
+          ylm_transform=spherical_transforms.FixedYlmMapping(
               lon_lat_grid=coordinates.LonLatGrid.T21(),
               ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
               partition_schema_key=None,

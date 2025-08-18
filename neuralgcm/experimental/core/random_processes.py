@@ -224,7 +224,7 @@ class GaussianRandomFieldCore(nnx.Module):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       dt: float,
       sim_units: units.SimUnits,
       correlation_time: typing.Numeric | typing.Quantity,
@@ -372,7 +372,7 @@ class GaussianRandomField(RandomProcessModule):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       dt: float,
       sim_units: units.SimUnits,
       correlation_time: typing.Numeric | typing.Quantity,
@@ -455,7 +455,7 @@ class BatchGaussianRandomField(RandomProcessModule):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       dt: float,
       sim_units: units.SimUnits,
       correlation_times: typing.Numeric | typing.Quantity,

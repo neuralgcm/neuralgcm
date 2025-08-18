@@ -206,6 +206,91 @@ class TransformsTest(parameterized.TestCase):
     actual = clip_transform(inputs)
     chex.assert_trees_all_equal(actual, expected)
 
+  def test_to_modal(self):
+    mesh = parallelism.Mesh()
+    nodal_grid = coordinates.LonLatGrid.T21()
+    inputs = {
+        'u': cx.wrap(np.ones(nodal_grid.shape), nodal_grid),
+    }
+    with self.subTest('fixed_ylm_mapping_cubic'):
+      ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+      ylm_transform = spherical_transforms.FixedYlmMapping(
+          nodal_grid, ylm_grid, mesh, None
+      )
+      to_modal = transforms.ToModal(ylm_transform)
+      actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
+      expected_ylm_grid = ylm_grid
+      self.assertEqual(actual_out_grid, expected_ylm_grid)
+
+    with self.subTest('fixed_ylm_mapping_linear'):
+      ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
+      ylm_transform = spherical_transforms.FixedYlmMapping(
+          nodal_grid, ylm_grid, mesh, None
+      )
+      to_modal = transforms.ToModal(ylm_transform)
+      actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
+      expected_ylm_grid = ylm_grid
+      self.assertEqual(actual_out_grid, expected_ylm_grid)
+
+    with self.subTest('ylm_mapper_cubic'):
+      ylm_mapper = spherical_transforms.YlmMapper(
+          truncation_rule='cubic', mesh=mesh, partition_schema_key=None
+      )
+      to_modal = transforms.ToModal(ylm_mapper)
+      actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
+      expected_ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+      self.assertEqual(actual_out_grid, expected_ylm_grid)
+
+    with self.subTest('ylm_mapper_linear'):
+      ylm_mapper = spherical_transforms.YlmMapper(
+          truncation_rule='linear', mesh=mesh, partition_schema_key=None
+      )
+      to_modal = transforms.ToModal(ylm_mapper)
+      actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
+      expected_ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
+      self.assertEqual(actual_out_grid, expected_ylm_grid)
+
+  def test_to_nodal(self):
+    mesh = parallelism.Mesh()
+    cubic_ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    linear_ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
+    cubic_inputs = {
+        'u': cx.wrap(np.ones(cubic_ylm_grid.shape), cubic_ylm_grid),
+    }
+    linear_inputs = {
+        'u': cx.wrap(np.ones(linear_ylm_grid.shape), linear_ylm_grid),
+    }
+    grid = coordinates.LonLatGrid.T21()
+    with self.subTest('fixed_ylm_mapping'):
+      ylm_transform = spherical_transforms.FixedYlmMapping(
+          grid, cubic_ylm_grid, mesh, None
+      )
+      to_nodal = transforms.ToNodal(ylm_transform)
+      actual_out_grid = cx.get_coordinate(to_nodal(cubic_inputs)['u'])
+      self.assertEqual(actual_out_grid, grid)
+      # transforming from linear inputs.
+      ylm_transform = spherical_transforms.FixedYlmMapping(
+          grid, linear_ylm_grid, mesh, None
+      )
+      to_nodal = transforms.ToNodal(ylm_transform)
+      actual_out_grid = cx.get_coordinate(to_nodal(linear_inputs)['u'])
+      self.assertEqual(actual_out_grid, grid)
+
+    with self.subTest('ylm_mapper'):
+      ylm_mapper = spherical_transforms.YlmMapper(
+          truncation_rule='cubic', mesh=mesh, partition_schema_key=None
+      )
+      to_nodal = transforms.ToNodal(ylm_mapper)
+      actual_out_grid = cx.get_coordinate(to_nodal(cubic_inputs)['u'])
+      self.assertEqual(actual_out_grid, grid)
+      # transforming from linear inputs.
+      ylm_mapper = spherical_transforms.YlmMapper(
+          truncation_rule='linear', mesh=mesh, partition_schema_key=None
+      )
+      to_nodal = transforms.ToNodal(ylm_mapper)
+      actual_out_grid = cx.get_coordinate(to_nodal(linear_inputs)['u'])
+      self.assertEqual(actual_out_grid, grid)
+
   def test_apply_to_keys(self):
     x = cx.SizedAxis('x', 3)
     inputs = {
@@ -227,7 +312,7 @@ class TransformsTest(parameterized.TestCase):
     nodal_grid = coordinates.LonLatGrid.T21()
     modal_grid = coordinates.SphericalHarmonicGrid.T21()
     mesh = parallelism.Mesh()
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         nodal_grid, modal_grid, mesh, None
     )
     to_modal = transforms.ToModal(ylm_transform)

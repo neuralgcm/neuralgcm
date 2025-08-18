@@ -41,7 +41,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
   fluxes as positive and "upward" fluxes as negative.
   """
 
-  ylm_transform: spherical_transforms.SphericalHarmonicsTransform
+  ylm_transform: spherical_transforms.FixedYlmMapping
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
   moisture_species: tuple[str, ...] = (

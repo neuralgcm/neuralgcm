@@ -46,7 +46,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
 
   def test_velocity_and_prognostics_with_modal_gradients(self):
     sigma = coordinates.SigmaLevels.equidistant(4)
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
@@ -81,7 +81,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
   def test_pressure_features(self):
     sigma = coordinates.SigmaLevels.equidistant(8)
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=ylm_grid,
         partition_schema_key=None,

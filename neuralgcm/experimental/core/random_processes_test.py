@@ -299,7 +299,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T42_reasonable_corrs',
           variance=0.7,
-          ylm_transform=spherical_transforms.SphericalHarmonicsTransform(
+          ylm_transform=spherical_transforms.FixedYlmMapping(
               coordinates.LonLatGrid.T42(),
               coordinates.SphericalHarmonicGrid.T42(),
               partition_schema_key=None,
@@ -311,7 +311,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T21_reasonable_corrs',
           variance=1.5,
-          ylm_transform=spherical_transforms.SphericalHarmonicsTransform(
+          ylm_transform=spherical_transforms.FixedYlmMapping(
               coordinates.LonLatGrid.T21(),
               coordinates.SphericalHarmonicGrid.T21(),
               partition_schema_key=None,
@@ -323,7 +323,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T42_large_radius',
           variance=1.2,
-          ylm_transform=spherical_transforms.SphericalHarmonicsTransform(
+          ylm_transform=spherical_transforms.FixedYlmMapping(
               coordinates.LonLatGrid.T42(),
               coordinates.SphericalHarmonicGrid.T42(),
               partition_schema_key=None,
@@ -336,7 +336,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T85_long_corrs',
           variance=2.7,
-          ylm_transform=spherical_transforms.SphericalHarmonicsTransform(
+          ylm_transform=spherical_transforms.FixedYlmMapping(
               coordinates.LonLatGrid.T85(),
               coordinates.SphericalHarmonicGrid.T85(),
               partition_schema_key=None,
@@ -395,7 +395,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       self, correlation_time_type, correlation_length_type, variance_type
   ):
     """Tests that random process does not mutate structure of nnx.state."""
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
         partition_schema_key=None,
@@ -434,7 +434,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
 
   def setUp(self):
     super().setUp()
-    self.ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    self.ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T85(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T85(),
         partition_schema_key=None,
@@ -581,7 +581,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       self, correlation_time_type, correlation_length_type, variance_type
   ):
     """Tests that random process does not mutate structure of nnx.state."""
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
         partition_schema_key=None,
@@ -619,7 +619,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
 
   def test_init_under_jit(self):
     """Tests that random process can be initialized under jit."""
-    ylm_transform = spherical_transforms.SphericalHarmonicsTransform(
+    ylm_transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
         partition_schema_key=None,

@@ -56,7 +56,7 @@ class SphericalTransformsTest(parameterized.TestCase):
   ):
     """Tests that SphericalHarmonicsTransform is equivalent to dinosaur."""
     mesh = parallelism.Mesh(spmd_mesh=None)
-    transform = spherical_transforms.SphericalHarmonicsTransform(
+    transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=lon_lat_grid,
         ylm_grid=ylm_grid,
         mesh=mesh,
@@ -95,7 +95,7 @@ class SphericalTransformsTest(parameterized.TestCase):
         spmd_mesh=spmd_mesh,
         field_partitions={'spatial': {'longitude': 'x', 'latitude': 'y'}},
     )
-    transform = spherical_transforms.SphericalHarmonicsTransform(
+    transform = spherical_transforms.FixedYlmMapping(
         lon_lat_grid=lon_lat_grid,
         ylm_grid=ylm_grid,
         mesh=mesh,

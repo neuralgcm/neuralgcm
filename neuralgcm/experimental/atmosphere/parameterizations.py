@@ -37,7 +37,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
   def __init__(
       self,
       *,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       sigma: coordinates.SigmaLevels,
       surface_field_names: tuple[str, ...],
       volume_field_names: tuple[str, ...],

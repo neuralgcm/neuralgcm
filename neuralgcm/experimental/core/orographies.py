@@ -38,7 +38,7 @@ class ModalOrography(nnx.Module):
   def __init__(
       self,
       *,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       initializer: nnx.initializers.Initializer = nnx.initializers.zeros_init(),
       rngs: nnx.Rngs,
   ):
@@ -62,7 +62,7 @@ class ModalOrography(nnx.Module):
   def update_orography_from_data(
       self,
       dataset: xarray.Dataset,
-      data_ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      data_ylm_transform: spherical_transforms.FixedYlmMapping,
       sim_units: units.SimUnits,
       spatial_filter=None,
   ):
@@ -100,7 +100,7 @@ class ModalOrographyWithCorrection(ModalOrography):
   def __init__(
       self,
       *,
-      ylm_transform: spherical_transforms.SphericalHarmonicsTransform,
+      ylm_transform: spherical_transforms.FixedYlmMapping,
       initializer: nnx.initializers.Initializer = nnx.initializers.zeros_init(),
       correction_scale: float,
       correction_param_type: nnx.Param = nnx.Param,

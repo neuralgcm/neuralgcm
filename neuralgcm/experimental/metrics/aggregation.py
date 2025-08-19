@@ -27,6 +27,7 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.metrics import base
 from neuralgcm.experimental.metrics import binning
+from neuralgcm.experimental.metrics import scaling
 from neuralgcm.experimental.metrics import weighting
 import numpy as np
 
@@ -151,13 +152,14 @@ class Aggregator:
   Attributes:
     dims_to_reduce: Sequence of coordinates or dimension names to reduce over.
     weight_by: Sequence of `weighting.Weighting` instances to apply.
+    scale_by: Optional sequence of `scaling.Scaler` instances to apply.
     bin_by: Optional sequence of `binning.Binning` instances to apply.
     skip_missing: If True, `dims_to_reduce` that are not present in a given
       field will be skipped. If False, a `ValueError` is raised.
     skipna: If True, NaNs will be omitted in the aggregation.
     keep_weights_for_nans: If True, weights corresponding to NaN values are
-      retained. Such behavior might be desired when computing the loss, where
-      a NaN value is slipped without increasing the relative weight of the other
+      retained. Such behavior might be desired when computing the loss, where a
+      NaN value is slipped without increasing the relative weight of the other
       entries in the statistics. Has effective only when `skipna` is True.
   """
 
@@ -166,6 +168,7 @@ class Aggregator:
 
   dims_to_reduce: Sequence[cx.Coordinate | str]
   weight_by: Sequence[weighting.Weighting]
+  scale_by: Sequence[scaling.ScaleFactor] | None = None
   bin_by: Sequence[binning.Binning] | None = None
   skip_missing: bool = True
   skipna: bool = False
@@ -175,6 +178,7 @@ class Aggregator:
       self,
       stat_field: cx.Field,
       field_name: str,
+      apply_scales: bool,
   ) -> cx.Field:
     """Applies configured reductions, (optional) weightings, and binnings."""
     weights = cx.wrap(1)
@@ -191,6 +195,10 @@ class Aggregator:
     if not self.skip_missing and set(untags) != set(self.dims_to_reduce):
       missing_dims = set(self.dims_to_reduce) - set(untags)
       raise ValueError(f'skip_missing is False but have a {missing_dims=}')
+
+    if apply_scales and self.scale_by is not None:
+      for scaler in self.scale_by:
+        stat_field *= scaler.scales(stat_field, field_name=field_name)
 
     # TODO(dkochkov): Consider using `jnp.dot` + `jnp.sum` here for efficiency.
     sum_positional = cx.cmap(jnp.sum)
@@ -209,6 +217,7 @@ class Aggregator:
         # exposing the outer product structure?
         weight_field = cx.wrap_like(np.ones(stat_field.shape), stat_field)
         if self.skipna:
+
           def _apply_nan_mask(x, nan_mask):
             return jnp.where(nan_mask, 0.0, x)
 
@@ -219,10 +228,10 @@ class Aggregator:
             weight_field = cx.cmap(_apply_nan_mask)(weight_field, nan_mask)
 
         sum_weighted_stats_result[stat_name][term_name] = self.aggregation_fn(
-            stat_field, field_name=term_name
+            stat_field, field_name=term_name, apply_scales=True
         )
         sum_weights_result[stat_name][term_name] = self.aggregation_fn(
-            weight_field, field_name=term_name
+            weight_field, field_name=term_name, apply_scales=False
         )
     return AggregationState(
         dict(sum_weighted_stats_result), dict(sum_weights_result)

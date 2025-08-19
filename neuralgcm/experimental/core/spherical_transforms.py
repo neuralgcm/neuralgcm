@@ -200,7 +200,7 @@ class FixedYlmMapping:
 
 # TODO(dkochkov): Remove this alias once all new models have been updated to use
 # the updated name.
-FixedYlmMapping = FixedYlmMapping
+SphericalHarmonicsTransform = FixedYlmMapping
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

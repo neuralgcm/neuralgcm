@@ -226,15 +226,24 @@ class ForecastSystem(nnx.Module, abc.ABC):
     else:
       inner_step_fn = _inner_step
 
-    def _step(model, model_state):
-      next_prognostics = inner_step_fn(model, model_state.prognostics)
-      diagnostic = nnx.clone(nnx.state(model, diagnostics.DiagnosticValue))
-      randomness = nnx.clone(nnx.state(model, random_processes.RandomnessValue))
-      next_model_state = typing.ModelState(
-          next_prognostics, diagnostic, randomness
+    def _to_model_state(prognostics, model):
+      return typing.ModelState(
+          prognostics,
+          nnx.clone(nnx.state(model, diagnostics.DiagnosticValue)),
+          nnx.clone(nnx.state(model, random_processes.RandomnessValue)),
       )
-      frame = model_state if start_with_input else next_model_state
-      return next_model_state, post_process_fn(frame, model=model)
+
+    def _step(model, prognostics):
+      if start_with_input:
+        model_state = _to_model_state(prognostics, model)
+        intermediate = post_process_fn(model_state, model=model)
+        next_prognostics = inner_step_fn(model, prognostics)
+      else:
+        next_prognostics = inner_step_fn(model, prognostics)
+        model_state = _to_model_state(next_prognostics, model)
+        intermediate = post_process_fn(model_state, model=model)
+      # TODO(dkochkov): Consider calling post_process on prognostics directly.
+      return next_prognostics, intermediate
 
     unroll_fn = nnx.scan(
         _step,
@@ -242,7 +251,12 @@ class ForecastSystem(nnx.Module, abc.ABC):
         in_axes=(model_state_axes_spec, nnx.Carry),
         out_axes=(nnx.Carry, 0),
     )
-    final_state, intermediates = unroll_fn(self, state)
+    final_prognostics, intermediates = unroll_fn(self, state.prognostics)
+    final_state = typing.ModelState(
+        final_prognostics,
+        nnx.clone(nnx.state(self, diagnostics.DiagnosticValue)),
+        nnx.clone(nnx.state(self, random_processes.RandomnessValue)),
+    )
     steps = int(not start_with_input) + np.arange(outer_steps)
     time = coordinates.TimeDelta(steps * timedelta)
     intermediates = cx.tag(intermediates, time)

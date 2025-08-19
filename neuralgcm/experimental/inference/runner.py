@@ -12,17 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """High performance inference API for NeuralGCM models."""
-# Type inference on xarray.DataTree.subtree crashes pytype! Re-enable after
-# this upstream fix is merged: https://github.com/pydata/xarray/pull/10644
-# pytype: skip-file
-
 import dataclasses
 import math
+from typing import Any
 
 import dask.array
 from flax import nnx
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
+from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
 import numpy as np
 import numpy.typing as npt
 import xarray
@@ -51,7 +49,7 @@ def _query_to_dummy_datatree(query: typing.Query) -> xarray.DataTree:
 
 
 def _datatree_expand_dims(
-    tree: xarray.DataTree, **kwargs: int | list | np.ndarray
+    tree: xarray.DataTree, **kwargs: int | list[Any] | np.ndarray
 ) -> xarray.DataTree:
   """Expand dimensions in a DataTree."""
   return tree.map_over_datasets(lambda ds: ds.expand_dims(**kwargs))  # type: ignore[bad-return-type]
@@ -72,7 +70,7 @@ class InferenceRunner:
 
   model: api.ForecastSystem
   inputs: NestedData
-  dynamic_inputs: NestedData  # if needed separately from inputs
+  dynamic_inputs: dynamic_inputs_lib.DynamicInputs
   init_times: npt.NDArray[np.datetime64]
   ensemble_size: int | None  # ensemble_size=None for deterministic models
   output_path: str

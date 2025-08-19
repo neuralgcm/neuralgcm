@@ -183,28 +183,41 @@ class TransformsTest(parameterized.TestCase):
       np.testing.assert_allclose(actual['nan_at_mask'].data[0, :], y_ones)
       np.testing.assert_allclose(actual['all_nans'].data[0], np.nan)
 
-  @parameterized.parameters(
-      dict(n_clip=1),
-      dict(n_clip=2),
-      dict(n_clip=5),
-  )
-  def test_clip_wavenumbers(self, n_clip: int = 1):
+  def test_clip_wavenumbers(self):
     """Tests that ClipWavenumbers works as expected."""
-    grid = coordinates.SphericalHarmonicGrid.T21()
+    ylm_grid_21 = coordinates.SphericalHarmonicGrid.T21()
+    ylm_grid_31 = coordinates.SphericalHarmonicGrid.TL31()
+    ylm_dims = 'longitude_wavenumber', 'total_wavenumber'
     inputs = {
-        'u': cx.wrap(np.ones(grid.shape), grid),
-        'v': cx.wrap(np.ones(grid.shape), grid),
+        'u': cx.wrap(np.ones(ylm_grid_21.shape), ylm_grid_21),
+        'v': cx.wrap(np.ones(ylm_grid_31.shape), ylm_grid_31),
+        'skipped': cx.wrap(np.ones(ylm_grid_21.shape), *ylm_dims),
     }
-    ls = grid.fields['total_wavenumber']
-    make_mask = lambda x: (np.arange(x.size) <= (x.max() - n_clip)).astype(int)
-    clip_mask = cx.cmap(make_mask)(ls.untag(*ls.axes)).tag(*ls.axes)
-    expected = {k: v * clip_mask for k, v in inputs.items()}
+    ls_21 = ylm_grid_21.fields['total_wavenumber']
+    ls_31 = ylm_grid_31.fields['total_wavenumber']
+    make_mask = lambda x, n: (np.arange(x.size) <= (x.max() - n)).astype(int)
+    make_mask = cx.cmap(make_mask)
+    clip_mask_21 = make_mask(ls_21.untag(*ls_21.axes), 3).tag(*ls_21.axes)
+    clip_mask_31 = make_mask(ls_31.untag(*ls_31.axes), 5).tag(*ls_31.axes)
+    expected = {
+        'u': inputs['u'] * clip_mask_21,
+        'v': inputs['v'] * clip_mask_31,
+        'skipped': inputs['skipped'],
+    }
     clip_transform = transforms.ClipWavenumbers(
-        grid=grid,
-        wavenumbers_to_clip=n_clip,
+        wavenumbers_for_grid={ylm_grid_21: 3, ylm_grid_31: 5},
+        skip_missing=True,
     )
     actual = clip_transform(inputs)
     chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('raises_error_if_no_match'):
+      clip_transform = transforms.ClipWavenumbers(
+          wavenumbers_for_grid={ylm_grid_21: 3, ylm_grid_31: 5},
+          skip_missing=False,
+      )
+      with self.assertRaisesRegex(ValueError, 'No matching grid found'):
+        clip_transform(inputs)
 
   def test_to_modal(self):
     mesh = parallelism.Mesh()

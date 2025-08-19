@@ -521,6 +521,22 @@ class SphericalHarmonicGrid(cx.Coordinate):
 
     return jax.tree.map(clip, inputs)
 
+  def __lt__(self, other: SphericalHarmonicGrid):
+    if not isinstance(other, SphericalHarmonicGrid):
+      return NotImplemented
+    # Sort by total, then longitude, then padding.
+    self_compare_values_in_order = (
+        self.total_wavenumbers,
+        self.longitude_wavenumbers,
+        self.wavenumber_padding,
+    )
+    other_compare_values_in_order = (
+        other.total_wavenumbers,
+        other.longitude_wavenumbers,
+        other.wavenumber_padding,
+    )
+    return self_compare_values_in_order < other_compare_values_in_order
+
   @classmethod
   def from_dinosaur_grid(
       cls,

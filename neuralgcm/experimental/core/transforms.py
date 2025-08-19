@@ -434,14 +434,57 @@ class ShiftAndNormalizePerKey(TransformABC):
 
 @nnx_compat.dataclass
 class ClipWavenumbers(TransformABC):
-  """Sets top `wavenumbers_to_clip` total wavenumbers to zero in the input."""
+  """Clips wavenumbers in inputs for grids matching `wavenumbers_for_grid`.
 
-  grid: coordinates.SphericalHarmonicGrid
-  wavenumbers_to_clip: int = 1
+  Attributes:
+    wavenumbers_for_grid: A dictionary mapping grids to the number of wavenumber
+      to clip for that grid.
+    skip_missing: If True, grids without a matching coordinate will be skipped,
+      otherwise an error is raised.
+  """
+
+  wavenumbers_for_grid: dict[coordinates.SphericalHarmonicGrid, int]
+  skip_missing: bool = False
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     """Returns `inputs` with top `wavenumbers_to_clip` set to zero."""
-    return self.grid.clip_wavenumbers(inputs, self.wavenumbers_to_clip)
+    result = {}
+    for k, v in inputs.items():
+      for grid, n_clip in self.wavenumbers_for_grid.items():
+        if all(ax in v.axes.values() for ax in grid.axes):
+          result[k] = grid.clip_wavenumbers(v, n_clip)
+          break
+      else:
+        if self.skip_missing:
+          result[k] = v
+        else:
+          raise ValueError(
+              f'No matching grid found for {k=} in {self.wavenumbers_for_grid=}'
+          )
+    return result
+
+  @classmethod
+  def for_grids(
+      cls,
+      grids: (
+          Sequence[coordinates.SphericalHarmonicGrid]
+          | coordinates.SphericalHarmonicGrid
+      ),
+      wavenumbers_to_clip: Sequence[int] | int,
+      skip_missing: bool = False,
+  ):
+    """Custom constructor based grids and wavenumbers to clip sequence."""
+    if isinstance(grids, coordinates.SphericalHarmonicGrid):
+      grids = [grids]
+    if isinstance(wavenumbers_to_clip, int):
+      wavenumbers_to_clip = [wavenumbers_to_clip] * len(grids)
+    wavenumbers_for_grid = {
+        grid: n for grid, n in zip(grids, wavenumbers_to_clip, strict=True)
+    }
+    return cls(
+        wavenumbers_for_grid=wavenumbers_for_grid,
+        skip_missing=skip_missing,
+    )
 
 
 @nnx_compat.dataclass

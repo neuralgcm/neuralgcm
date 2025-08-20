@@ -252,11 +252,7 @@ class ForecastSystem(nnx.Module, abc.ABC):
         out_axes=(nnx.Carry, 0),
     )
     final_prognostics, intermediates = unroll_fn(self, state.prognostics)
-    final_state = typing.ModelState(
-        final_prognostics,
-        nnx.clone(nnx.state(self, diagnostics.DiagnosticValue)),
-        nnx.clone(nnx.state(self, random_processes.RandomnessValue)),
-    )
+    final_state = _to_model_state(final_prognostics, self)
     steps = int(not start_with_input) + np.arange(outer_steps)
     time = coordinates.TimeDelta(steps * timedelta)
     intermediates = cx.tag(intermediates, time)

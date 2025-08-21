@@ -18,6 +18,7 @@ from typing import Any
 
 import dask.array
 from flax import nnx
+import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
@@ -45,21 +46,20 @@ def _query_to_dummy_datatree(query: typing.Query) -> xarray.DataTree:
 
 
 # TODO(shoyer): Add these methods upstream onto xarray.DataTree.
-# TODO(shoyer): Fix these typing issues upstream in xarray.DataTree
 
 
 def _datatree_expand_dims(
     tree: xarray.DataTree, **kwargs: int | list[Any] | np.ndarray
 ) -> xarray.DataTree:
   """Expand dimensions in a DataTree."""
-  return tree.map_over_datasets(lambda ds: ds.expand_dims(**kwargs))  # type: ignore[bad-return-type]
+  return tree.map_over_datasets(lambda ds: ds.expand_dims(**kwargs))
 
 
 def _datatree_rename(
     tree: xarray.DataTree, renames: dict[str, str]
 ) -> xarray.DataTree:
   """Rename variables and coordinates in a DataTree."""
-  return tree.map_over_datasets(  # type: ignore[bad-return-type]
+  return tree.map_over_datasets(
       lambda ds: ds.rename({k: v for k, v in renames.items() if k in ds})
   )
 
@@ -75,12 +75,11 @@ class InferenceRunner:
   ensemble_size: int | None  # ensemble_size=None for deterministic models
   output_path: str
   output_query: typing.Query
-  output_freq: (
-      np.timedelta64
-  )  # or potentially dict[str, timedelta] for nested outputs
+  output_freq: np.timedelta64
   output_duration: np.timedelta64
   output_chunks: dict[str, int]  # should have a sane defaults
   zarr_format: int | None = None
+  random_seed: int = 0
 
   def setup(self) -> None:
     """Call once to setup metadata in output Zarr(s)."""
@@ -88,12 +87,11 @@ class InferenceRunner:
     # dask.array objects, similar xarray_beam.make_template()
     template = _query_to_dummy_datatree(self.output_query)
     lead_times = np.arange(0, self.output_duration, self.output_freq)
-    expanded_dims = {
-        'init_time': self.init_times.astype('datetime64[ns]'),
-        'lead_time': lead_times.astype('timedelta64[ns]'),
-    }
+    expanded_dims = {}
     if self.ensemble_size is not None:
       expanded_dims['realization'] = np.arange(self.ensemble_size)
+    expanded_dims['init_time'] = self.init_times.astype('datetime64[ns]')
+    expanded_dims['lead_time'] = lead_times.astype('timedelta64[ns]')
 
     # The use of expand_dims() here replicates
     # xarray_beam.replace_template_dims().
@@ -128,10 +126,17 @@ class InferenceRunner:
     Raises:
       SomeException: if setup() has not been completed first.
     """
-    if self.ensemble_size is not None:
-      raise NotImplementedError('ensembles are not implemented yet')
+    if self.ensemble_size is None:
+      init_time_index = task_id
+      realization_index = None
+      rng = None
+    else:
+      init_time_index = task_id // self.ensemble_size
+      realization_index = task_id % self.ensemble_size
+      base_key = jax.random.key(self.random_seed)
+      rng = jax.random.fold_in(base_key, task_id)
 
-    init_time = self.init_times[task_id].astype('datetime64[ns]')
+    init_time = self.init_times[init_time_index].astype('datetime64[ns]')
     # TODO(shoyer): Can we get the number of time-steps to include in model
     # inputs from the model (or at least an InferenceRunner property) instead of
     # hard-coding it here?
@@ -143,8 +148,8 @@ class InferenceRunner:
     )
 
     @nnx.jit
-    def assimilate(model, input_obs, dynamic_inputs):
-      return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs)
+    def assimilate(model, input_obs, dynamic_inputs, rng):
+      return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs, rng=rng)
 
     @nnx.jit
     def unroll(model, state, dynamic_inputs):
@@ -164,10 +169,9 @@ class InferenceRunner:
           post_process_fn=observe,
       )
 
-    # TODO(shoyer): Add rng argument.
     input_obs = self.model.inputs_from_xarray(selected_inputs)
     dynamic_inputs = self.model.dynamic_inputs_from_xarray(forecast_inputs)
-    state = assimilate(self.model, input_obs, dynamic_inputs)
+    state = assimilate(self.model, input_obs, dynamic_inputs, rng)
     # TODO(shoyer): Call unroll() in a loop, writing outputs to Zarr as we go
     # and checkpointing `state`.
     _, trajectory_slice = unroll(self.model, state, dynamic_inputs)
@@ -178,13 +182,20 @@ class InferenceRunner:
     # TODO(shoyer): Rename TimeDelta to LeadTime in
     # neuralgcm.experimental.core.coordinates.
     outputs_tree = _datatree_rename(outputs_tree, {'timedelta': 'lead_time'})
+
     # Remove variables that don't have an init_time dimension. These shouldn't
     # be written to disk again.
-    node: xarray.DataTree
     for node in outputs_tree.subtree:
       for name, variable in node.variables.items():
         if 'init_time' not in variable.dims:
           del node[name]
+
     # TODO(shoyer): See if we can get region='auto' to work.
-    region = {'init_time': slice(task_id, task_id + 1)}
+    region = {'init_time': slice(init_time_index, init_time_index + 1)}
+    if realization_index is not None:
+      outputs_tree = _datatree_expand_dims(
+          outputs_tree, realization=[realization_index]
+      )
+      region['realization'] = slice(realization_index, realization_index + 1)
+
     outputs_tree.to_zarr(self.output_path, mode='r+', region=region)

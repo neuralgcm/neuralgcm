@@ -17,10 +17,13 @@ import functools
 import operator
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import coordax as cx
+from flax import nnx
 import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import dynamic_io
+from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import xarray_utils
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
@@ -34,6 +37,7 @@ class MockForecastSystem(api.ForecastSystem):
   required_input_specs: dict[str, dict[str, cx.Coordinate]]
   required_dynamic_input_specs: dict[str, dict[str, cx.Coordinate]]
   dynamic_input_slice: dynamic_io.DynamicInputSlice
+  assimilation_noise: random_processes.RandomProcessModule | None = None
 
   @property
   def timestep(self) -> np.timedelta64:
@@ -46,12 +50,16 @@ class MockForecastSystem(api.ForecastSystem):
       rng: typing.PRNGKeyArray | None = None,
       initial_state: typing.ModelState | None = None,
   ) -> typing.Prognostics:
-    return jax.tree.map(
+    state = jax.tree.map(
         # TODO(shoyer): create a .isel() method on Field?
         cx.cmap(lambda x: x[-1]),
         cx.untag(observations['state'], 'timedelta'),
         is_leaf=cx.is_field,
     )
+    if self.assimilation_noise is not None:
+      noise = self.assimilation_noise.state_values()
+      state['foo'] = state['foo'] + noise
+    return state
 
   def advance_prognostics(
       self, prognostics: typing.Prognostics
@@ -100,77 +108,103 @@ class MockForecastSystem(api.ForecastSystem):
     return {k: xarray_utils.fields_to_xarray(v) for k, v in data.items()}
 
 
-class RunnerTest(absltest.TestCase):
+class RunnerTest(parameterized.TestCase):
 
-  def test_inference_runner_setup(self):
-    output_path = self.create_tempdir().full_path
-    init_times = np.array(
-        [np.datetime64('2025-01-01'), np.datetime64('2025-01-02')]
-    )
-    delta = xarray.Dataset({'foo': 1.0, 'bar': 2.0})
-    runner = runnerlib.InferenceRunner(
-        model=MockForecastSystem(
-            required_input_specs={
-                'state': {
-                    'foo': cx.Scalar(),
-                    'bar': cx.LabeledAxis('x', np.array([0.1, 0.2, 0.3])),
-                    'time': cx.Scalar(),
-                }
-            },
-            required_dynamic_input_specs={
-                'data': {
-                    'foo': cx.Scalar(),
-                    'bar': cx.Scalar(),
-                    'time': cx.Scalar(),
-                }
-            },
-            dynamic_input_slice=dynamic_io.DynamicInputSlice(
-                keys_to_coords={'foo': cx.Scalar(), 'bar': cx.Scalar()},
-                observation_key='data',
-            ),
-        ),
-        inputs={
-            'state': xarray.Dataset(
-                {
-                    'foo': (('time',), np.array([0.0, 10.0])),
-                    'bar': (('time', 'x'), np.array(2 * [[1.0, 2.0, 3.0]])),
-                },
-                coords={'time': init_times, 'x': np.array([0.1, 0.2, 0.3])},
-            )
-        },
-        dynamic_inputs=dynamic_inputs_lib.Persistence(
-            full_data={'data': delta.expand_dims(time=init_times)},
-            climatology=None,
-            update_freq=np.timedelta64(6, 'h'),
-        ),
-        init_times=init_times,
-        ensemble_size=None,
-        output_path=output_path,
-        output_query={
+  @parameterized.named_parameters(
+      dict(testcase_name='deterministic', ensemble_size=None),
+      dict(testcase_name='ensemble', ensemble_size=2),
+  )
+  def test_inference_runner(self, ensemble_size):
+    if ensemble_size is not None:
+      assimilation_noise = random_processes.UniformUncorrelated(
+          coords=cx.Scalar(), minval=-0.1, maxval=0.1, rngs=nnx.Rngs(0)
+      )
+    else:
+      assimilation_noise = None
+    model = MockForecastSystem(
+        required_input_specs={
             'state': {
                 'foo': cx.Scalar(),
                 'bar': cx.LabeledAxis('x', np.array([0.1, 0.2, 0.3])),
+                'time': cx.Scalar(),
             }
         },
+        required_dynamic_input_specs={
+            'data': {
+                'foo': cx.Scalar(),
+                'bar': cx.Scalar(),
+                'time': cx.Scalar(),
+            }
+        },
+        dynamic_input_slice=dynamic_io.DynamicInputSlice(
+            keys_to_coords={'foo': cx.Scalar(), 'bar': cx.Scalar()},
+            observation_key='data',
+        ),
+        assimilation_noise=assimilation_noise,
+    )
+    init_times = np.array(
+        [np.datetime64('2025-01-01'), np.datetime64('2025-01-02')]
+    )
+    inputs = {
+        'state': xarray.Dataset(
+            {
+                'foo': (('time',), np.array([0.0, 10.0])),
+                'bar': (('time', 'x'), np.array(2 * [[1.0, 2.0, 3.0]])),
+            },
+            coords={'time': init_times, 'x': np.array([0.1, 0.2, 0.3])},
+        )
+     }
+    delta = xarray.Dataset({'foo': 1.0, 'bar': 2.0})
+    dynamic_inputs = dynamic_inputs_lib.Persistence(
+        full_data={'data': delta.expand_dims(time=init_times)},
+        climatology=None,
+        update_freq=np.timedelta64(6, 'h'),
+    )
+    output_path = self.create_tempdir().full_path
+    output_query = {
+        'state': {
+            'foo': cx.Scalar(),
+            'bar': cx.LabeledAxis('x', np.array([0.1, 0.2, 0.3])),
+        }
+    }
+    output_chunks = {'lead_time': 4, 'init_time': 1}
+    if ensemble_size is not None:
+      output_chunks['realization'] = 1
+    runner = runnerlib.InferenceRunner(
+        model=model,
+        inputs=inputs,
+        dynamic_inputs=dynamic_inputs,
+        init_times=init_times,
+        ensemble_size=ensemble_size,
+        output_path=output_path,
+        output_query=output_query,
         output_freq=np.timedelta64(6, 'h'),
         output_duration=np.timedelta64(1, 'D'),
-        output_chunks={'lead_time': 4, 'init_time': 1},
+        output_chunks=output_chunks,
     )
     runner.setup()
-    self.assertEqual(runner.task_count, 2)
+
+    ensemble_count = 1 if ensemble_size is None else ensemble_size
+    self.assertEqual(runner.task_count, len(init_times) * ensemble_count)
 
     expected_lead_times = np.arange(0, 24, 6) * np.timedelta64(1, 'h')
     nans = functools.partial(np.full, fill_value=np.nan)
-    root_node = xarray.Dataset(
-        coords={
-            'init_time': init_times.astype('datetime64[ns]'),
-            'lead_time': expected_lead_times.astype('timedelta64[ns]'),
-        },
-    )
+    coords = {
+        'init_time': init_times.astype('datetime64[ns]'),
+        'lead_time': expected_lead_times.astype('timedelta64[ns]'),
+    }
+    dims = ('init_time', 'lead_time')
+    shape = (len(init_times), len(expected_lead_times))
+    if ensemble_size is not None:
+      coords['realization'] = np.arange(ensemble_size)
+      dims = ('realization',) + dims
+      shape = (ensemble_size,) + shape
+
+    root_node = xarray.Dataset(coords=coords)
     child_node = xarray.Dataset(
         {
-            'foo': (('init_time', 'lead_time'), nans((2, 4))),
-            'bar': (('init_time', 'lead_time', 'x'), nans((2, 4, 3))),
+            'foo': (dims, nans(shape)),
+            'bar': (dims + ('x',), nans(shape + (3,))),
         },
         coords={'x': np.array([0.1, 0.2, 0.3])},
     )
@@ -186,16 +220,37 @@ class RunnerTest(absltest.TestCase):
     expected_bar = np.stack(
         2 * [np.stack([2 * h + 1, 2 * h + 2, 2 * h + 3], axis=1)]
     )
+    if ensemble_size is not None:
+      expected_foo = np.stack([expected_foo] * ensemble_size, axis=0)
+      expected_bar = np.stack([expected_bar] * ensemble_size, axis=0)
+
     child_node = xarray.Dataset(
         {
-            'foo': (('init_time', 'lead_time'), expected_foo),
-            'bar': (('init_time', 'lead_time', 'x'), expected_bar),
+            'foo': (dims, expected_foo),
+            'bar': (dims + ('x',), expected_bar),
         },
         coords={'x': np.array([0.1, 0.2, 0.3])},
     )
     expected = xarray.DataTree.from_dict({'/': root_node, '/state': child_node})
     actual = xarray.open_datatree(output_path, engine='zarr')
-    xarray.testing.assert_equal(actual, expected)
+    # round() removes initialization noise, which is between -0.1 and 0.1
+    xarray.testing.assert_equal(actual.round(), expected)
+
+    if ensemble_size is not None:
+      # different ensemble members have different RNGs
+      actual_foo = actual.state.foo.isel(init_time=0)
+      first_realization = actual_foo.sel(realization=0)
+      second_realization = actual_foo.sel(realization=1)
+      self.assertFalse(
+          np.allclose(first_realization, second_realization, atol=0.001),
+          msg=f'{first_realization=}, {second_realization=}',
+      )
+      # different initialization also have different RNGs
+      second_init = actual.state.foo.isel(init_time=1).sel(realization=0)
+      self.assertFalse(
+          np.allclose(first_realization, second_init, atol=0.001),
+          msg=f'{first_realization=}, {second_init=}',
+      )
 
 
 if __name__ == '__main__':

@@ -138,29 +138,39 @@ class InferenceRunner:
     selected_inputs = {
         k: v.sel(time=[init_time]) for k, v in self.inputs.items()
     }
+    forecast_inputs = self.dynamic_inputs.get_forecast(init_time).get_data(
+        lead_start=np.timedelta64(0, 'h'), lead_stop=self.output_duration
+    )
 
     @nnx.jit
-    def assimilate(model, input_obs):
-      return model.assimilate(input_obs)
-
-    def observe(state, model):
-      return model.observe(state, self.output_query)
+    def assimilate(model, input_obs, dynamic_inputs):
+      return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs)
 
     @nnx.jit
-    def unroll(model, state):
+    def unroll(model, state, dynamic_inputs):
+
+      def observe(state, model):
+        return model.observe(
+            state,
+            self.output_query,
+            dynamic_inputs=dynamic_inputs,
+        )
+
       return model.unroll(
           state,
+          dynamic_inputs=dynamic_inputs,
           outer_steps=math.ceil(self.output_duration / self.output_freq),
           timedelta=self.output_freq,
           post_process_fn=observe,
       )
 
-    # TODO(shoyer): Add dynamic_inputs and rng arguments.
-    input_obs = self.model.observations_from_xarray(selected_inputs)
-    state = assimilate(self.model, input_obs)
+    # TODO(shoyer): Add rng argument.
+    input_obs = self.model.inputs_from_xarray(selected_inputs)
+    dynamic_inputs = self.model.dynamic_inputs_from_xarray(forecast_inputs)
+    state = assimilate(self.model, input_obs, dynamic_inputs)
     # TODO(shoyer): Call unroll() in a loop, writing outputs to Zarr as we go
     # and checkpointing `state`.
-    _, trajectory_slice = unroll(self.model, state)
+    _, trajectory_slice = unroll(self.model, state, dynamic_inputs)
     outputs = self.model.data_to_xarray(trajectory_slice)
 
     outputs_tree = xarray.DataTree.from_dict(outputs)

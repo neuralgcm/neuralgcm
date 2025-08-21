@@ -72,14 +72,14 @@ class DynamicInputSlice(DynamicInputModule):
   def update_dynamic_inputs(self, dynamic_inputs):
     if self.observation_key not in dynamic_inputs:
       raise ValueError(
-          f'Observation key {self.observation_key} not found in dynamic inputs'
-          f' {dynamic_inputs.keys()}'
+          f'Observation key {self.observation_key!r} not found in dynamic'
+          f' inputs: {dynamic_inputs.keys()}'
       )
     inputs = dynamic_inputs[self.observation_key]
     if 'time' not in inputs:
       raise ValueError(
-          f'Dynamic inputs under key {self.observation_key} do not have a'
-          f' required time variable {inputs.keys()}'
+          f'Dynamic inputs under key {self.observation_key!r} do not have the'
+          f" required 'time' variable: {inputs.keys()}"
       )
     time = inputs['time']
     if time.ndim != 1 or time.dims[0] != 'timedelta':
@@ -88,7 +88,7 @@ class DynamicInputSlice(DynamicInputModule):
     data_dict = {}
     for k, expected_coord in self.keys_to_coords.items():
       if k not in inputs:
-        raise ValueError(f'Key {k} not found in dynamic inputs {inputs.keys()}')
+        raise ValueError(f'Key {k!r} not found in dynamic inputs: {inputs.keys()}')
       v = inputs[k]
       if v.axes.get('timedelta', None) != time.axes['timedelta']:
         raise ValueError(f'{v.axes=} does not contain {time.axes=}.')
@@ -97,7 +97,7 @@ class DynamicInputSlice(DynamicInputModule):
       )
       if data_coord != expected_coord:
         raise ValueError(
-            f'Coordinate mismatch for key {k}: {data_coord=} !='
+            f'Coordinate mismatch for key {k!r}: {data_coord=} !='
             f' {expected_coord=}'
         )
       data_dict[k] = v
@@ -114,6 +114,7 @@ class DynamicInputSlice(DynamicInputModule):
     time = time.unwrap()
     time_indices = jnp.arange(self.time.size)
     approx_index = jdt.interp(time, self.time.value, time_indices)
+    # TODO(shoyer): switch to jnp.floor?
     index = jnp.round(approx_index).astype(int)
     field_index_fn = functools.partial(
         jax.lax.dynamic_index_in_dim,

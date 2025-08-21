@@ -40,7 +40,7 @@ class PersistenceTest(absltest.TestCase):
     forecast = dynamic_inputs_lib.Persistence(
         full_data=initial_ds,
         climatology=None,
-        output_freq=np.timedelta64(12, 'h'),
+        update_freq=np.timedelta64(12, 'h'),
     ).get_forecast(t0)
 
     actual = forecast.get_data(
@@ -56,7 +56,7 @@ class PersistenceTest(absltest.TestCase):
   def test_missing_full_data(self):
     with self.assertRaisesRegex(TypeError, 'full_data is required'):
       dynamic_inputs_lib.Persistence(
-          full_data=None, climatology=None, output_freq=np.timedelta64(1, 'h')
+          full_data=None, climatology=None, update_freq=np.timedelta64(1, 'h')
       )
 
 
@@ -72,7 +72,7 @@ class PrescribedTest(absltest.TestCase):
     dynamic_inputs = dynamic_inputs_lib.Prescribed(
         full_data=full_ds,
         climatology=None,
-        output_freq=np.timedelta64(12, 'h'),
+        update_freq=np.timedelta64(12, 'h'),
     )
 
     forecast = dynamic_inputs.get_forecast(np.datetime64('2025-01-01'))
@@ -104,7 +104,7 @@ class PrescribedTest(absltest.TestCase):
   def test_missing_full_data(self):
     with self.assertRaisesRegex(TypeError, 'full_data is required'):
       dynamic_inputs_lib.Prescribed(
-          full_data=None, climatology=None, output_freq=np.timedelta64(1, 'h')
+          full_data=None, climatology=None, update_freq=np.timedelta64(1, 'h')
       )
 
 
@@ -115,7 +115,7 @@ class ClimatologyTest(absltest.TestCase):
     forecast = dynamic_inputs_lib.Climatology(
         full_data=None,
         climatology=create_climatology(data=np.arange(366.0)),
-        output_freq=np.timedelta64(12, 'h'),
+        update_freq=np.timedelta64(12, 'h'),
     ).get_forecast(t0)
 
     actual = forecast.get_data(
@@ -134,7 +134,7 @@ class ClimatologyTest(absltest.TestCase):
       dynamic_inputs_lib.Climatology(
           full_data=xarray.Dataset(),
           climatology=None,
-          output_freq=np.timedelta64(1, 'h'),
+          update_freq=np.timedelta64(1, 'h'),
       )
 
 
@@ -148,7 +148,7 @@ class AnomalyPersistenceTest(absltest.TestCase):
             coords={'time': np.array([t0])},
         ),
         climatology=create_climatology(data=np.arange(366.0)),
-        output_freq=np.timedelta64(12, 'h'),
+        update_freq=np.timedelta64(12, 'h'),
     ).get_forecast(t0)
 
     with self.subTest('short_forecast'):
@@ -173,7 +173,7 @@ class AnomalyPersistenceTest(absltest.TestCase):
               coords={'time': np.array([t0])},
           ),
           climatology=create_climatology(data=np.arange(366.0)),
-          output_freq=np.timedelta64(24, 'h'),
+          update_freq=np.timedelta64(24, 'h'),
       ).get_forecast(t0)
       actual = forecast.get_data(
           lead_start=np.timedelta64(0, 'h'),
@@ -193,7 +193,7 @@ class AnomalyPersistenceTest(absltest.TestCase):
       dynamic_inputs_lib.AnomalyPersistence(
           full_data=None,
           climatology=create_climatology(data=np.arange(366.0)),
-          output_freq=np.timedelta64(1, 'h'),
+          update_freq=np.timedelta64(1, 'h'),
       )
 
   def test_missing_climatology(self):
@@ -201,7 +201,7 @@ class AnomalyPersistenceTest(absltest.TestCase):
       dynamic_inputs_lib.AnomalyPersistence(
           full_data=xarray.Dataset(),
           climatology=None,
-          output_freq=np.timedelta64(1, 'h'),
+          update_freq=np.timedelta64(1, 'h'),
       )
 
 
@@ -240,7 +240,7 @@ class InvalidClimatologyTest(parameterized.TestCase):
           cls(
               full_data=xarray.Dataset(),
               climatology=climatology,
-              output_freq=np.timedelta64(1, 'h'),
+              update_freq=np.timedelta64(1, 'h'),
           )
 
 

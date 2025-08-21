@@ -18,14 +18,40 @@ from __future__ import annotations
 import abc
 import dataclasses
 import functools
+import operator
 from typing import Generic, TypeVar
 
+import jax
 import numpy as np
 import numpy.typing as npt
 import xarray
 
 
-XarrayData = TypeVar('XarrayData', xarray.Dataset, xarray.DataTree)
+# TODO(shoyer): remove dict[str, xarray.Dataset] in favor of DataTree once it is
+# supported by all APIs
+XarrayData = TypeVar(
+    'XarrayData', xarray.Dataset, xarray.DataTree, dict[str, xarray.Dataset]
+)
+
+
+def _map_over_datasets(func, *data: XarrayData) -> XarrayData:
+  """Map a function that acts on xarray.Dataset objects."""
+  if isinstance(data[0], xarray.Dataset):
+    return func(*data)
+  elif isinstance(data[0], xarray.DataTree):
+    return xarray.map_over_datasets(func, *data)
+  else:
+    return jax.tree.map(
+        func, *data, is_leaf=lambda x: isinstance(x, xarray.Dataset)
+    )
+
+
+def _get_dataset_or_datatree(data: XarrayData) -> xarray.Dataset | xarray.DataTree:
+  """Get a dataset or datatree from a dataset, datatree, or dict[str, dataset]."""
+  if isinstance(data, xarray.Dataset | xarray.DataTree):
+    return data
+  else:
+    return next(iter(data.values()))
 
 
 def _get_climatology(
@@ -44,9 +70,12 @@ def _get_climatology(
   # This uses Xarray's vectorized indexing to produce an output dataset with a
   # 'time' dimension.
   indexers = {'dayofyear': times.dt.dayofyear}
-  if 'hour' in climatology.dims:
+  if 'hour' in _get_dataset_or_datatree(climatology).dims:
     indexers['hour'] = times.dt.hour
-  return climatology.sel(indexers).reset_coords('dayofyear', drop=True)
+  return _map_over_datasets(
+      lambda x: x.sel(indexers).reset_coords('dayofyear', drop=True),
+      climatology,
+  )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -71,23 +100,24 @@ class DynamicInputs(abc.ABC, Generic[XarrayData]):
     climatology: optional dataset defining climatological values for dynamic
       inputs. If provided, must have a 'dayofyear' coordinate that spans 1 to
       366.
-    output_freq: optional time delta between consecutive dynamic inputs. By
+    update_freq: optional time delta between consecutive dynamic inputs. By
       default, dynamic inputs are sampled at the same frequency as `full_data`.
   """
 
   full_data: XarrayData | None
   climatology: XarrayData | None
-  output_freq: np.timedelta64 | None
+  update_freq: np.timedelta64 | None
 
   def __post_init__(self):
     if (climatology := self.climatology) is not None:
+      coords = _get_dataset_or_datatree(climatology).coords
       expected_dayofyear = np.arange(1, 367)
-      if 'dayofyear' not in climatology.coords:
+      if 'dayofyear' not in coords:
         raise ValueError(
             "climatology does not have a 'dayofyear' coordinates:"
             f' {climatology}'
         )
-      actual_dayofyear = climatology.coords['dayofyear'].data
+      actual_dayofyear = coords['dayofyear'].data
       if not np.array_equal(actual_dayofyear, expected_dayofyear):
         raise ValueError(
             'dayofyear coordinate must include 1 through 366, got:'
@@ -106,14 +136,14 @@ class _Forecast(abc.ABC, Generic[XarrayData]):
 
   full_data: XarrayData | None
   climatology: XarrayData | None
-  output_freq: np.timedelta64
+  update_freq: np.timedelta64
   init_time: np.datetime64
 
   def _get_lead_times(
       self, lead_start: np.timedelta64, lead_stop: np.timedelta64
   ) -> npt.NDArray[np.timedelta64]:
-    """Returns lead times from lead_start to lead_stop with output_freq."""
-    return np.arange(lead_start, lead_stop, self.output_freq)
+    """Returns lead times from lead_start to lead_stop with update_freq."""
+    return np.arange(lead_start, lead_stop, self.update_freq)
 
   @abc.abstractmethod
   def get_data(
@@ -131,7 +161,7 @@ def _get_forecast(
   return forecast_cls(
       full_data=model.full_data,
       climatology=model.climatology,
-      output_freq=model.output_freq,
+      update_freq=model.update_freq,
       init_time=init_time,
   )
 
@@ -142,14 +172,16 @@ class _PersistenceForecast(_Forecast[XarrayData]):  # pylint: disable=missing-cl
   @functools.cached_property
   def init_value(self) -> XarrayData:
     assert (full_data := self.full_data) is not None
-    return full_data.sel(time=self.init_time)
+    return _map_over_datasets(lambda x: x.sel(time=self.init_time), full_data)
 
   def get_data(
       self, lead_start: np.timedelta64, lead_stop: np.timedelta64
   ) -> XarrayData:
     lead_times = self._get_lead_times(lead_start, lead_stop)
     new_times = self.init_time + lead_times
-    return self.init_value.expand_dims(time=new_times)
+    return _map_over_datasets(
+        lambda x: x.expand_dims(time=new_times), self.init_value
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -174,7 +206,7 @@ class _PrescribedForecast(_Forecast[XarrayData]):
     lead_times = self._get_lead_times(lead_start, lead_stop)
     times = self.init_time + lead_times
     assert (full_data := self.full_data) is not None
-    return full_data.sel(time=times)
+    return _map_over_datasets(lambda x: x.sel(time=times), full_data)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -221,15 +253,17 @@ class _AnomalyPersistenceForecast(_Forecast[XarrayData]):  # pylint: disable=mis
   def init_anomaly(self) -> XarrayData:
     assert (full_data := self.full_data) is not None
     init_climatology = _get_climatology(self.climatology, self.init_time)
-    init_data = full_data.sel(time=self.init_time)
-    return init_data - init_climatology
+    init_data = _map_over_datasets(
+        lambda x: x.sel(time=self.init_time), full_data
+    )
+    return _map_over_datasets(operator.sub, init_data, init_climatology)
 
   def get_data(
       self, lead_start: np.timedelta64, lead_stop: np.timedelta64
   ) -> XarrayData:
     lead_times = self._get_lead_times(lead_start, lead_stop)
     valid_clim = _get_climatology(self.climatology, self.init_time + lead_times)
-    forecast = self.init_anomaly + valid_clim
+    forecast = _map_over_datasets(operator.add, self.init_anomaly, valid_clim)
     # TODO(shoyer): Make a more generic solution for clipping anomaly forecasts.
     if 'sea_ice_cover' in forecast:
       forecast['sea_ice_cover'] = forecast['sea_ice_cover'].clip(0, 1)

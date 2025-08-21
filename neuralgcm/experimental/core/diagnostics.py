@@ -135,11 +135,15 @@ class IntervalDiagnostic(DiagnosticModule):
     extract: callable that computes diagnostic values.
     extract_coords: coordinates for each of the diagnostic fields.
     interval_length: length of the interval to track.
+    include_instant: whether to include the instant value of the diagnostic
+      fields.
   """
 
   extract: Extract
   extract_coords: dict[str, cx.Coordinate]
   interval_length: int
+  include_instant: bool = False
+  # TODO(jianingfang): see if there a better way to handle include_instant.
 
   def __post_init__(self):
     self.interval_values = {
@@ -150,12 +154,19 @@ class IntervalDiagnostic(DiagnosticModule):
         k: DiagnosticValue(jnp.zeros(v.shape))
         for k, v in self.extract_coords.items()
     }
+    if self.include_instant:
+      self.instants = {
+          k: DiagnosticValue(jnp.zeros(v.shape))
+          for k, v in self.extract_coords.items()
+      }
 
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
     for k in self.extract_coords:
       self.interval_values[k].value = jnp.zeros_like(self.interval_values[k])
       self.cumulative[k].value = jnp.zeros_like(self.cumulative[k])
+      if self.include_instant:
+        self.instants[k].value = jnp.zeros_like(self.instants[k])
 
   def next_interval(self, inputs, *args, **kwargs):
     del inputs, args, kwargs
@@ -167,15 +178,28 @@ class IntervalDiagnostic(DiagnosticModule):
 
   def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
     # TODO(dkochkov): remove time arg, it is no longer used.
-    return {
-        k: cx.wrap(
-            self.cumulative[k].value - v.value[0], self.extract_coords[k]
-        )
-        for k, v in self.interval_values.items()
-    }
+    if self.include_instant:
+      return {
+          k: cx.wrap(
+              self.cumulative[k].value - v.value[0], self.extract_coords[k]
+          )
+          for k, v in self.interval_values.items()
+      } | {
+          k + '_instant': cx.wrap(v.value, self.extract_coords[k])
+          for k, v in self.instants.items()
+      }
+    else:
+      return {
+          k: cx.wrap(
+              self.cumulative[k].value - v.value[0], self.extract_coords[k]
+          )
+          for k, v in self.interval_values.items()
+      }
 
   def __call__(self, inputs, *args, **kwargs):
     diagnostic_values = self.extract(inputs, *args, **kwargs)
     for k, v in diagnostic_values.items():
       # TODO(dkochkov): consider storing values as Field type.
       self.cumulative[k].value += v.data
+      if self.include_instant:
+        self.instants[k].value = v.data

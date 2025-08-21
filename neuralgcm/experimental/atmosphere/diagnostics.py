@@ -153,18 +153,7 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
       )
     return prognostics
 
-  def __call__(self, result, *args, **kwargs):
-    tendencies = result
-    [p_plus_e] = self.extract_p_plus_e(tendencies, *args, **kwargs).values()
-    prognostics = self._extract_prognostics(*args, **kwargs)
-    observation = self.observation_operator.observe(
-        prognostics, query=self.operator_query
-    )
-    observation = observation[self.observe_key]
-    precipitation_and_evaporation = {
-        self.diagnosed_key: p_plus_e - observation,
-        self.observe_key: observation,
-    }
+  def _apply_scaling(self, precipitation_and_evaporation):
     water_density = self.sim_units.water_density
     for key, scaling in zip(
         [self.precipitation_key, self.evaporation_key],
@@ -185,3 +174,65 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
             f'{scaling=} should be one of rate, mass_rate or cumulative.'
         )
     return precipitation_and_evaporation
+
+  def __call__(self, result, *args, **kwargs):
+    tendencies = result
+    [p_plus_e] = self.extract_p_plus_e(tendencies, *args, **kwargs).values()
+    prognostics = self._extract_prognostics(*args, **kwargs)
+    observation = self.observation_operator.observe(
+        prognostics, query=self.operator_query
+    )
+    observation = observation[self.observe_key]
+    precipitation_and_evaporation = {
+        self.diagnosed_key: p_plus_e - observation,
+        self.observe_key: observation,
+    }
+    return self._apply_scaling(precipitation_and_evaporation)
+
+
+@nnx_compat.dataclass
+class ExtractPrecipitationAndEvaporationWithConstraints(
+    ExtractPrecipitationAndEvaporation
+):
+  """Extracts balanced precipitation and evaporation values.
+
+  This module can be attached in diagnostics that have access to both
+  parameterization tendencies and model state to infer balanced precipitation
+  and evaporation. We use `observation_operator` to predict on of the
+  two (either `precipitation` or `evaporation`) and infer the other from the
+  precipitation_plus_evaporation calculation. The mode is defined by the
+  provided operator, query and inference variable indicating which variable
+  will be computed from the balance equations. Evaporation is constrained to
+  be non-positive and precipitation is constrained to be non-negative.
+  """
+
+  def __call__(self, result, *args, **kwargs):
+    tendencies = result
+    [p_plus_e] = self.extract_p_plus_e(tendencies, *args, **kwargs).values()
+    prognostics = self._extract_prognostics(*args, **kwargs)
+    observation = self.observation_operator.observe(
+        prognostics, query=self.operator_query
+    )
+    observation = observation[self.observe_key]
+    if self.observe_key == self.precipitation_key:
+      constrained_observation = cx.cmap(
+          lambda x, a, b: jnp.maximum(x, jnp.maximum(a, b))
+      )(observation, p_plus_e, 0)
+      precipitation_and_evaporation = {
+          self.observe_key: constrained_observation,
+          self.diagnosed_key: p_plus_e - constrained_observation,
+      }
+    elif self.observe_key == self.evaporation_key:
+      constrained_observation = cx.cmap(
+          lambda x, a, b: jnp.minimum(x, jnp.minimum(a, b))
+      )(observation, p_plus_e, 0)
+      precipitation_and_evaporation = {
+          self.observe_key: constrained_observation,
+          self.diagnosed_key: p_plus_e - constrained_observation,
+      }
+    else:
+      raise ValueError(
+          f'{self.observe_key=} should be either {self.precipitation_key=} or'
+          f' {self.evaporation_key=}.'
+      )
+    return self._apply_scaling(precipitation_and_evaporation)

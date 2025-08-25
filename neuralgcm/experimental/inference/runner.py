@@ -82,6 +82,31 @@ def _coordinate_to_root(tree: xarray.DataTree, name: str) -> xarray.DataTree:
   return tree
 
 
+@nnx.jit
+def _assimilate(model, input_obs, dynamic_inputs, rng):
+  return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs, rng=rng)
+
+
+@nnx.jit(static_argnames=['steps_per_unroll', 'output_freq'])
+def _unroll(
+    model, state, dynamic_inputs, output_query, steps_per_unroll, output_freq
+):
+  def observe(state, model):
+    return model.observe(
+        state,
+        output_query,
+        dynamic_inputs=dynamic_inputs,
+    )
+
+  return model.unroll(
+      state,
+      dynamic_inputs=dynamic_inputs,
+      outer_steps=steps_per_unroll,
+      timedelta=output_freq,
+      post_process_fn=observe,
+  )
+
+
 @dataclasses.dataclass
 class InferenceRunner:
   """High performance inference runner for NeuralGCM models."""
@@ -180,9 +205,6 @@ class InferenceRunner:
 
     # Assimilation Step
 
-    dynamic_inputs = self.model.dynamic_inputs_from_xarray(
-        dynamic_inputs_forecast.get_data(np.timedelta64(0), self.model.timestep)
-    )
     # TODO(shoyer): Can we get the number of time-steps to include in model
     # inputs from the model (or at least an InferenceRunner property) instead of
     # hard-coding it here?
@@ -190,12 +212,10 @@ class InferenceRunner:
         k: v.sel(time=[init_time]) for k, v in self.inputs.items()
     }
     input_obs = self.model.inputs_from_xarray(selected_inputs)
-
-    @nnx.jit
-    def assimilate(model, input_obs, dynamic_inputs, rng):
-      return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs, rng=rng)
-
-    state = assimilate(self.model, input_obs, dynamic_inputs, rng)
+    dynamic_inputs = self.model.dynamic_inputs_from_xarray(
+        dynamic_inputs_forecast.get_data(np.timedelta64(0), self.model.timestep)
+    )
+    state = _assimilate(self.model, input_obs, dynamic_inputs, rng)
 
     # Unroll Loop
     total_steps = math.ceil(self.output_duration / self.output_freq)
@@ -207,23 +227,6 @@ class InferenceRunner:
       lead_stop = (step_start + steps_per_unroll) * self.output_freq
       return self.model.dynamic_inputs_from_xarray(
           dynamic_inputs_forecast.get_data(lead_start, lead_stop)
-      )
-
-    @nnx.jit
-    def unroll(model, state, dynamic_inputs):
-      def observe(state, model):
-        return model.observe(
-            state,
-            self.output_query,
-            dynamic_inputs=dynamic_inputs,
-        )
-
-      return model.unroll(
-          state,
-          dynamic_inputs=dynamic_inputs,
-          outer_steps=steps_per_unroll,
-          timedelta=self.output_freq,
-          post_process_fn=observe,
       )
 
     dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)
@@ -241,7 +244,15 @@ class InferenceRunner:
         dynamic_inputs = dynamic_inputs_task.get()
         if step_start + steps_per_unroll < chunk_end_step:
           dynamic_inputs_task.submit(step_start + steps_per_unroll)
-        state, trajectory_slice = unroll(self.model, state, dynamic_inputs)
+
+        state, trajectory_slice = _unroll(
+            self.model,
+            state,
+            dynamic_inputs,
+            output_query=self.output_query,
+            steps_per_unroll=steps_per_unroll,
+            output_freq=self.output_freq,
+        )
         output_buffer.append(jax.device_get(trajectory_slice))
 
       write_chunk_task.wait()
@@ -263,9 +274,7 @@ class InferenceRunner:
       outputs = self.model.data_to_xarray(trajectory_slice)
       outputs_tree = xarray.DataTree.from_dict(outputs)
       # TODO(shoyer): update the name of the TimeDelta coordinate?
-      outputs_tree = _datatree_rename(
-          outputs_tree, {'timedelta': 'lead_time'}
-      )
+      outputs_tree = _datatree_rename(outputs_tree, {'timedelta': 'lead_time'})
       trees.append(outputs_tree)
 
     tree = xarray.map_over_datasets(
@@ -281,9 +290,7 @@ class InferenceRunner:
         steps_written, steps_written + num_steps_in_chunk
     )
     if realization_index is not None:
-      tree = _datatree_expand_dims(
-          tree, realization=[realization_index]
-      )
+      tree = _datatree_expand_dims(tree, realization=[realization_index])
       region['realization'] = slice(realization_index, realization_index + 1)
 
     # Remove variables that don't have an init_time dimension. These shouldn't

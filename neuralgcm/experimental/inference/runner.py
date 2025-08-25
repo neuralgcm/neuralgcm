@@ -12,19 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """High performance inference API for NeuralGCM models."""
+import contextlib
 import dataclasses
+import logging
 import math
+import pickle
 from typing import Any
+import uuid
 
 import dask.array
+from etils import epath
 from flax import nnx
 import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
+from neuralgcm.experimental.inference import streaming
 import numpy as np
 import numpy.typing as npt
 import xarray
+
+# pylint: disable=logging-fstring-interpolation
 
 NestedData = dict[str, xarray.Dataset]  # eventually, use xarray.DataTree
 
@@ -64,6 +72,63 @@ def _datatree_rename(
   )
 
 
+def _coordinate_to_root(tree: xarray.DataTree, name: str) -> xarray.DataTree:
+  """Move a coordinate to the root of a DataTree."""
+  tree = tree.copy()
+  for node in tree.subtree:
+    if name in node.coords:
+      coord = node.coords[name]
+      del node.coords[name]
+      if name in tree.coords:
+        if not tree.coords[name].equals(coord):
+          raise ValueError(
+              f'Coordinate {name=} {tree.coords[name]=} != {coord=}'
+          )
+      else:
+        tree.coords[name] = coord
+  return tree
+
+
+@nnx.jit
+def _assimilate(model, input_obs, dynamic_inputs, rng):
+  return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs, rng=rng)
+
+
+@nnx.jit(static_argnames=['steps_per_unroll', 'output_freq'])
+def _unroll(
+    model, state, dynamic_inputs, output_query, steps_per_unroll, output_freq
+):
+  def observe(state, model):
+    return model.observe(
+        state,
+        output_query,
+        dynamic_inputs=dynamic_inputs,
+    )
+
+  return model.unroll(
+      state,
+      dynamic_inputs=dynamic_inputs,
+      outer_steps=steps_per_unroll,
+      timedelta=output_freq,
+      post_process_fn=observe,
+  )
+
+
+def _tmp_file_path(path: str) -> epath.Path:
+  return epath.Path(path).with_suffix(f'-{uuid.uuid4().hex}.tmp')
+
+
+@contextlib.contextmanager
+def _atomic_write(path):
+  tmp_path = _tmp_file_path(path)
+  try:
+    with tmp_path.open('wb') as f:
+      yield f
+    tmp_path.replace(path)
+  finally:
+    tmp_path.unlink(missing_ok=True)
+
+
 @dataclasses.dataclass
 class InferenceRunner:
   """High performance inference runner for NeuralGCM models."""
@@ -78,11 +143,60 @@ class InferenceRunner:
   output_freq: np.timedelta64
   output_duration: np.timedelta64
   output_chunks: dict[str, int]  # should have a sane defaults
+  unroll_duration: np.timedelta64
+  checkpoint_duration: np.timedelta64
   zarr_format: int | None = None
   random_seed: int = 0
 
+  def __post_init__(self):
+    if self.output_duration % self.output_freq != np.timedelta64(0):
+      raise ValueError(
+          f'{self.output_duration=} must be a multiple of {self.output_freq=}'
+      )
+    if self.unroll_duration % self.output_freq != np.timedelta64(0):
+      raise ValueError(
+          f'{self.unroll_duration=} must be a multiple of {self.output_freq=}'
+      )
+    if self.output_chunks['lead_time'] % self.steps_per_unroll != 0:
+      raise ValueError(
+          f"output_chunks['lead_time'] ({self.output_chunks['lead_time']}) must"
+          ' be a multiple of unroll_duration in steps'
+          f' ({self.steps_per_unroll})'
+      )
+    write_freq = self.output_freq * self.steps_per_write
+    if self.checkpoint_duration % write_freq != np.timedelta64(0):
+      raise ValueError(
+          f'{self.checkpoint_duration=} must be a multiple of {write_freq=}'
+      )
+
+  @property
+  def total_steps(self) -> int:
+    return math.ceil(self.output_duration / self.output_freq)
+
+  @property
+  def steps_per_unroll(self) -> int:
+    return self.unroll_duration // self.output_freq
+
+  @property
+  def steps_per_checkpoint(self) -> int:
+    return self.checkpoint_duration // self.output_freq
+
+  @property
+  def steps_per_write(self) -> int:
+    return self.output_chunks['lead_time']
+
+  def _checkpoints_path(self) -> epath.Path:
+    # names beginning with __ are reserved for Zarr v3 extensions:
+    # https://zarr-specs.readthedocs.io/en/latest/v3/core/index.html#node-names
+    return epath.Path(self.output_path) / '__inference_checkpoints'
+
   def setup(self) -> None:
     """Call once to setup metadata in output Zarr(s)."""
+    checkpoints_path = self._checkpoints_path()
+    if checkpoints_path.exists():
+      # Already setup.
+      return
+
     # Our strategy here is to create a DataTree where all variables are empty
     # dask.array objects, similar xarray_beam.make_template()
     template = _query_to_dummy_datatree(self.output_query)
@@ -109,11 +223,17 @@ class InferenceRunner:
     # value explicitly: https://github.com/pydata/xarray/issues/10646
     template.to_zarr(self.output_path, compute=False, zarr_format=2)
 
+    # Add directory for inference checkpoints.
+    checkpoints_path.mkdir(exist_ok=True)
+
   @property
   def task_count(self) -> int:
     """Total number of simulation tasks."""
     ensemble_count = 1 if self.ensemble_size is None else self.ensemble_size
     return len(self.init_times) * ensemble_count
+
+  def _task_path(self, task_id: int) -> epath.Path:
+    return self._checkpoints_path() / f'{task_id}.pkl'
 
   def run(self, task_id: int) -> None:
     """Simulate a single task, saving outputs to the Zarr file.
@@ -126,76 +246,137 @@ class InferenceRunner:
     Raises:
       SomeException: if setup() has not been completed first.
     """
+    init_time_index = (
+        task_id if self.ensemble_size is None else task_id // self.ensemble_size
+    )
+    init_time = self.init_times[init_time_index].astype('datetime64[ns]')
+    dynamic_inputs_forecast = self.dynamic_inputs.get_forecast(init_time)
+
+    # Initialize state from checkpoint or from scratch.
+    task_path = self._task_path(task_id)
+    if task_path.exists():
+      logging.info(f'state checkpoint already exists for task {task_id=}')
+      with task_path.open('rb') as f:
+        state, commited_steps = pickle.load(f)
+    else:
+      logging.info(f'no state checkpoint found for task {task_id=}')
+      if self.ensemble_size is not None:
+        base_key = jax.random.key(self.random_seed)
+        rng = jax.random.fold_in(base_key, task_id)
+      else:
+        rng = None
+
+      # TODO(shoyer): Can we get the number of time-steps to include in model
+      # inputs from the model (or at least an InferenceRunner property) instead
+      # of hard-coding it here?
+      selected_inputs = {
+          k: v.sel(time=[init_time]) for k, v in self.inputs.items()
+      }
+      input_obs = self.model.inputs_from_xarray(selected_inputs)
+      dynamic_inputs = self.model.dynamic_inputs_from_xarray(
+          dynamic_inputs_forecast.get_data(
+              -self.model.timestep, self.model.timestep
+          )
+      )
+      logging.info('assimilating state')
+      state = _assimilate(self.model, input_obs, dynamic_inputs, rng)
+      commited_steps = 0
+
+    # Unroll simulation forward in time.
+
+    def get_dynamic_inputs(output_step):
+      lead_start = output_step * self.output_freq
+      lead_stop = (output_step + self.steps_per_unroll) * self.output_freq
+      return self.model.dynamic_inputs_from_xarray(
+          dynamic_inputs_forecast.get_data(lead_start, lead_stop)
+      )
+
+    dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)
+    dynamic_inputs_task.submit(commited_steps)
+
+    commit_chunk_task = streaming.SingleTaskExecutor(self._commit_chunk)
+
+    for steps_written in range(
+        commited_steps, self.total_steps, self.steps_per_write
+    ):
+      output_buffer = []
+      chunk_end_step = min(
+          steps_written + self.steps_per_write, self.total_steps
+      )
+
+      for step_start in range(
+          steps_written, chunk_end_step, self.steps_per_unroll
+      ):
+        dynamic_inputs = dynamic_inputs_task.get()
+        if step_start + self.steps_per_unroll < self.total_steps:
+          dynamic_inputs_task.submit(step_start + self.steps_per_unroll)
+
+        state, trajectory_slice = _unroll(
+            self.model,
+            state,
+            dynamic_inputs,
+            output_query=self.output_query,
+            steps_per_unroll=self.steps_per_unroll,
+            output_freq=self.output_freq,
+        )
+        output_buffer.append(jax.device_get(trajectory_slice))
+
+      commit_chunk_task.wait()
+      commit_chunk_task.submit(state, output_buffer, task_id, steps_written)
+    commit_chunk_task.wait()
+
+  def _commit_chunk(self, state, output_buffer, task_id, steps_written):
+    """Write a chunk of outputs to the Zarr file."""
+    logging.info(f'committing chunk for {task_id=} and {steps_written=}')
     if self.ensemble_size is None:
       init_time_index = task_id
       realization_index = None
-      rng = None
     else:
       init_time_index = task_id // self.ensemble_size
       realization_index = task_id % self.ensemble_size
-      base_key = jax.random.key(self.random_seed)
-      rng = jax.random.fold_in(base_key, task_id)
+
+    trees = []
+    for trajectory_slice in output_buffer:
+      outputs = self.model.data_to_xarray(trajectory_slice)
+      outputs_tree = xarray.DataTree.from_dict(outputs)
+      # TODO(shoyer): update the name of the TimeDelta coordinate?
+      outputs_tree = _datatree_rename(outputs_tree, {'timedelta': 'lead_time'})
+      trees.append(outputs_tree)
+
+    tree = xarray.map_over_datasets(
+        lambda *xs: xarray.concat(xs, dim='lead_time'), *trees
+    )
+    tree = _coordinate_to_root(tree, 'lead_time')
+    num_steps_in_chunk = tree.sizes['lead_time']
 
     init_time = self.init_times[init_time_index].astype('datetime64[ns]')
-    # TODO(shoyer): Can we get the number of time-steps to include in model
-    # inputs from the model (or at least an InferenceRunner property) instead of
-    # hard-coding it here?
-    selected_inputs = {
-        k: v.sel(time=[init_time]) for k, v in self.inputs.items()
-    }
-    forecast_inputs = self.dynamic_inputs.get_forecast(init_time).get_data(
-        lead_start=np.timedelta64(0, 'h'), lead_stop=self.output_duration
+    tree = _datatree_expand_dims(tree, init_time=[init_time])
+    region = {'init_time': slice(init_time_index, init_time_index + 1)}
+    region['lead_time'] = slice(
+        steps_written, steps_written + num_steps_in_chunk
     )
-
-    @nnx.jit
-    def assimilate(model, input_obs, dynamic_inputs, rng):
-      return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs, rng=rng)
-
-    @nnx.jit
-    def unroll(model, state, dynamic_inputs):
-
-      def observe(state, model):
-        return model.observe(
-            state,
-            self.output_query,
-            dynamic_inputs=dynamic_inputs,
-        )
-
-      return model.unroll(
-          state,
-          dynamic_inputs=dynamic_inputs,
-          outer_steps=math.ceil(self.output_duration / self.output_freq),
-          timedelta=self.output_freq,
-          post_process_fn=observe,
-      )
-
-    input_obs = self.model.inputs_from_xarray(selected_inputs)
-    dynamic_inputs = self.model.dynamic_inputs_from_xarray(forecast_inputs)
-    state = assimilate(self.model, input_obs, dynamic_inputs, rng)
-    # TODO(shoyer): Call unroll() in a loop, writing outputs to Zarr as we go
-    # and checkpointing `state`.
-    _, trajectory_slice = unroll(self.model, state, dynamic_inputs)
-    outputs = self.model.data_to_xarray(trajectory_slice)
-
-    outputs_tree = xarray.DataTree.from_dict(outputs)
-    outputs_tree = _datatree_expand_dims(outputs_tree, init_time=[init_time])
-    # TODO(shoyer): Rename TimeDelta to LeadTime in
-    # neuralgcm.experimental.core.coordinates.
-    outputs_tree = _datatree_rename(outputs_tree, {'timedelta': 'lead_time'})
+    if realization_index is not None:
+      tree = _datatree_expand_dims(tree, realization=[realization_index])
+      region['realization'] = slice(realization_index, realization_index + 1)
 
     # Remove variables that don't have an init_time dimension. These shouldn't
     # be written to disk again.
-    for node in outputs_tree.subtree:
+    for node in tree.subtree:
       for name, variable in node.variables.items():
-        if 'init_time' not in variable.dims:
+        if not any(dim in variable.dims for dim in region):
           del node[name]
 
-    # TODO(shoyer): See if we can get region='auto' to work.
-    region = {'init_time': slice(init_time_index, init_time_index + 1)}
-    if realization_index is not None:
-      outputs_tree = _datatree_expand_dims(
-          outputs_tree, realization=[realization_index]
-      )
-      region['realization'] = slice(realization_index, realization_index + 1)
+    logging.info('writing zarr chunk')
+    tree.to_zarr(self.output_path, mode='r+', region=region)
 
-    outputs_tree.to_zarr(self.output_path, mode='r+', region=region)
+    if steps_written + num_steps_in_chunk == self.total_steps:
+      logging.info('task complete, removing temporary checkpoints')
+      self._task_path(task_id).unlink(missing_ok=True)
+    elif steps_written > 0 and steps_written % self.steps_per_checkpoint == 0:
+      logging.info('writing state checkpoint')
+      task_path = self._task_path(task_id)
+      state = jax.device_get(state)
+      with _atomic_write(task_path) as f:
+        pickle.dump((state, steps_written), f)
+
+    logging.info('commit chunk complete')

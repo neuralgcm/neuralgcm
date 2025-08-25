@@ -22,6 +22,7 @@ import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
+from neuralgcm.experimental.inference import streaming
 import numpy as np
 import numpy.typing as npt
 import xarray
@@ -201,6 +202,13 @@ class InferenceRunner:
     steps_per_unroll = round(self.unroll_duration / self.output_freq)
     steps_per_write = self.output_chunks['lead_time']
 
+    def get_dynamic_inputs(step_start):
+      lead_start = step_start * self.output_freq
+      lead_stop = (step_start + steps_per_unroll) * self.output_freq
+      return self.model.dynamic_inputs_from_xarray(
+          dynamic_inputs_forecast.get_data(lead_start, lead_stop)
+      )
+
     @nnx.jit
     def unroll(model, state, dynamic_inputs):
       def observe(state, model):
@@ -218,6 +226,11 @@ class InferenceRunner:
           post_process_fn=observe,
       )
 
+    dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)
+    dynamic_inputs_task.submit(0)
+
+    write_chunk_task = streaming.SingleTaskExecutor(self._write_chunk)
+
     for steps_written in range(0, total_steps, steps_per_write):
       # TODO(shoyer): Checkpoint state to disk here, so jobs are robust to
       # preemption.
@@ -225,44 +238,59 @@ class InferenceRunner:
       chunk_end_step = min(steps_written + steps_per_write, total_steps)
 
       for step_start in range(steps_written, chunk_end_step, steps_per_unroll):
-        lead_start = step_start * self.output_freq
-        lead_stop = (step_start + steps_per_unroll) * self.output_freq
-        dynamic_inputs = self.model.dynamic_inputs_from_xarray(
-            dynamic_inputs_forecast.get_data(lead_start, lead_stop)
-        )
+        dynamic_inputs = dynamic_inputs_task.get()
+        if step_start + steps_per_unroll < chunk_end_step:
+          dynamic_inputs_task.submit(step_start + steps_per_unroll)
         state, trajectory_slice = unroll(self.model, state, dynamic_inputs)
+        output_buffer.append(jax.device_get(trajectory_slice))
 
-        outputs = self.model.data_to_xarray(trajectory_slice)
-        outputs_tree = xarray.DataTree.from_dict(outputs)
-        # TODO(shoyer): update the name of the TimeDelta coordinate?
-        outputs_tree = _datatree_rename(
-            outputs_tree, {'timedelta': 'lead_time'}
-        )
-        output_buffer.append(outputs_tree)
-
-      # Concatenate and write the buffer for this chunk
-      chunk_tree = xarray.map_over_datasets(
-          lambda *xs: xarray.concat(xs, dim='lead_time'), *output_buffer
+      write_chunk_task.wait()
+      write_chunk_task.submit(
+          output_buffer, init_time_index, realization_index, steps_written
       )
-      chunk_tree = _coordinate_to_root(chunk_tree, 'lead_time')
-      num_steps_in_chunk = chunk_tree.sizes['lead_time']
+    write_chunk_task.wait()
 
-      chunk_tree = _datatree_expand_dims(chunk_tree, init_time=[init_time])
-      region = {'init_time': slice(init_time_index, init_time_index + 1)}
-      region['lead_time'] = slice(
-          steps_written, steps_written + num_steps_in_chunk
+  def _write_chunk(
+      self,
+      output_buffer: list[typing.Pytree],
+      init_time_index: int,
+      realization_index: int,
+      steps_written: int,
+  ) -> None:
+    """Write a chunk of outputs to the Zarr file."""
+    trees = []
+    for trajectory_slice in output_buffer:
+      outputs = self.model.data_to_xarray(trajectory_slice)
+      outputs_tree = xarray.DataTree.from_dict(outputs)
+      # TODO(shoyer): update the name of the TimeDelta coordinate?
+      outputs_tree = _datatree_rename(
+          outputs_tree, {'timedelta': 'lead_time'}
       )
-      if realization_index is not None:
-        chunk_tree = _datatree_expand_dims(
-            chunk_tree, realization=[realization_index]
-        )
-        region['realization'] = slice(realization_index, realization_index + 1)
+      trees.append(outputs_tree)
 
-      # Remove variables that don't have an init_time dimension. These shouldn't
-      # be written to disk again.
-      for node in chunk_tree.subtree:
-        for name, variable in node.variables.items():
-          if not any(dim in variable.dims for dim in region):
-            del node[name]
+    tree = xarray.map_over_datasets(
+        lambda *xs: xarray.concat(xs, dim='lead_time'), *trees
+    )
+    tree = _coordinate_to_root(tree, 'lead_time')
+    num_steps_in_chunk = tree.sizes['lead_time']
 
-      chunk_tree.to_zarr(self.output_path, mode='r+', region=region)
+    init_time = self.init_times[init_time_index].astype('datetime64[ns]')
+    tree = _datatree_expand_dims(tree, init_time=[init_time])
+    region = {'init_time': slice(init_time_index, init_time_index + 1)}
+    region['lead_time'] = slice(
+        steps_written, steps_written + num_steps_in_chunk
+    )
+    if realization_index is not None:
+      tree = _datatree_expand_dims(
+          tree, realization=[realization_index]
+      )
+      region['realization'] = slice(realization_index, realization_index + 1)
+
+    # Remove variables that don't have an init_time dimension. These shouldn't
+    # be written to disk again.
+    for node in tree.subtree:
+      for name, variable in node.variables.items():
+        if not any(dim in variable.dims for dim in region):
+          del node[name]
+
+    tree.to_zarr(self.output_path, mode='r+', region=region)

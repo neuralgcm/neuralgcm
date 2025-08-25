@@ -181,6 +181,7 @@ class RunnerTest(parameterized.TestCase):
         output_freq=np.timedelta64(6, 'h'),
         output_duration=np.timedelta64(1, 'D'),
         output_chunks=output_chunks,
+        unroll_duration=np.timedelta64(12, 'h'),
     )
     runner.setup()
 

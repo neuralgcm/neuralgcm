@@ -179,16 +179,17 @@ class RunnerTest(parameterized.TestCase):
         output_path=output_path,
         output_query=output_query,
         output_freq=np.timedelta64(6, 'h'),
-        output_duration=np.timedelta64(1, 'D'),
+        output_duration=np.timedelta64(48, 'h'),
         output_chunks=output_chunks,
         unroll_duration=np.timedelta64(12, 'h'),
+        checkpoint_duration=np.timedelta64(24, 'h'),
     )
     runner.setup()
 
     ensemble_count = 1 if ensemble_size is None else ensemble_size
     self.assertEqual(runner.task_count, len(init_times) * ensemble_count)
 
-    expected_lead_times = np.arange(0, 24, 6) * np.timedelta64(1, 'h')
+    expected_lead_times = np.arange(0, 48, 6) * np.timedelta64(1, 'h')
     nans = functools.partial(np.full, fill_value=np.nan)
     coords = {
         'init_time': init_times.astype('datetime64[ns]'),
@@ -216,7 +217,7 @@ class RunnerTest(parameterized.TestCase):
     for task_id in range(runner.task_count):
       runner.run(task_id)
 
-    h = np.array([0.0, 6.0, 12.0, 18.0])
+    h = np.array([0.0, 6.0, 12.0, 18.0, 24.0, 30.0, 36.0, 42.0])
     expected_foo = np.stack([h, 10 + h])
     expected_bar = np.stack(
         2 * [np.stack([2 * h + 1, 2 * h + 2, 2 * h + 3], axis=1)]

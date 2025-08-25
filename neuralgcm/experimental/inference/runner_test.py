@@ -153,7 +153,7 @@ class RunnerTest(parameterized.TestCase):
             },
             coords={'time': init_times, 'x': np.array([0.1, 0.2, 0.3])},
         )
-     }
+    }
     delta = xarray.Dataset({'foo': 1.0, 'bar': 2.0})
     dynamic_inputs = dynamic_inputs_lib.Persistence(
         full_data={'data': delta.expand_dims(time=init_times)},
@@ -181,6 +181,7 @@ class RunnerTest(parameterized.TestCase):
         output_freq=np.timedelta64(6, 'h'),
         output_duration=np.timedelta64(1, 'D'),
         output_chunks=output_chunks,
+        unroll_duration=np.timedelta64(12, 'h'),
     )
     runner.setup()
 

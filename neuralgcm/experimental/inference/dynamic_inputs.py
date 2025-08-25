@@ -149,7 +149,15 @@ class _Forecast(abc.ABC, Generic[XarrayData]):
   def get_data(
       self, lead_start: np.timedelta64, lead_stop: np.timedelta64
   ) -> XarrayData:
-    """Get forecasts of dynamics inputs for the specified lead times."""
+    """Get forecasts of dynamics inputs for the specified lead times.
+
+    Args:
+      lead_start: start of lead times to forecast, inclusive.
+      lead_stop: end of lead times to forecast, exclusive.
+
+    Returns:
+      A dataset with a 'time' dimension containing specified forecasts.
+    """
     raise NotImplementedError()
 
 

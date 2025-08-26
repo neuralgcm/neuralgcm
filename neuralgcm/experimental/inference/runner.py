@@ -115,7 +115,7 @@ def _unroll(
 
 
 def _tmp_file_path(path: str) -> epath.Path:
-  return epath.Path(path).with_suffix(f'-{uuid.uuid4().hex}.tmp')
+  return epath.Path(path).with_suffix(f'.{uuid.uuid4().hex}.tmp')
 
 
 @contextlib.contextmanager
@@ -127,6 +127,7 @@ def _atomic_write(path):
     tmp_path.replace(path)
   except Exception:  # pylint: disable=broad-except
     tmp_path.unlink(missing_ok=True)
+    raise
 
 
 @dataclasses.dataclass
@@ -163,7 +164,7 @@ class InferenceRunner:
           ' be a multiple of unroll_duration in steps'
           f' ({self.steps_per_unroll})'
       )
-    write_freq = self.output_freq * self.steps_per_write
+    write_freq = self.output_freq * self.max_steps_per_write
     if self.checkpoint_duration % write_freq != np.timedelta64(0):
       raise ValueError(
           f'{self.checkpoint_duration=} must be a multiple of {write_freq=}'
@@ -182,7 +183,7 @@ class InferenceRunner:
     return self.checkpoint_duration // self.output_freq
 
   @property
-  def steps_per_write(self) -> int:
+  def max_steps_per_write(self) -> int:
     return self.output_chunks['lead_time']
 
   def _checkpoints_path(self) -> epath.Path:
@@ -295,11 +296,11 @@ class InferenceRunner:
     commit_chunk_task = streaming.SingleTaskExecutor(self._commit_chunk)
 
     for steps_written in range(
-        commited_steps, self.total_steps, self.steps_per_write
+        commited_steps, self.total_steps, self.max_steps_per_write
     ):
       output_buffer = []
       chunk_end_step = min(
-          steps_written + self.steps_per_write, self.total_steps
+          steps_written + self.max_steps_per_write, self.total_steps
       )
 
       for step_start in range(
@@ -332,7 +333,14 @@ class InferenceRunner:
   ) -> None:
     """Write outputs to disk, checking state if necessary."""
     logging.info(f'committing chunk for {task_id=} and {steps_written=}')
+    self._write_zarr_chunk(output_buffer, task_id, steps_written)
+    self._maybe_update_state_checkpoint(state, task_id, steps_written)
+    logging.info('commit chunk complete')
 
+  def _write_zarr_chunk(
+      self, output_buffer: list[typing.Pytree], task_id: int, steps_written: int
+  ) -> None:
+    """Write Zarr chunk to disk."""
     if self.ensemble_size is None:
       init_time_index = task_id
       realization_index = None
@@ -374,14 +382,18 @@ class InferenceRunner:
     logging.info('writing zarr chunk')
     tree.to_zarr(self.output_path, mode='r+', region=region)
 
-    if steps_written + num_steps_in_chunk == self.total_steps:
-      logging.info('task complete, removing temporary checkpoints')
+  def _maybe_update_state_checkpoint(
+      self, state: typing.Pytree, task_id: int, steps_written: int
+  ) -> None:
+    """Update the state checkpoint, if necessary."""
+    if steps_written + self.max_steps_per_write >= self.total_steps:
+      logging.info('task complete, removing temporary state checkpoint')
       self._task_path(task_id).unlink(missing_ok=True)
-    elif steps_written > 0 and steps_written % self.steps_per_checkpoint == 0:
+    elif steps_written % self.steps_per_checkpoint == 0:
       logging.info('writing state checkpoint')
       task_path = self._task_path(task_id)
       state = jax.device_get(state)
       with _atomic_write(task_path) as f:
-        pickle.dump((state, steps_written), f)
-
-    logging.info('commit chunk complete')
+        pickle.dump((state, steps_written + self.max_steps_per_write), f)
+    else:
+      logging.info('no state checkpoint update for this step')

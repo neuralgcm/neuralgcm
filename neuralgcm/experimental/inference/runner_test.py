@@ -15,6 +15,8 @@
 import dataclasses
 import functools
 import operator
+import os
+import pathlib
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -253,6 +255,26 @@ class RunnerTest(parameterized.TestCase):
           np.allclose(first_realization, second_init, atol=0.001),
           msg=f'{first_realization=}, {second_init=}',
       )
+
+
+class AtomicWriteTest(absltest.TestCase):
+
+  def test_successful(self):
+    path = pathlib.Path(self.create_tempdir()) / 'data'
+    with runnerlib._atomic_write(path) as f:
+      f.write(b'abc')
+    self.assertTrue(path.exists())
+    self.assertEqual(path.read_bytes(), b'abc')
+    self.assertEqual(os.listdir(path.parent), ['data'])  # no temp files
+
+  def test_incomplete(self):
+    path = pathlib.Path(self.create_tempdir()) / 'data'
+    with self.assertRaises(RuntimeError):
+      with runnerlib._atomic_write(path) as f:
+        f.write(b'a')
+        raise RuntimeError
+    self.assertFalse(path.exists())
+    self.assertEqual(os.listdir(path.parent), [])  # no temp files
 
 
 if __name__ == '__main__':

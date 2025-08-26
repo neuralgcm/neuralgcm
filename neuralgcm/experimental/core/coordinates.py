@@ -521,6 +521,21 @@ class SphericalHarmonicGrid(cx.Coordinate):
 
     return jax.tree.map(clip, inputs)
 
+  def __lt__(self, other: SphericalHarmonicGrid) -> bool:
+    """Custom comparison operator for sorting SphericalHarmonicGrids."""
+    # Implementing __lt__ enables SphericalHarmonicGrid to be keys in a dict
+    # and be compatible with jax.tree. operations.
+    def _to_tuple(x):
+      xt = (x.total_wavenumbers, x.longitude_wavenumbers, x.wavenumber_padding)
+      return xt
+
+    if not isinstance(other, SphericalHarmonicGrid):
+      return NotImplemented
+    # Sort by total, then longitude, then padding.
+    self_compare_values_in_order = _to_tuple(self)
+    other_compare_values_in_order = _to_tuple(other)
+    return self_compare_values_in_order < other_compare_values_in_order
+
   @classmethod
   def from_dinosaur_grid(
       cls,

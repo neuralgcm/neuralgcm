@@ -211,7 +211,7 @@ class EvaluatorsTest(parameterized.TestCase):
     nodal_getter = transforms.Identity()
     modal_getter = transforms.Sequential([
         transforms.ToModal(ylm_transform),
-        transforms.ClipWavenumbers(grid=ylm_grid, wavenumbers_to_clip=2),
+        transforms.ClipWavenumbers({ylm_grid: 2}),
     ])
     area_weighting = weighting.GridAreaWeighting()
     variable_weighting = weighting.PerVariableWeighting(

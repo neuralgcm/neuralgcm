@@ -17,7 +17,7 @@ import dataclasses
 import logging
 import math
 import pickle
-from typing import Any
+from typing import Any, TypeVar
 import uuid
 
 import dask.array
@@ -28,6 +28,7 @@ from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
 from neuralgcm.experimental.inference import streaming
+from neuralgcm.experimental.inference import timing
 import numpy as np
 import numpy.typing as npt
 import xarray
@@ -112,6 +113,13 @@ def _unroll(
       timedelta=output_freq,
       post_process_fn=observe,
   )
+
+
+T = TypeVar('T')
+
+
+def _device_get_and_append(buffer: list[T], state: T) -> None:
+  buffer.append(jax.device_get(state))
 
 
 def _tmp_file_path(path: str) -> epath.Path:
@@ -290,14 +298,28 @@ class InferenceRunner:
           dynamic_inputs_forecast.get_data(lead_start, lead_stop)
       )
 
-    dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)
-    dynamic_inputs_task.submit(commited_steps)
+    @timing.Timed
+    def unroll(state, dynamic_inputs):
+      return _unroll(
+          self.model,
+          state,
+          dynamic_inputs,
+          output_query=self.output_query,
+          steps_per_unroll=self.steps_per_unroll,
+          output_freq=self.output_freq,
+      )
 
+    dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)
+    buffer_write_task = streaming.SingleTaskExecutor(_device_get_and_append)
     commit_chunk_task = streaming.SingleTaskExecutor(self._commit_chunk)
+
+    dynamic_inputs_task.submit(commited_steps)
+    write_step_timer = timing.Timer()
 
     for steps_written in range(
         commited_steps, self.total_steps, self.max_steps_per_write
     ):
+      write_step_timer.begin_step()
       output_buffer = []
       chunk_end_step = min(
           steps_written + self.max_steps_per_write, self.total_steps
@@ -310,18 +332,31 @@ class InferenceRunner:
         if step_start + self.steps_per_unroll < self.total_steps:
           dynamic_inputs_task.submit(step_start + self.steps_per_unroll)
 
-        state, trajectory_slice = _unroll(
-            self.model,
-            state,
-            dynamic_inputs,
-            output_query=self.output_query,
-            steps_per_unroll=self.steps_per_unroll,
-            output_freq=self.output_freq,
-        )
-        output_buffer.append(jax.device_get(trajectory_slice))
+        state, trajectory_slice = unroll(state, dynamic_inputs)
+        buffer_write_task.wait()
+        buffer_write_task.submit(output_buffer, trajectory_slice)
 
       commit_chunk_task.wait()
-      commit_chunk_task.submit(state, output_buffer, task_id, steps_written)
+      commit_chunk_task.submit(
+          state,
+          output_buffer,
+          task_id,
+          steps_written,
+          wait_on=buffer_write_task,
+      )
+
+      write_step_timer.finish_step()
+      logging.info(
+          f'write step took {write_step_timer.last:.3g}s '
+          f'({unroll.timer.total:.3g}s for compute, '
+          f'{dynamic_inputs_task.timer.total:.3g}s for dynamic inputs, '
+          f'{buffer_write_task.timer.total:.3g}s for copying buffers, '
+          f'{commit_chunk_task.timer.last:.3g}s for commit chunk)'
+      )
+      dynamic_inputs_task.timer.reset_total()
+      unroll.timer.reset_total()
+      buffer_write_task.timer.reset_total()
+
     commit_chunk_task.wait()
 
   def _commit_chunk(
@@ -330,12 +365,16 @@ class InferenceRunner:
       output_buffer: list[typing.Pytree],
       task_id: int,
       steps_written: int,
+      wait_on: streaming.SingleTaskExecutor,
   ) -> None:
     """Write outputs to disk, checking state if necessary."""
     logging.info(f'committing chunk for {task_id=} and {steps_written=}')
+    wait_on.wait()
+    logging.info('output buffer is ready')
     self._write_zarr_chunk(output_buffer, task_id, steps_written)
     self._maybe_update_state_checkpoint(state, task_id, steps_written)
     logging.info('commit chunk complete')
+
 
   def _write_zarr_chunk(
       self, output_buffer: list[typing.Pytree], task_id: int, steps_written: int

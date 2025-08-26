@@ -62,23 +62,35 @@ class Timer:
     """
     self._counter = counter
     self._start = math.nan
-    self.last = math.nan
-    self.total = 0.0
+    self._last = math.nan
+    self._total = 0.0
+
+  @property
+  def last(self) -> float:
+    return self._last
+
+  @property
+  def total(self) -> float:
+    return self._total
+
+  def running(self) -> bool:
+    return not math.isnan(self._start)
+
+  def reset_total(self):
+    self._total = 0.0
 
   def begin_step(self):
-    if not math.isnan(self._start):
+    if self.running():
       raise RuntimeError('Timer is already timing a step')
     self._start = self._counter()
 
   def finish_step(self):
+    if not self.running():
+      raise RuntimeError('Timer is not running a step')
     elapsed = self._counter() - self._start
-    self.last = elapsed
-    self.total += elapsed
+    self._last = elapsed
+    self._total += elapsed
     self._start = math.nan
-
-  def mark_step(self):
-    self.finish_step()
-    self.begin_step()
 
   def __enter__(self):
     self.begin_step()

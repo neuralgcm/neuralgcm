@@ -14,8 +14,9 @@
 """Utilities for streaming execution in a separate thread."""
 
 import concurrent.futures
-
 from typing import Generic, Callable, TypeVar
+
+from neuralgcm.experimental.inference import timing
 
 
 class EmptyStreamError(Exception):
@@ -37,11 +38,15 @@ class SingleTaskExecutor(Generic[T]):
   """
 
   def __init__(self, func: Callable[..., T]):
-    self._func = func
+    self._timed = timing.Timed(func)
     self._executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix=getattr(func, '__name__', '')
     )
     self._future = None
+
+  @property
+  def timer(self) -> timing.Timer:
+    return self._timed.timer
 
   def running(self) -> bool:
     return self._future is not None and self._future.running()
@@ -65,4 +70,4 @@ class SingleTaskExecutor(Generic[T]):
     """Start calculating func(*args, **kwargs)."""
     if self._future is not None:
       raise FullStreamError('cannot submit() with an unfetched task')
-    self._future = self._executor.submit(self._func, *args, **kwargs)
+    self._future = self._executor.submit(self._timed, *args, **kwargs)

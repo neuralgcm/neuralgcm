@@ -183,6 +183,7 @@ class RunnerTest(parameterized.TestCase):
         output_freq=np.timedelta64(6, 'h'),
         output_duration=np.timedelta64(48, 'h'),
         output_chunks=output_chunks,
+        write_duration=np.timedelta64(24, 'h'),
         unroll_duration=np.timedelta64(12, 'h'),
         checkpoint_duration=np.timedelta64(24, 'h'),
     )

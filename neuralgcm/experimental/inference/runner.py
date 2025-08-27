@@ -163,6 +163,7 @@ class InferenceRunner:
   output_duration: np.timedelta64
   output_chunks: dict[str, int]  # should have a sane defaults
   unroll_duration: np.timedelta64
+  write_duration: np.timedelta64
   checkpoint_duration: np.timedelta64
   zarr_format: int | None = None
   bad_state_strategy: Literal['raise', 'impute_nan'] = 'raise'
@@ -177,16 +178,25 @@ class InferenceRunner:
       raise ValueError(
           f'{self.unroll_duration=} must be a multiple of {self.output_freq=}'
       )
-    if self.output_chunks['lead_time'] % self.steps_per_unroll != 0:
+    if self.write_duration % self.output_freq != np.timedelta64(0):
       raise ValueError(
-          f"output_chunks['lead_time'] ({self.output_chunks['lead_time']}) must"
-          ' be a multiple of unroll_duration in steps'
-          f' ({self.steps_per_unroll})'
+          f'{self.write_duration=} must be a multiple of {self.output_freq=}'
       )
-    write_freq = self.output_freq * self.max_steps_per_write
-    if self.checkpoint_duration % write_freq != np.timedelta64(0):
+    if self.max_steps_per_write % self.steps_per_unroll != 0:
       raise ValueError(
-          f'{self.checkpoint_duration=} must be a multiple of {write_freq=}'
+          f'write_duration in steps ({self.max_steps_per_write}) must be a '
+          f'multiple of unroll_duration in steps ({self.steps_per_unroll})'
+      )
+    if self.max_steps_per_write % self.output_chunks['lead_time'] != 0:
+      raise ValueError(
+          f'write_duration in steps ({self.max_steps_per_write}) must be a'
+          " multiple of output_chunks['lead_time']"
+          f" ({self.output_chunks['lead_time']})"
+      )
+    if self.checkpoint_duration % self.write_duration != np.timedelta64(0):
+      raise ValueError(
+          f'{self.checkpoint_duration=} must be a multiple of'
+          f' {self.write_duration=}'
       )
     if self.bad_state_strategy not in ('raise', 'impute_nan'):
       raise ValueError(f'Unknown bad_state_strategy: {self.bad_state_strategy}')
@@ -200,12 +210,12 @@ class InferenceRunner:
     return self.unroll_duration // self.output_freq
 
   @property
-  def steps_per_checkpoint(self) -> int:
-    return self.checkpoint_duration // self.output_freq
+  def max_steps_per_write(self) -> int:
+    return self.write_duration // self.output_freq
 
   @property
-  def max_steps_per_write(self) -> int:
-    return self.output_chunks['lead_time']
+  def steps_per_checkpoint(self) -> int:
+    return self.checkpoint_duration // self.output_freq
 
   def _checkpoints_path(self) -> epath.Path:
     # names beginning with __ are reserved for Zarr v3 extensions:
@@ -401,7 +411,6 @@ class InferenceRunner:
     self._write_zarr_chunk(output_buffer, task_id, steps_written)
     self._maybe_update_state_checkpoint(state, task_id, steps_written)
     logging.info('commit chunk complete')
-
 
   def _write_zarr_chunk(
       self, output_buffer: list[typing.Pytree], task_id: int, steps_written: int

@@ -13,7 +13,9 @@
 # limitations under the License.
 """Tests that random processes generate values with expected stats."""
 
+import inspect
 import math
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
@@ -28,6 +30,14 @@ from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
 import scipy.stats
+
+
+# TODO(dkochkov): Remove this once nnx.merge update is in a versioned release.
+def _nnx_merge_with_copy(graph, *args):
+  if 'copy' in inspect.signature(nnx.merge).parameters:
+    return nnx.merge(graph, *args, copy=True)
+  else:
+    return nnx.merge(graph, *args)
 
 
 def _auto_correlation_1d(series):
@@ -184,9 +194,13 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     unroll_length = 40
     init_rngs = jax.random.split(jax.random.key(5), n_samples)
     graph, params = nnx.split(random_field)
-    sample_fn = lambda x: graph.apply(params).unconditional_sample(x)[0]
-    evaluate_fn = lambda x: graph.apply(params).state_values(grid, x)[0]
-    advance_fn = lambda x: graph.apply(params).advance(x)[0]
+    sample_fn = lambda x: _nnx_merge_with_copy(
+        graph, params
+    ).unconditional_sample(x)
+    evaluate_fn = lambda x: _nnx_merge_with_copy(graph, params).state_values(
+        grid, x
+    )
+    advance_fn = lambda x: _nnx_merge_with_copy(graph, params).advance(x)
     batch_sample_fn = jax.vmap(sample_fn)
     batch_evaluate_fn = jax.vmap(evaluate_fn)
     batch_advance_fn = jax.vmap(advance_fn)
@@ -482,9 +496,13 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     ###
     grid = self.ylm_transform.lon_lat_grid
     graph, params = nnx.split(random_field)
-    sample_fn = lambda x: graph.apply(params).unconditional_sample(x)[0]
-    evaluate_fn = lambda x: graph.apply(params).state_values(grid, x)[0]
-    advance_fn = lambda x: graph.apply(params).advance(x)[0]
+    sample_fn = lambda x: _nnx_merge_with_copy(
+        graph, params
+    ).unconditional_sample(x)
+    evaluate_fn = lambda x: _nnx_merge_with_copy(graph, params).state_values(
+        grid, x
+    )
+    advance_fn = lambda x: _nnx_merge_with_copy(graph, params).advance(x)
     batch_sample_fn = jax.vmap(sample_fn)
     batch_evaluate_fn = jax.vmap(evaluate_fn)
     batch_advance_fn = jax.vmap(advance_fn)

@@ -49,13 +49,41 @@ class DataObservationOperatorsTest(parameterized.TestCase):
     }
     chex.assert_trees_all_equal(actual, expected)
 
+  def test_subset_along_coord(self):
+    pressure_coord = cx.LabeledAxis('pressure', [10, 20, 30, 40, 50])
+    fields = {
+        'a': cx.wrap(np.arange(5), pressure_coord),
+    }
+    operator = observation_operators.DataObservationOperator(fields)
+    query_pressure_coord = cx.LabeledAxis('pressure', [20, 40])
+    query = {'a': query_pressure_coord}
+    actual = operator.observe(inputs={}, query=query)
+    expected_field = cx.wrap(np.array([1, 3]), query_pressure_coord)
+    expected = {'a': expected_field}
+    chex.assert_trees_all_equal(actual, expected)
+
+  def test_invalid_subset_along_coord(self):
+    pressure_coord = cx.LabeledAxis('pressure', [10, 20, 30, 40, 50])
+    fields = {
+        'a': cx.wrap(np.arange(5), pressure_coord),
+    }
+    operator = observation_operators.DataObservationOperator(fields)
+    query_pressure_coord = cx.LabeledAxis('pressure', [25, 40])
+    query = {'a': query_pressure_coord}
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        f'query vertical coordinate {query_pressure_coord} is not a subset of '
+        f'field vertical coordinate {pressure_coord}',
+    ):
+      operator.observe(inputs={}, query=query)
+
   def test_raises_on_missing_field(self):
     fields = {'a': cx.wrap(np.ones(7), cx.LabeledAxis('x', np.arange(7)))}
     operator = observation_operators.DataObservationOperator(fields)
     query = {'d': cx.LabeledAxis('x', np.arange(7))}
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        "Query contains k='d' not in ['a']",
+        "query contains k='d' not in ['a']",
     ):
       operator.observe(inputs={}, query=query)
 
@@ -66,9 +94,11 @@ class DataObservationOperatorsTest(parameterized.TestCase):
     q_coord = cx.LabeledAxis('x', np.linspace(0, 1, 7))
     query = {'a': q_coord}
     with self.assertRaisesWithLiteralMatch(
-        ValueError, f'Query (a, {q_coord}) does not match field.{coord=}'
+        ValueError,
+        "query coordinate for 'a' does not match"
+        f' field:\n{q_coord}\nvs\n{coord}',
     ):
-      _ = operator.observe(inputs={}, query=query)
+      operator.observe(inputs={}, query=query)
 
   def test_raises_on_field_in_query(self):
     coord = cx.LabeledAxis('rel_x', np.arange(7))
@@ -83,7 +113,7 @@ class DataObservationOperatorsTest(parameterized.TestCase):
         'DataObservationOperator only supports coordinate queries, got'
         f' {query["x"]}',
     ):
-      _ = operator.observe(inputs={}, query=query)
+      operator.observe(inputs={}, query=query)
 
 
 class FixedLearnedObservationOperatorTest(parameterized.TestCase):

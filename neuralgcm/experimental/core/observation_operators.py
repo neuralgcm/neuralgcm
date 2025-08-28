@@ -28,6 +28,7 @@ from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import towers
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
+import numpy as np
 
 
 # pylint: disable=g-classes-have-attributes
@@ -44,6 +45,55 @@ class ObservationOperator(nnx.Module, abc.ABC):
   ) -> dict[str, cx.Field]:
     """Returns observations for `query`."""
     ...
+
+
+def _collect_coord_components(
+    coord: cx.Coordinate, dim: str
+) -> list[cx.Coordinate]:
+  """Returns the coordinate component with the given name, if it exists."""
+  return [c for c in cx.canonicalize_coordinates(coord) if c.dims == (dim,)]
+
+
+def _subset_query_from_field(
+    field: cx.Field, query_coords: cx.Coordinate
+) -> cx.Field | None:
+  """Returns a subset of `field` that matches `query_coords`, or `None`."""
+  if query_coords == field.coordinate:
+    return field
+
+  if query_coords.dims != field.dims:
+    return None
+
+  # TODO(shoyer): Consider making this logic more generic and potentially moving
+  # it into coordax. Currently we use a hard-coded list of coordinates for which
+  # we know no other metadata is necessary to match indices.
+  for dim in ['pressure', 'sigma', 'layer_index', 'soil_levels']:
+    if dim not in query_coords.dims:
+      continue
+    (query_component,) = _collect_coord_components(query_coords, dim)
+    (field_component,) = _collect_coord_components(field.coordinate, dim)
+    query_levels = query_component.fields[dim].data.tolist()
+    field_levels = field_component.fields[dim].data.tolist()
+    try:
+      indices = [
+          field_levels.index(query_levels) for query_levels in query_levels
+      ]
+    except ValueError as e:
+      raise ValueError(
+          f'query vertical coordinate {query_component} is not a subset of '
+          f'field vertical coordinate {field_component}'
+      ) from e
+
+    untagged_field = field.untag(field_component)
+    out_axes = untagged_field.named_axes
+    field = cx.cmap(lambda x: x[np.array(indices)], out_axes)(  # pylint: disable=cell-var-from-loop
+        untagged_field
+    ).tag(query_component)
+
+  if query_coords == field.coordinate:
+    return field  # successful indexing
+
+  return None
 
 
 @dataclasses.dataclass
@@ -70,17 +120,23 @@ class DataObservationOperator(ObservationOperator):
     observations = {}
     is_coordinate = lambda x: isinstance(x, cx.Coordinate)
     valid_keys = list(self.fields.keys())
-    for k, v in query.items():
+    for k, query_coord in query.items():
       if k not in valid_keys:
-        raise ValueError(f'Query contains {k=} not in {valid_keys}')
-      if not is_coordinate(v):
+        raise ValueError(f'query contains {k=} not in {valid_keys}')
+      if not is_coordinate(query_coord):
         raise ValueError(
-            f'DataObservationOperator only supports coordinate queries, got {v}'
+            'DataObservationOperator only supports coordinate queries, got'
+            f' {query_coord}'
         )
-      coord = cx.get_coordinate(self.fields[k])
-      if v != coord:
-        raise ValueError(f'Query ({k}, {v}) does not match field.{coord=}')
-      observations[k] = self.fields[k]
+      field = self.fields[k]
+      result = _subset_query_from_field(field, query_coord)
+      if result is None:
+        raise ValueError(
+            f'query coordinate for {k!r} does not match field:\n'
+            f'{query_coord}\nvs\n{field.coordinate}'
+        )
+      observations[k] = result
+
     return observations
 
 

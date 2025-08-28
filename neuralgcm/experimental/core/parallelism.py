@@ -234,6 +234,18 @@ class Mesh:
   def __post_init__(self):
     self._validate_partitions()
 
+  def __hash__(self) -> int:
+    # Convert dicts to frozenset of items to make them hashable.
+    array_partitions_hashable = frozenset(self.array_partitions.items())
+    field_partitions_hashable = frozenset(
+        (k, frozenset(v.items())) for k, v in self.field_partitions.items()
+    )
+    return hash((
+        self.spmd_mesh,
+        array_partitions_hashable,
+        field_partitions_hashable,
+    ))
+
   def _validate_partitions(self):
     """Validates that partitioning options are compatible with the mesh."""
     if self.spmd_mesh is not None:

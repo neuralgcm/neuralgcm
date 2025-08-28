@@ -69,11 +69,13 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       self,
       samples,
       expected_correlation_length,
-      grid,
+      ylm_transform,
   ):
     """Checks the correlation length of random field."""
     unused_n_samples, n_lngs, n_lats = samples.shape
-    expected_corr_frac = expected_correlation_length / (2 * np.pi * grid.radius)
+    expected_corr_frac = expected_correlation_length / (
+        2 * np.pi * ylm_transform.radius
+    )
     # Mean autocorrelation in the lat direction at the longitude=0 line.
     acorr_lat = auto_correlation(samples[:, 0, :], axis=-1).mean(axis=0)
     # There are 2 * n_lats points in the circumference.
@@ -98,7 +100,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
   def check_mean(
       self,
       samples,
-      grid,
+      ylm_transform,
       expected_mean,
       variance,
       correlation_length,
@@ -125,7 +127,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
 
     # Check average mean over whole earth (standard_error will be lower so this
     # is a good second check).
-    expected_corr_frac = correlation_length / grid.radius
+    expected_corr_frac = correlation_length / ylm_transform.radius
     n_equivalent_integrated_samples = n_samples / expected_corr_frac**2
     if variance:
       standard_error = np.sqrt(variance) / np.sqrt(
@@ -217,13 +219,15 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
 
     if run_correlation_length_check and variance is not None:
       with self.subTest('unconditional_sample_correlation_len'):
-        self.check_correlation_length(initial_values, correlation_length, grid)
+        self.check_correlation_length(
+            initial_values, correlation_length, ylm_transform
+        )
 
     if run_mean_check:
       with self.subTest('unconditional_sample_pointwise_mean'):
         self.check_mean(
             initial_values,
-            grid,
+            ylm_transform=ylm_transform,
             expected_mean=mean,
             variance=variance,
             correlation_length=correlation_length,
@@ -265,13 +269,15 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
 
     if run_correlation_length_check and variance is not None:
       with self.subTest('final_sample_correlation_len'):
-        self.check_correlation_length(final_sample, correlation_length, grid)
+        self.check_correlation_length(
+            final_sample, correlation_length, ylm_transform
+        )
 
     if run_mean_check:
       with self.subTest('final_sample_pointwise_mean'):
         self.check_mean(
             final_sample,
-            grid,
+            ylm_transform=ylm_transform,
             expected_mean=mean,
             variance=variance,
             correlation_length=correlation_length,
@@ -537,7 +543,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       for x in [initial_values, final_nodal_value]:
         self.check_mean(
             x[:, i],
-            grid,
+            ylm_transform=self.ylm_transform,
             expected_mean=0.0,
             variance=variance,
             correlation_length=correlation_length,
@@ -553,7 +559,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         self.check_correlation_length(
             x[:, i],
             expected_correlation_length=correlation_length,
-            grid=grid,
+            ylm_transform=self.ylm_transform,
         )
 
       # Fields 0 and 1 should be independent.

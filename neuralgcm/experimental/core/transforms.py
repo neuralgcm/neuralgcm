@@ -721,6 +721,7 @@ class ToModalWithFilteredGradients:
   attentuations. If no attentuations are provided, then this transform returns
   no gradient features. To avoid accidental accumulation of the cos(lat)
   factors, features must be keyed using typing.KeyWithCosLatFactor namedtuple.
+  Gradient features are scaled by R^{m} where m is the diffentiation order.
   """
 
   def __init__(
@@ -744,17 +745,13 @@ class ToModalWithFilteredGradients:
       self,
       inputs: dict[typing.KeyWithCosLatFactor, cx.Field],
   ) -> dict[typing.KeyWithCosLatFactor, cx.Field]:
-    ylm_grid = self.ylm_transform.modal_grid
-    dinosaur_grid = self.ylm_transform.dinosaur_grid
     features = {}
     for k, x in inputs.items():
       name, cos_lat_order = k.name, k.factor_order
-      x = x.untag(ylm_grid)  # will be processed by grad/laplacian functions.
-      cos_lat_grad = cx.cmap(dinosaur_grid.cos_lat_grad, out_axes=x.named_axes)
-      laplacian = cx.cmap(dinosaur_grid.laplacian, out_axes=x.named_axes)
+      r = self.ylm_transform.radius
       for filter_module, att in zip(self.modal_filters, self.attenuations):
-        d_x_dlon, d_x_dlat = cx.tag(cos_lat_grad(x), ylm_grid)
-        laplacian = laplacian(x).tag(ylm_grid)
+        d_x_dlon, d_x_dlat = self.ylm_transform.cos_lat_grad(x)
+        laplacian = self.ylm_transform.laplacian(x)
         # since gradient values picked up cos_lat factor we increment the
         # corresponding key. This factor is adjusted at the caller level.
         dlon_key = typing.KeyWithCosLatFactor(
@@ -766,12 +763,32 @@ class ToModalWithFilteredGradients:
         del2_key = typing.KeyWithCosLatFactor(
             name + f'_del2_{att}', cos_lat_order
         )
-        features[dlon_key] = filter_module.filter_modal(d_x_dlon)
-        features[dlat_key] = filter_module.filter_modal(d_x_dlat)
-        features[del2_key] = filter_module.filter_modal(laplacian)
+        features[dlon_key] = filter_module.filter_modal(r * d_x_dlon)
+        features[dlat_key] = filter_module.filter_modal(r * d_x_dlat)
+        features[del2_key] = filter_module.filter_modal(r * r * laplacian)
     return features
 
   def output_shapes(
       self, input_shapes: dict[typing.KeyWithCosLatFactor, cx.Field]
   ) -> dict[typing.KeyWithCosLatFactor, cx.Field]:
     return nnx.eval_shape(self.__call__, input_shapes)
+
+
+@nnx_compat.dataclass
+class VelocityFromModalDivCurl(TransformABC):
+  """Transform divergence and vorticity in inputs to 2D velocity components."""
+
+  ylm_map: spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  divergence_key: str = 'divergence'
+  vorticity_key: str = 'vorticity'
+  u_key: str = 'u_component_of_wind'
+  v_key: str = 'v_component_of_wind'
+  clip: bool = True
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    divergence = inputs[self.divergence_key]
+    vorticity = inputs[self.vorticity_key]
+    u, v = spherical_transforms.vor_div_to_uv_nodal(
+        vorticity, divergence, self.ylm_map, clip=self.clip
+    )
+    return {self.u_key: u, self.v_key: v}

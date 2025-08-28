@@ -14,6 +14,7 @@
 """Defines objects that transform between nodal and modal grids."""
 
 import dataclasses
+import functools
 from typing import Literal, overload
 
 import coordax as cx
@@ -153,11 +154,11 @@ class FixedYlmMapping:
         self.dinosaur_grid
     )
 
-  def to_modal_array(self, x: typing.Array) -> typing.Array:
+  def to_modal_array(self, x: typing.cx.Field) -> typing.cx.Field:
     """Converts a nodal array to a modal array."""
     return self.dinosaur_grid.to_modal(x)
 
-  def to_nodal_array(self, x: typing.Array) -> typing.Array:
+  def to_nodal_array(self, x: typing.cx.Field) -> typing.cx.Field:
     """Converts a modal array to a nodal array."""
     return self.dinosaur_grid.to_nodal(x)
 
@@ -196,6 +197,99 @@ class FixedYlmMapping:
     x = x.untag(self.modal_grid)
     nodal = cx.cmap(self.to_nodal_array, out_axes=x.named_axes)(x)
     return nodal.tag(self.nodal_grid)
+
+  def cos_lat(self, x: cx.Field) -> cx.Field:
+    """Returns the cos(lat) values verified to be present in `x`."""
+    if not all(ax in x.axes.values() for ax in self.nodal_grid.axes):
+      raise ValueError(f'{self.nodal_grid=} was not found on {x=}')
+    return self.nodal_grid.cos_lat
+
+  def laplacian(self, x: cx.Field) -> cx.Field:
+    """Returns the Laplacian of `x`."""
+    x = x.untag(self.modal_grid)
+    y = cx.cmap(self.dinosaur_grid.laplacian, out_axes=x.named_axes)(x)
+    return y.tag(self.modal_grid)
+
+  def inverse_laplacian(self, x: cx.Field) -> cx.Field:
+    """Returns the inverse Laplacian of `x`."""
+    x = x.untag(self.modal_grid)
+    y = cx.cmap(self.dinosaur_grid.inverse_laplacian, out_axes=x.named_axes)(x)
+    return y.tag(self.modal_grid)
+
+  def d_dlon(self, x: cx.Field) -> cx.Field:
+    """Returns the longitudinal derivative of `x`."""
+    x = x.untag(self.modal_grid)
+    result = cx.cmap(self.dinosaur_grid.d_dlon, out_axes=x.named_axes)(x)
+    return result.tag(self.modal_grid)
+
+  def cos_lat_d_dlat(self, x: cx.Field) -> cx.Field:
+    """Returns the cos(lat)-weighted latitudinal derivative of `x`."""
+    x = x.untag(self.modal_grid)
+    y = cx.cmap(self.dinosaur_grid.cos_lat_d_dlat, out_axes=x.named_axes)(x)
+    return y.tag(self.modal_grid)
+
+  def sec_lat_d_dlat_cos2(self, x: cx.Field) -> cx.Field:
+    """Returns `secθ ∂/∂θ(cos²θ x)`."""
+    x = x.untag(self.modal_grid)
+    y = cx.cmap(self.dinosaur_grid.sec_lat_d_dlat_cos2, out_axes=x.named_axes)(
+        x
+    )
+    return y.tag(self.modal_grid)
+
+  def clip_wavenumbers(self, x: cx.Field, n: int = 1) -> cx.Field:
+    """Zeros out the highest `n` total wavenumbers."""
+    return self.modal_grid.clip_wavenumbers(x, n)
+
+  def cos_lat_grad(
+      self, x: cx.Field, clip: bool = True
+  ) -> tuple[cx.Field, cx.Field]:
+    """Returns the cos(lat) gradient of `x`."""
+    x = x.untag(self.modal_grid)
+    grad_fn = lambda x: self.dinosaur_grid.cos_lat_grad(x, clip=clip)
+    u, v = cx.cmap(grad_fn, out_axes=x.named_axes)(x)
+    return u.tag(self.modal_grid), v.tag(self.modal_grid)
+
+  def k_cross(self, u: cx.Field, v: cx.Field) -> tuple[cx.Field, cx.Field]:
+    """Returns the k-cross of `(u, v)`."""
+    u = u.untag(self.modal_grid)
+    v = v.untag(self.modal_grid)
+    if u.named_axes != v.named_axes:
+      raise ValueError(f'Axes mismatch: {u.named_axes=} vs {v.named_axes=}')
+    out_axes = u.named_axes
+    k_cross_fn = lambda u, v: self.dinosaur_grid.k_cross((u, v))
+    out_u, out_v = cx.cmap(k_cross_fn, out_axes=out_axes)(u, v)
+    return out_u.tag(self.modal_grid), out_v.tag(self.modal_grid)
+
+  def div_cos_lat(
+      self, u: cx.Field, v: cx.Field, clip: bool = True
+  ) -> cx.Field:
+    """Returns the cos(lat)-weighted divergence of `(u, v)`."""
+    u = u.untag(self.modal_grid)
+    v = v.untag(self.modal_grid)
+    if u.named_axes != v.named_axes:
+      raise ValueError(f'Axes mismatch: {u.named_axes=} vs {v.named_axes=}')
+    out_axes = u.named_axes
+    div_fn = lambda u, v: self.dinosaur_grid.div_cos_lat((u, v), clip=clip)
+    result = cx.cmap(div_fn, out_axes=out_axes)(u, v)
+    return result.tag(self.modal_grid)
+
+  def curl_cos_lat(
+      self, u: cx.Field, v: cx.Field, clip: bool = True
+  ) -> cx.Field:
+    """Returns the cos(lat)-weighted curl of `(u, v)`."""
+    u = u.untag(self.modal_grid)
+    v = v.untag(self.modal_grid)
+    if u.named_axes != v.named_axes:
+      raise ValueError(f'Axes mismatch: {u.named_axes=} vs {v.named_axes=}')
+    out_axes = u.named_axes
+    curl_fn = lambda u, v: self.dinosaur_grid.curl_cos_lat((u, v), clip=clip)
+    result = cx.cmap(curl_fn, out_axes=out_axes)(u, v)
+    return result.tag(self.modal_grid)
+
+  def integrate(self, x: cx.Field) -> cx.Field:
+    """Returns the integral of `x` over the sphere."""
+    x = x.untag(self.nodal_grid)
+    return cx.cmap(self.dinosaur_grid.integrate, out_axes=x.named_axes)(x)
 
 
 # TODO(dkochkov): Remove this alias once all new models have been updated to use
@@ -319,8 +413,7 @@ class YlmMapper:
     if isinstance(x, dict):
       return {k: self.to_modal(v) for k, v in x.items()}
 
-    grid = cx.compose_coordinates(x.axes['longitude'], x.axes['latitude'])
-    return self.ylm_transform(grid).to_modal(x)
+    return self.ylm_transform(self._extract_nodal_grid(x)).to_modal(x)
 
   @overload
   def to_nodal(self, x: cx.Field) -> cx.Field:
@@ -337,7 +430,140 @@ class YlmMapper:
     if isinstance(x, dict):
       return {k: self.to_nodal(v) for k, v in x.items()}
 
-    ylm_grid = cx.compose_coordinates(
-        x.axes['longitude_wavenumber'], x.axes['total_wavenumber']
-    )
-    return self.ylm_transform(ylm_grid).to_nodal(x)
+    return self.ylm_transform(self._extract_modal_grid(x)).to_nodal(x)
+
+  def _extract_nodal_grid(self, x: cx.Field) -> coordinates.LonLatGrid:
+    """Returns LonLatGrid from coordinates of `x`."""
+    if 'longitude' in x.axes and 'latitude' in x.axes:
+      return cx.compose_coordinates(x.axes['longitude'], x.axes['latitude'])
+    else:
+      raise ValueError(f'No LonLatGrid in {x.axes=}')
+
+  def _extract_modal_grid(
+      self, x: cx.Field
+  ) -> coordinates.SphericalHarmonicGrid:
+    """Returns SphericalHarmonicGrid from coordinates of `x`."""
+    if 'longitude_wavenumber' in x.axes and 'total_wavenumber' in x.axes:
+      return cx.compose_coordinates(
+          x.axes['longitude_wavenumber'], x.axes['total_wavenumber']
+      )
+    else:
+      raise ValueError(f'No SphericalHarmonicGrid in {x.axes=}')
+
+  def cos_lat(self, x: cx.Field) -> cx.Field:
+    """Returns the cos(lat) values verified to be present in `x`."""
+    return self._extract_nodal_grid(x).cos_lat
+
+  def laplacian(self, x: cx.Field) -> cx.Field:
+    """Returns the Laplacian of `x`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    return ylm_mapping.laplacian(x)
+
+  def inverse_laplacian(self, x: cx.Field) -> cx.Field:
+    """Returns the inverse Laplacian of `x`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    return ylm_mapping.inverse_laplacian(x)
+
+  def d_dlon(self, x: cx.Field) -> cx.Field:
+    """Returns the longitudinal derivative of `x`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    return ylm_mapping.d_dlon(x)
+
+  def cos_lat_d_dlat(self, x: cx.Field) -> cx.Field:
+    """Returns the cos(lat)-weighted latitudinal derivative of `x`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    return ylm_mapping.cos_lat_d_dlat(x)
+
+  def sec_lat_d_dlat_cos2(self, x: cx.Field) -> cx.Field:
+    """Returns `secθ ∂/∂θ(cos²θ x)`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    return ylm_mapping.sec_lat_d_dlat_cos2(x)
+
+  def clip_wavenumbers(self, x: cx.Field, n: int = 1) -> cx.Field:
+    """Zeros out the highest `n` total wavenumbers."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    return ylm_mapping.clip_wavenumbers(x, n)
+
+  def cos_lat_grad(
+      self, x: cx.Field, clip: bool = True
+  ) -> tuple[cx.Field, cx.Field]:
+    """Returns the cos(lat) gradient of `x`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    return ylm_mapping.cos_lat_grad(x, clip=clip)
+
+  def k_cross(self, u: cx.Field, v: cx.Field) -> tuple[cx.Field, cx.Field]:
+    """Returns the k-cross of `(u, v)`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(u))
+    return ylm_mapping.k_cross(u, v)
+
+  def div_cos_lat(
+      self, u: cx.Field, v: cx.Field, clip: bool = True
+  ) -> cx.Field:
+    """Returns the cos(lat)-weighted divergence of `(u, v)`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(u))
+    return ylm_mapping.div_cos_lat(u, v, clip=clip)
+
+  def curl_cos_lat(
+      self, u: cx.Field, v: cx.Field, clip: bool = True
+  ) -> cx.Field:
+    """Returns the cos(lat)-weighted curl of `(u, v)`."""
+    ylm_mapping = self.ylm_transform(self._extract_modal_grid(u))
+    return ylm_mapping.curl_cos_lat(u, v, clip=clip)
+
+  def integrate(self, x: cx.Field) -> cx.Field:
+    """Returns the integral of `x` over the sphere."""
+    ylm_mapping = self.ylm_transform(self._extract_nodal_grid(x))
+    return ylm_mapping.integrate(x)
+
+
+@jax.named_call
+def get_cos_lat_vector(
+    vorticity: cx.Field,
+    divergence: cx.Field,
+    ylm_map: FixedYlmMapping | YlmMapper,
+    clip: bool = True,
+) -> tuple[cx.Field, cx.Field]:
+  """Computes `v cosθ`, where θ denotes latitude."""
+  stream_function = ylm_map.inverse_laplacian(vorticity)
+  velocity_potential = ylm_map.inverse_laplacian(divergence)
+  return tuple(
+      x + y
+      for x, y in zip(
+          ylm_map.cos_lat_grad(velocity_potential, clip=clip),
+          ylm_map.k_cross(*ylm_map.cos_lat_grad(stream_function, clip=clip)),
+      )
+  )
+
+
+@functools.partial(jax.jit, static_argnames=('ylm_map', 'clip'))
+def uv_nodal_to_vor_div_modal(
+    u_nodal: cx.Field,
+    v_nodal: cx.Field,
+    ylm_map: FixedYlmMapping | YlmMapper,
+    clip: bool = True,
+) -> tuple[cx.Field, cx.Field]:
+  """Converts nodal `u, v` vectors to a modal `vort, div` representation."""
+  u_over_cos_lat = ylm_map.to_modal(u_nodal / ylm_map.cos_lat(u_nodal))
+  v_over_cos_lat = ylm_map.to_modal(v_nodal / ylm_map.cos_lat(v_nodal))
+  vorticity = ylm_map.curl_cos_lat(u_over_cos_lat, v_over_cos_lat, clip=clip)
+  divergence = ylm_map.div_cos_lat(u_over_cos_lat, v_over_cos_lat, clip=clip)
+  return vorticity, divergence
+
+
+@functools.partial(jax.jit, static_argnames=('ylm_map', 'clip'))
+def vor_div_to_uv_nodal(
+    vorticity: cx.Field,
+    divergence: cx.Field,
+    ylm_map: FixedYlmMapping | YlmMapper,
+    clip: bool = True,
+) -> tuple[cx.Field, cx.Field]:
+  """Converts modal `vorticity, divergence` to a nodal `u, v` representation."""
+  u_cos_lat, v_cos_lat = get_cos_lat_vector(
+      vorticity, divergence, ylm_map, clip=clip
+  )
+  u_cos_lat = ylm_map.to_nodal(u_cos_lat)
+  v_cos_lat = ylm_map.to_nodal(v_cos_lat)
+  return (
+      u_cos_lat / ylm_map.cos_lat(u_cos_lat),
+      v_cos_lat / ylm_map.cos_lat(v_cos_lat),
+  )

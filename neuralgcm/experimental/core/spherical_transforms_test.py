@@ -200,6 +200,225 @@ class SphericalTransformsTest(parameterized.TestCase):
       self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
 
 
+class GeometryMethodsTest(chex.TestCase):
+  """Tests other geometric transforms on FixedYlmMapping and YlmMapper."""
+
+  def setUp(self):
+    super().setUp()
+    self.lon_lat_grid = coordinates.LonLatGrid.T21()
+    self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    spherical_harmonics_impl = spherical_harmonic.FastSphericalHarmonics
+    self.dinosaur_grid = spherical_harmonic.Grid.T21(
+        spherical_harmonics_impl=spherical_harmonics_impl
+    )
+    mesh = parallelism.Mesh(spmd_mesh=None)
+    self.fixed_ylm_mapping = spherical_transforms.FixedYlmMapping(
+        lon_lat_grid=self.lon_lat_grid,
+        ylm_grid=self.ylm_grid,
+        mesh=mesh,
+        partition_schema_key=None,
+    )
+    self.ylm_mapper = spherical_transforms.YlmMapper(
+        truncation_rule='cubic',
+        partition_schema_key=None,
+        mesh=mesh,
+    )
+    key = jax.random.PRNGKey(42)
+    # modal data needs to respect the mask
+    mask = self.dinosaur_grid.mask
+    modal_data = jax.random.normal(key, self.ylm_grid.shape) * mask
+    nodal_data = jax.random.normal(key, self.lon_lat_grid.shape)
+    self.modal_field = cx.wrap(modal_data, self.ylm_grid)
+    self.nodal_field = cx.wrap(nodal_data, self.lon_lat_grid)
+    # For vector fields
+    u_key, v_key = jax.random.split(key, 2)
+    modal_data_u = jax.random.normal(u_key, self.ylm_grid.shape) * mask
+    modal_data_v = jax.random.normal(v_key, self.ylm_grid.shape) * mask
+    self.modal_field_u = cx.wrap(modal_data_u, self.ylm_grid)
+    self.modal_field_v = cx.wrap(modal_data_v, self.ylm_grid)
+    nodal_data_u = jax.random.normal(u_key, self.lon_lat_grid.shape)
+    nodal_data_v = jax.random.normal(v_key, self.lon_lat_grid.shape)
+    self.nodal_field_u = cx.wrap(nodal_data_u, self.lon_lat_grid)
+    self.nodal_field_v = cx.wrap(nodal_data_v, self.lon_lat_grid)
+
+  def test_laplacian(self):
+    expected_data = self.dinosaur_grid.laplacian(self.modal_field.data)
+    actual_data = self.fixed_ylm_mapping.laplacian(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.laplacian(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_inverse_laplacian(self):
+    expected_data = self.dinosaur_grid.inverse_laplacian(self.modal_field.data)
+    actual_data = self.fixed_ylm_mapping.inverse_laplacian(
+        self.modal_field
+    ).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.inverse_laplacian(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_d_dlon(self):
+    expected_data = self.dinosaur_grid.d_dlon(self.modal_field.data)
+    actual_data = self.fixed_ylm_mapping.d_dlon(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.d_dlon(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_cos_lat_d_dlat(self):
+    expected_data = self.dinosaur_grid.cos_lat_d_dlat(self.modal_field.data)
+    actual_data = self.fixed_ylm_mapping.cos_lat_d_dlat(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.cos_lat_d_dlat(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_sec_lat_d_dlat_cos2(self):
+    expected_data = self.dinosaur_grid.sec_lat_d_dlat_cos2(
+        self.modal_field.data
+    )
+    actual_data = self.fixed_ylm_mapping.sec_lat_d_dlat_cos2(
+        self.modal_field
+    ).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.sec_lat_d_dlat_cos2(self.modal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_cos_lat_grad(self):
+    expected_u, expected_v = self.dinosaur_grid.cos_lat_grad(
+        self.modal_field.data
+    )
+    actual_u, actual_v = (
+        x.data for x in self.fixed_ylm_mapping.cos_lat_grad(self.modal_field)
+    )
+    np.testing.assert_allclose(actual_u, expected_u)
+    np.testing.assert_allclose(actual_v, expected_v)
+    actual_u, actual_v = (
+        x.data for x in self.ylm_mapper.cos_lat_grad(self.modal_field)
+    )
+    np.testing.assert_allclose(actual_u, expected_u)
+    np.testing.assert_allclose(actual_v, expected_v)
+
+  def test_k_cross(self):
+    expected_i, expected_j = self.dinosaur_grid.k_cross(
+        (self.modal_field_u.data, self.modal_field_v.data)
+    )
+    actual_i, actual_j = (
+        x.data
+        for x in self.fixed_ylm_mapping.k_cross(
+            self.modal_field_u, self.modal_field_v
+        )
+    )
+    np.testing.assert_allclose(actual_i, expected_i)
+    np.testing.assert_allclose(actual_j, expected_j)
+    actual_i, actual_j = (
+        x.data
+        for x in self.ylm_mapper.k_cross(self.modal_field_u, self.modal_field_v)
+    )
+    np.testing.assert_allclose(actual_i, expected_i)
+    np.testing.assert_allclose(actual_j, expected_j)
+
+  def test_div_cos_lat(self):
+    expected_data = self.dinosaur_grid.div_cos_lat(
+        (self.modal_field_u.data, self.modal_field_v.data)
+    )
+    actual_data = self.fixed_ylm_mapping.div_cos_lat(
+        self.modal_field_u, self.modal_field_v
+    ).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.div_cos_lat(
+        self.modal_field_u, self.modal_field_v
+    ).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_curl_cos_lat(self):
+    expected_data = self.dinosaur_grid.curl_cos_lat(
+        (self.modal_field_u.data, self.modal_field_v.data)
+    )
+    actual_data = self.fixed_ylm_mapping.curl_cos_lat(
+        self.modal_field_u, self.modal_field_v
+    ).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.curl_cos_lat(
+        self.modal_field_u, self.modal_field_v
+    ).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_integrate(self):
+    expected_data = self.dinosaur_grid.integrate(self.nodal_field.data)
+    actual_data = self.fixed_ylm_mapping.integrate(self.nodal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+    actual_data = self.ylm_mapper.integrate(self.nodal_field).data
+    np.testing.assert_allclose(actual_data, expected_data)
+
+  def test_get_cos_lat_vector(self):
+    expected_u, expected_v = spherical_harmonic.get_cos_lat_vector(
+        self.modal_field_u.data, self.modal_field_v.data, self.dinosaur_grid
+    )
+    # With FixedYlmMapping
+    actual_u, actual_v = (
+        x.data
+        for x in spherical_transforms.get_cos_lat_vector(
+            self.modal_field_u, self.modal_field_v, self.fixed_ylm_mapping
+        )
+    )
+    np.testing.assert_allclose(actual_u, expected_u)
+    np.testing.assert_allclose(actual_v, expected_v)
+    # With YlmMapper
+    actual_u, actual_v = (
+        x.data
+        for x in spherical_transforms.get_cos_lat_vector(
+            self.modal_field_u, self.modal_field_v, self.ylm_mapper
+        )
+    )
+    np.testing.assert_allclose(actual_u, expected_u)
+    np.testing.assert_allclose(actual_v, expected_v)
+
+  def test_uv_nodal_to_vor_div_modal(self):
+    expected_vort, expected_div = spherical_harmonic.uv_nodal_to_vor_div_modal(
+        self.dinosaur_grid, self.nodal_field_u.data, self.nodal_field_v.data
+    )
+    # With FixedYlmMapping
+    actual_vort, actual_div = (
+        x.data
+        for x in spherical_transforms.uv_nodal_to_vor_div_modal(
+            self.nodal_field_u, self.nodal_field_v, self.fixed_ylm_mapping
+        )
+    )
+    np.testing.assert_allclose(actual_vort, expected_vort)
+    np.testing.assert_allclose(actual_div, expected_div)
+    # With YlmMapper
+    actual_vort, actual_div = (
+        x.data
+        for x in spherical_transforms.uv_nodal_to_vor_div_modal(
+            self.nodal_field_u, self.nodal_field_v, self.ylm_mapper
+        )
+    )
+    np.testing.assert_allclose(actual_vort, expected_vort)
+    np.testing.assert_allclose(actual_div, expected_div)
+
+  def test_vor_div_to_uv_nodal(self):
+    expected_u, expected_v = spherical_harmonic.vor_div_to_uv_nodal(
+        self.dinosaur_grid, self.modal_field_u.data, self.modal_field_v.data
+    )
+    # With FixedYlmMapping
+    actual_u, actual_v = (
+        x.data
+        for x in spherical_transforms.vor_div_to_uv_nodal(
+            self.modal_field_u, self.modal_field_v, self.fixed_ylm_mapping
+        )
+    )
+    np.testing.assert_allclose(actual_u, expected_u)
+    np.testing.assert_allclose(actual_v, expected_v)
+    # With YlmMapper
+    actual_u, actual_v = (
+        x.data
+        for x in spherical_transforms.vor_div_to_uv_nodal(
+            self.modal_field_u, self.modal_field_v, self.ylm_mapper
+        )
+    )
+    np.testing.assert_allclose(actual_u, expected_u)
+    np.testing.assert_allclose(actual_v, expected_v)
+
+
 if __name__ == '__main__':
   chex.set_n_cpu_devices(8)
   config.update('jax_traceback_filtering', 'off')

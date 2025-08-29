@@ -146,6 +146,19 @@ class SimUnits:
     )
 
 
+SI_UNITS = SimUnits.from_si(
+    radius_si=scales.RADIUS,
+    angular_velocity_si=scales.ANGULAR_VELOCITY,
+    gravity_acceleration_si=scales.GRAVITY_ACCELERATION,
+    ideal_gas_constant_si=scales.IDEAL_GAS_CONSTANT,
+    water_vapor_gas_constant_si=scales.IDEAL_GAS_CONSTANT_H20,
+    water_vapor_isobaric_heat_capacity_si=scales.WATER_VAPOR_CP,
+    water_density_si=scales.WATER_DENSITY,
+    kappa_si=scales.KAPPA,
+    scale=scales.SI_SCALE,
+    reference_datetime=np.datetime64('1979-01-01T00:00:00'),
+)
+
 DEFAULT_UNITS = SimUnits.from_si(
     radius_si=scales.RADIUS,
     angular_velocity_si=scales.ANGULAR_VELOCITY,
@@ -197,6 +210,11 @@ def maybe_nondimensionalize(
 def get_default_units() -> SimUnits:
   """units.DEFAULT_UNITS fn-wrapper for fiddle configs."""
   return DEFAULT_UNITS
+
+
+def get_si_units() -> SimUnits:
+  """units.SI_UNITS fn-wrapper for fiddle configs."""
+  return SI_UNITS
 
 
 def get_one_minute_dt_units() -> SimUnits:

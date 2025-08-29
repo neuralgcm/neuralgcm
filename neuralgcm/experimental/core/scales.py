@@ -205,6 +205,13 @@ DEFAULT_SCALE = Scale(
     1 * units.degK,
 )  # temperature
 
+SI_SCALE = Scale(
+    1 * units.m,  # length
+    1 * units.s,  # time
+    1 * units.kg,  # mass
+    1 * units.degK,  # temperature
+)
+
 ATMOSPHERIC_SCALE = Scale(
     RADIUS,  # length
     1 / 2 / OMEGA,  # time

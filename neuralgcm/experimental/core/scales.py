@@ -21,7 +21,10 @@ import jax.numpy as jnp
 import numpy as np
 import pint
 
-units = pint.UnitRegistry(autoconvert_offset_to_baseunit=True)
+# Use the default "application" registry, because this is what pint always uses
+# for unpickling. Otherwise, unpickled objects end up with incompatible
+# registries.
+units = pint.get_application_registry()
 
 Quantity = units.Quantity
 Unit = units.Unit

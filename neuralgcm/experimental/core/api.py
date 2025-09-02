@@ -315,3 +315,6 @@ class ForecastSystem(nnx.Module, abc.ABC):
     model = fdl.build(model_config)
     model.fiddle_config = config
     return model
+
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)

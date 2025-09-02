@@ -61,7 +61,7 @@ class UnaryLayer(Protocol):
 UnaryLayerFactory = Callable[..., UnaryLayer]
 
 
-class Mlp(nnx.Module):
+class Mlp(nnx.Module, pytree=False):
   """Multi-layer-perceptron."""
 
   def __init__(
@@ -170,6 +170,9 @@ class Mlp(nnx.Module):
         rngs=rngs,
     )
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 class MlpUniform(Mlp):
   """Multi-layer perceptron module with uniform layer sizes."""
@@ -277,7 +280,7 @@ class ConvLevel(nnx.Conv):
     )
 
 
-class CnnLevel(nnx.Module):
+class CnnLevel(nnx.Module, pytree=False):
   """1D CNN in the NCW data format that preserves tail axis shape."""
 
   def __init__(
@@ -396,7 +399,7 @@ class ConvLonLat(nnx.Module):
 
 
 @nnx_compat.dataclass
-class Epd(nnx.Module):
+class Epd(nnx.Module, pytree=False):
   """EPD layer parameterized by encode/process/decode layers."""
 
   encode: UnaryLayer
@@ -462,7 +465,7 @@ class Epd(nnx.Module):
 
 
 @nnx_compat.dataclass
-class Sequential(nnx.Module):
+class Sequential(nnx.Module, pytree=False):
   """Layer that applies a collection of layers in sequence."""
 
   layers: Sequence[UnaryLayer]
@@ -507,7 +510,7 @@ class Sequential(nnx.Module):
 
 
 @nnx_compat.dataclass
-class CnnLonLat(nnx.Module):
+class CnnLonLat(nnx.Module, pytree=False):
   """CNN that uses ConvLonLat layers and preserves tail axis shape."""
 
   conv_layers: Sequence[ConvLonLat]

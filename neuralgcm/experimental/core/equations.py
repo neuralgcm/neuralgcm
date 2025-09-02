@@ -92,6 +92,9 @@ class ComposedODE(ImplicitExplicitODE):
   ) -> typing.Pytree:
     return self.implicit_explicit_equation.implicit_inverse(x, step_size)
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 @nnx_compat.dataclass
 class ComposedExplicitODE(ExplicitODE):

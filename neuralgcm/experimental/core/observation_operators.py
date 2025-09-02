@@ -46,6 +46,9 @@ class ObservationOperator(nnx.Module, abc.ABC):
     """Returns observations for `query`."""
     ...
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 def _collect_coord_components(
     coord: cx.Coordinate, dim: str

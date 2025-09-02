@@ -737,6 +737,9 @@ class TransformerBase(nnx.Module, abc.ABC):
         activation=activation,
     )
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 class TransformerBlocks(TransformerBase):
   """A standard sequence of Transformer blocks."""

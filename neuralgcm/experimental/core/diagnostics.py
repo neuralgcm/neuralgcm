@@ -44,6 +44,9 @@ class DiagnosticModule(nnx.Module):
     """Updates the internal module state from the inputs."""
     raise NotImplementedError(f'`__call__` on {self.__name__=}.')
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 class Extract(Protocol):
   """Protocol for diagnostic methods that extract values from a method call."""

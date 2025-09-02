@@ -78,6 +78,9 @@ class TransformABC(nnx.Module, abc.ABC):
     call_dispatch = lambda transform, inputs: transform(inputs)
     return nnx.eval_shape(call_dispatch, self, input_shapes)
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 def filter_fields_by_coordinate(
     f: dict[str, cx.Field], coord: cx.Coordinate

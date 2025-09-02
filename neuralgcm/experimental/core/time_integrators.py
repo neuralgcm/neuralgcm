@@ -34,6 +34,9 @@ class ExplicitODE(time_integration.ExplicitODE, nnx.Module):
   a part of the equation class is included in the model's parameter tree.
   """
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 class ImplicitExplicitODE(time_integration.ImplicitExplicitODE, nnx.Module):
   """Module wrapper for ImplicitExplicitODE.
@@ -41,6 +44,9 @@ class ImplicitExplicitODE(time_integration.ImplicitExplicitODE, nnx.Module):
   This module is wrapped as nnx.Module to ensure that any submodule that is
   a part of the equation class is included in the model's parameter tree.
   """
+
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
 
 
 def forward_euler(equation: ExplicitODE, time_step: float) -> typing.StepFn:
@@ -67,7 +73,7 @@ def forward_euler(equation: ExplicitODE, time_step: float) -> typing.StepFn:
 
 
 @nnx_compat.dataclass
-class DinosaurIntegrator(nnx.Module):
+class DinosaurIntegrator(nnx.Module, pytree=False):
   """Module that wraps time integrators from dinosaur package."""
 
   equation: ExplicitODE | ImplicitExplicitODE
@@ -78,6 +84,9 @@ class DinosaurIntegrator(nnx.Module):
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     return self.integrator(self.equation, self.time_step)(inputs)
+
+  def __init_subclasses__(self, **kwargs):
+    super().__init__(pytree=False, **kwargs)
 
 
 # Note: we don't use functools.partial here because it would cause issues with

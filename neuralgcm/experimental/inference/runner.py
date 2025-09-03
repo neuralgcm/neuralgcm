@@ -17,7 +17,7 @@ import dataclasses
 import logging
 import math
 import pickle
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 import uuid
 
 import dask.array
@@ -116,20 +116,39 @@ def _unroll(
   )
 
 
+def device_put_to_cpu(x: typing.Pytree) -> typing.Pytree:
+  """Non-blocking transfer of JAX arrays to CPU."""
+  cpu_device = jax.devices('cpu')[0]
+  return jax.device_put(x, cpu_device)
+
+
 class BadStateError(Exception):
   """Error raised when an invalid state value (i.e., NaN) is encountered."""
 
 
-def _check_pytree_for_bad_state(state: typing.Pytree, msg: str) -> None:
-  if any(jnp.isnan(x).any() for x in jax.tree.leaves(state)):
+@jax.jit
+def _any_nans(x: typing.Pytree) -> jax.Array:
+  return jnp.any(jnp.array([jnp.isnan(x).any() for x in jax.tree.leaves(x)]))
+
+
+def check_pytree_for_bad_state(state: typing.Pytree, msg: str) -> None:
+  """Check a pytree for bad state (i.e., NaN).
+
+  This computation is always performed on the CPU, to avoid blocking computation
+  on accelerators.
+
+  Args:
+    state: pytree to check.
+    msg: message to include in the exception if a bad state is found.
+
+  Raises:
+    BadStateError: if a bad state is found.
+  """
+  if _any_nans(device_put_to_cpu(state)):
     raise BadStateError(msg)
 
 
 T = TypeVar('T')
-
-
-def _device_get_and_append(buffer: list[T], state: T) -> None:
-  buffer.append(jax.device_get(state))
 
 
 def _tmp_file_path(path: str) -> epath.Path:
@@ -165,8 +184,9 @@ class InferenceRunner:
   unroll_duration: np.timedelta64
   write_duration: np.timedelta64
   checkpoint_duration: np.timedelta64
+  zarr_attrs: dict[str, Any] = dataclasses.field(default_factory=dict)
   zarr_format: int | None = None
-  bad_state_strategy: Literal['raise', 'impute_nan'] = 'raise'
+  bad_state_strategy: str = 'raise'
   random_seed: int = 0
 
   def __post_init__(self):
@@ -226,7 +246,7 @@ class InferenceRunner:
     """Call once to setup metadata in output Zarr(s)."""
     checkpoints_path = self._checkpoints_path()
     if checkpoints_path.exists():
-      # Already setup.
+      logging.info('InferenceRunner.setup() already called, skipping')
       return
 
     # Our strategy here is to create a DataTree where all variables are empty
@@ -244,17 +264,21 @@ class InferenceRunner:
     template = _datatree_expand_dims(template, **expanded_dims)
     template = template.chunk(self.output_chunks)
 
+    template.attrs.update(self.zarr_attrs)
+
     # TODO(shoyer): Determine if there's anything we need to do to work around
     # idempotency issues in Zarr, or if using Zarr v3 is sufficient:
     # https://github.com/zarr-developers/zarr-python/issues/1435
 
     # TODO(shoyer): Switch to Zarr v3, which will require setting a default fill
     # value explicitly: https://github.com/pydata/xarray/issues/10646
+    logging.info(f'writing template to {self.output_path}:\n{template}')
     template.to_zarr(self.output_path, compute=False, zarr_format=2)
 
     # Add directory for inference checkpoints. The existance of this directory
     # is used as a marker to indicate that setup() has been called.
-    checkpoints_path.mkdir(exist_ok=True)
+    checkpoints_path.mkdir(exist_ok=True, mode=0o775)
+    logging.info('InferenceRunner.setup() complete')
 
   @property
   def task_count(self) -> int:
@@ -263,7 +287,7 @@ class InferenceRunner:
     return len(self.init_times) * ensemble_count
 
   def _task_path(self, task_id: int) -> epath.Path:
-    return self._checkpoints_path() / f'{task_id}.pkl'
+    return self._checkpoints_path() / f'task_{task_id}.pkl'
 
   def run(self, task_id: int) -> None:
     """Simulate a single task, saving outputs to the Zarr file.
@@ -308,9 +332,9 @@ class InferenceRunner:
               np.timedelta64(0), self.model.timestep
           )
       )
-      logging.info('assimilating state')
+      logging.info('assimilating initial state')
       state = _assimilate(self.model, input_obs, dynamic_inputs, rng)
-      _check_pytree_for_bad_state(state, f'initial state for {task_id=}')
+      check_pytree_for_bad_state(state, f'initial state for {task_id=}')
       commited_steps = 0
 
     # Unroll simulation forward in time.
@@ -318,10 +342,13 @@ class InferenceRunner:
     def get_dynamic_inputs(output_step):
       lead_start = output_step * self.output_freq
       lead_stop = (output_step + self.steps_per_unroll) * self.output_freq
+      logging.info(f'getting dynamic inputs for {output_step=}')
       data = self.model.dynamic_inputs_from_xarray(
           dynamic_inputs_forecast.get_data(lead_start, lead_stop)
       )
-      _check_pytree_for_bad_state(data, f'dynamic inputs at {output_step=}')
+      check_pytree_for_bad_state(data, f'dynamic inputs at {output_step=}')
+      keys = {k: list(v) for k, v in data.items()}
+      logging.info(f'dynamic inputs ready: {keys}')
       return data
 
     @timing.Timed
@@ -336,7 +363,6 @@ class InferenceRunner:
       )
 
     dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)
-    buffer_write_task = streaming.SingleTaskExecutor(_device_get_and_append)
     commit_chunk_task = streaming.SingleTaskExecutor(self._commit_chunk)
 
     dynamic_inputs_task.submit(commited_steps)
@@ -360,29 +386,20 @@ class InferenceRunner:
             dynamic_inputs_task.submit(step_start + self.steps_per_unroll)
 
           state, trajectory_slice = unroll(state, dynamic_inputs)
-          buffer_write_task.wait()
-          buffer_write_task.submit(output_buffer, trajectory_slice)
+          output_buffer.append(device_put_to_cpu(trajectory_slice))
 
         commit_chunk_task.wait()
-        commit_chunk_task.submit(
-            state,
-            output_buffer,
-            task_id,
-            steps_written,
-            wait_on=buffer_write_task,
-        )
-
+        commit_chunk_task.submit(state, output_buffer, task_id, steps_written)
         write_step_timer.finish_step()
+
         logging.info(
             f'write step took {write_step_timer.last:.3g}s '
             f'({unroll.timer.total:.3g}s for compute, '
             f'{dynamic_inputs_task.timer.total:.3g}s for dynamic inputs, '
-            f'{buffer_write_task.timer.total:.3g}s for copying buffers, '
             f'{commit_chunk_task.timer.last:.3g}s for commit chunk)'
         )
         dynamic_inputs_task.timer.reset_total()
         unroll.timer.reset_total()
-        buffer_write_task.timer.reset_total()
 
       commit_chunk_task.wait()
 
@@ -402,12 +419,9 @@ class InferenceRunner:
       output_buffer: list[typing.Pytree],
       task_id: int,
       steps_written: int,
-      wait_on: streaming.SingleTaskExecutor,
   ) -> None:
     """Write outputs to disk, checking state if necessary."""
     logging.info(f'committing chunk for {task_id=} and {steps_written=}')
-    wait_on.wait()
-    logging.info('output buffer is ready')
     self._write_zarr_chunk(output_buffer, task_id, steps_written)
     self._maybe_update_state_checkpoint(state, task_id, steps_written)
     logging.info('commit chunk complete')
@@ -423,6 +437,7 @@ class InferenceRunner:
       init_time_index = task_id // self.ensemble_size
       realization_index = task_id % self.ensemble_size
 
+    logging.info('preparing DataTree for writing to zarr')
     trees = []
     for trajectory_slice in output_buffer:
       outputs = self.model.data_to_xarray(trajectory_slice)
@@ -454,11 +469,15 @@ class InferenceRunner:
         if not any(dim in variable.dims for dim in region):
           del node[name]
 
-    logging.info('writing zarr chunk')
-    tree.to_zarr(self.output_path, mode='r+', region=region)
+    logging.info('setting up zarr outputs')
+    delayed = tree.chunk().to_zarr(
+        self.output_path, mode='r+', region=region, compute=False
+    )
 
-    # Check after writing to Zarr to aid in debugging.
-    _check_pytree_for_bad_state(
+    logging.info(f'writing {tree.nbytes/1e6:.1f} MB to zarr')
+    delayed.compute(num_workers=128)
+
+    check_pytree_for_bad_state(
         output_buffer, f'unroll outputs at {steps_written=}'
     )
 
@@ -472,10 +491,12 @@ class InferenceRunner:
     elif steps_written % self.steps_per_checkpoint == 0:
       logging.info('writing state checkpoint')
       task_path = self._task_path(task_id)
-      state = jax.device_get(state)
+      state = device_put_to_cpu(state)
+      saved_step = steps_written + self.max_steps_per_write
       with _atomic_write(task_path) as f:
-        pickle.dump((state, steps_written + self.max_steps_per_write), f)
+        contents = (state, saved_step)
+        pickle.dump(contents, f, protocol=pickle.HIGHEST_PROTOCOL)
       # Check after dumping to pickle file to aid in debugging.
-      _check_pytree_for_bad_state(state, f'unroll state at {steps_written=}')
+      check_pytree_for_bad_state(state, f'unroll state at {saved_step=}')
     else:
       logging.info('no state checkpoint update for this step')

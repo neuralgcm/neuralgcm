@@ -37,8 +37,8 @@ class SingleTaskExecutor(Generic[T]):
   be explicitly reset after every calculation with wait() or get().
   """
 
-  def __init__(self, func: Callable[..., T]):
-    self._timed = timing.Timed(func)
+  def __init__(self, func: Callable[..., T], block_until_ready: bool = True):
+    self._timed = timing.Timed(func, block_until_ready=block_until_ready)
     self._executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix=getattr(func, '__name__', '')
     )

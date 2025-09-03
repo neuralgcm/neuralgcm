@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import abc
+import concurrent.futures
 import dataclasses
 import functools
 import operator
@@ -46,7 +47,9 @@ def _map_over_datasets(func, *data: XarrayData) -> XarrayData:
     )
 
 
-def _get_dataset_or_datatree(data: XarrayData) -> xarray.Dataset | xarray.DataTree:
+def _get_dataset_or_datatree(
+    data: XarrayData,
+) -> xarray.Dataset | xarray.DataTree:
   """Get a dataset or datatree from a dataset, datatree, or dict[str, dataset]."""
   if isinstance(data, xarray.Dataset | xarray.DataTree):
     return data
@@ -145,6 +148,28 @@ class _Forecast(abc.ABC, Generic[XarrayData]):
     """Returns lead times from lead_start to lead_stop with update_freq."""
     return np.arange(lead_start, lead_stop, self.update_freq)
 
+  @functools.cached_property
+  def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    # Use a large thread pool for reading data variables in parallel.
+    # This should suffice for maximum concurrency when reading from Zarr, as
+    # long as the Zarr store uses internal concurrency for loading each
+    # variable.
+    return concurrent.futures.ThreadPoolExecutor(max_workers=64)
+
+  def _read_in_parallel(self, inputs: XarrayData) -> XarrayData:
+    """Read data in parallel, using a large thread pool for concurrency."""
+    get_values = lambda x: x.values
+
+    def submit_get_values(ds):
+      return {k: self._executor.submit(get_values, v) for k, v in ds.items()}
+
+    def copy_with_results(ds, futures):
+      return ds.copy(data={k: f.result() for k, f in futures.items()})
+
+    futures = _map_over_datasets(submit_get_values, inputs)
+    outputs = _map_over_datasets(copy_with_results, inputs, futures)
+    return outputs
+
   @abc.abstractmethod
   def get_data(
       self, lead_start: np.timedelta64, lead_stop: np.timedelta64
@@ -180,7 +205,9 @@ class _PersistenceForecast(_Forecast[XarrayData]):  # pylint: disable=missing-cl
   @functools.cached_property
   def init_value(self) -> XarrayData:
     assert (full_data := self.full_data) is not None
-    return _map_over_datasets(lambda x: x.sel(time=self.init_time), full_data)
+    return self._read_in_parallel(
+        _map_over_datasets(lambda x: x.sel(time=self.init_time), full_data)
+    )
 
   def get_data(
       self, lead_start: np.timedelta64, lead_stop: np.timedelta64
@@ -214,7 +241,9 @@ class _PrescribedForecast(_Forecast[XarrayData]):
     lead_times = self._get_lead_times(lead_start, lead_stop)
     times = self.init_time + lead_times
     assert (full_data := self.full_data) is not None
-    return _map_over_datasets(lambda x: x.sel(time=times), full_data)
+    return self._read_in_parallel(
+        _map_over_datasets(lambda x: x.sel(time=times), full_data)
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -238,7 +267,7 @@ class _ClimatologyForecast(_Forecast[XarrayData]):
   ) -> XarrayData:
     lead_times = self._get_lead_times(lead_start, lead_stop)
     times = self.init_time + lead_times
-    return _get_climatology(self.climatology, times)
+    return self._read_in_parallel(_get_climatology(self.climatology, times))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -260,9 +289,11 @@ class _AnomalyPersistenceForecast(_Forecast[XarrayData]):  # pylint: disable=mis
   @functools.cached_property
   def init_anomaly(self) -> XarrayData:
     assert (full_data := self.full_data) is not None
-    init_climatology = _get_climatology(self.climatology, self.init_time)
-    init_data = _map_over_datasets(
-        lambda x: x.sel(time=self.init_time), full_data
+    init_climatology = self._read_in_parallel(
+        _get_climatology(self.climatology, self.init_time)
+    )
+    init_data = self._read_in_parallel(
+        _map_over_datasets(lambda x: x.sel(time=self.init_time), full_data)
     )
     return _map_over_datasets(operator.sub, init_data, init_climatology)
 
@@ -270,7 +301,9 @@ class _AnomalyPersistenceForecast(_Forecast[XarrayData]):  # pylint: disable=mis
       self, lead_start: np.timedelta64, lead_stop: np.timedelta64
   ) -> XarrayData:
     lead_times = self._get_lead_times(lead_start, lead_stop)
-    valid_clim = _get_climatology(self.climatology, self.init_time + lead_times)
+    valid_clim = self._read_in_parallel(
+        _get_climatology(self.climatology, self.init_time + lead_times)
+    )
     forecast = _map_over_datasets(operator.add, self.init_anomaly, valid_clim)
     # TODO(shoyer): Make a more generic solution for clipping anomaly forecasts.
     if 'sea_ice_cover' in forecast:

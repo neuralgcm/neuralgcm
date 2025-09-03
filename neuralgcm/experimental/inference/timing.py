@@ -30,7 +30,14 @@ class Timed(Generic[T]):
   """Function wrapps for timing evaluations."""
 
   def __init__(self, func: Callable[..., T], block_until_ready: bool = True):
+    """Constructor.
 
+    Args:
+      func: function to wrap.
+      block_until_ready: whether to use jax.block_until_ready() wait until
+        JAX computations are complete when timing the function. This is a no-op
+        if the function does not return any JAX arrays.
+    """
     self._func = func
     self._timer = Timer()
     self._block_until_ready = block_until_ready
@@ -61,7 +68,7 @@ class Timer:
         default, uses time.perf_counter to report the current time in seconds.
     """
     self._counter = counter
-    self._start = math.nan
+    self._start = None
     self._last = math.nan
     self._total = 0.0
 
@@ -74,7 +81,7 @@ class Timer:
     return self._total
 
   def running(self) -> bool:
-    return not math.isnan(self._start)
+    return self._start is not None
 
   def reset_total(self):
     self._total = 0.0
@@ -90,7 +97,7 @@ class Timer:
     elapsed = self._counter() - self._start
     self._last = elapsed
     self._total += elapsed
-    self._start = math.nan
+    self._start = None
 
   def __enter__(self):
     self.begin_step()

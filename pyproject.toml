@@ -57,4 +57,8 @@ experimental = [
     "jax-solar",
     "orbax",
     "treescope",
+    # require dev version of zarr until 3.1.3 release
+    "zarr @ git+https://github.com/zarr-developers/zarr-python.git",
+    # require dev version of xarray until 2025.09.0 release
+    "xarray @ git+https://github.com/pydata/xarray.git",
 ]

@@ -14,10 +14,12 @@
 
 """Defines classes that implement weighting schemes for aggregation."""
 
-
 from __future__ import annotations
+
 import abc
 import dataclasses
+import functools
+
 import coordax as cx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
@@ -97,34 +99,35 @@ class GridAreaWeighting(Weighting):
 
 
 @dataclasses.dataclass
-class FieldWeighting(Weighting):
-  """Applies weights specified by a given Field.
+class ConstantWeighting(Weighting):
+  """Applies weights specified by a constant Field.
 
   Attributes:
-    custom_weights: A `cx.Field` containing the weights. Its coordinates should
+    constant: A `cx.Field` containing the weights. Its coordinates should
       be alignable with the field being weighted.
     skip_missing: If True, fields without a matching coordinate will return a
       weight of 1.0, otherwise an error is raised.
   """
 
-  custom_weights: cx.Field
+  constant: cx.Field
   skip_missing: bool = True
 
   def weights(
       self, field: cx.Field, field_name: str | None = None
   ) -> cx.Field:
     """Returns the user-provided weights field, optionally normalized."""
-    if all(d in field.dims for d in self.custom_weights.dims):
-      weights = self.custom_weights
+    if all(d in field.dims for d in self.constant.dims):
+      weights = self.constant
       return weights
     if self.skip_missing:
       return cx.wrap(1.0)
     else:
       raise ValueError(
-          f'{field=} does not have all coordinates in {self.custom_weights=}.'
+          f'{field=} does not have all coordinates in {self.constant=}.'
       )
 
 
+# TODO(dkochkov): Deprecate this in favor of scaling when configs are updated.
 @dataclasses.dataclass
 class TimeDeltaWeighting(Weighting):
   """Time scaling that assumes error grows like a random walk.
@@ -170,6 +173,55 @@ class TimeDeltaWeighting(Weighting):
     return cx.wrap(weights_data, time_coord)
 
 
+@dataclasses.dataclass
+class PressureLevelAtmosphericMassWeighting(Weighting):
+  """Returns weights proportional to thickness of pressure levels.
+
+  This weighting approximates the mass of the atmosphere for a given pressure
+  level assuming hydrostatic balance and standard atmospheric pressure.
+  """
+
+  standard_pressure: float = 1013.25  # standard pressure in hPa.
+
+  def weights(
+      self, field: cx.Field, field_name: str | None = None
+  ) -> cx.Field:
+    """Return weights extracted from the pressure level coordinate."""
+    del field_name  # unused.
+    if 'pressure' not in field.dims:
+      return cx.wrap(1.0)
+
+    pressure = field.axes['pressure']
+    padded = np.concatenate([
+        np.asarray([0.0]),
+        pressure.centers,
+        np.asarray([self.standard_pressure]),
+    ])
+    # thickness is estimated as 0.5 * |p_{k+1} - p_{k-1}|.
+    thickness = (np.roll(padded, -1) - np.roll(padded, 1))[1:-1] / 2
+    return cx.wrap(thickness, pressure)
+
+
+@dataclasses.dataclass
+class ClipWeighting(Weighting):
+  """Wrapper around a weighting class that clips weight values to a range."""
+
+  weighting: Weighting
+  min_val: float
+  max_val: float
+
+  def weights(
+      self, field: cx.Field, field_name: str | None = None
+  ) -> cx.Field:
+    """Return weights for a given field, clipped to the specified range."""
+    weights = self.weighting.weights(field, field_name)
+    clip = functools.partial(jnp.clip, min=self.min_val, max=self.max_val)
+    clip = cx.cmap(clip)
+    return clip(weights)
+
+
+# TODO(dkochkov): Switch to parameterize this by Weighting intances
+# similar to PerVariableScaler.
 @dataclasses.dataclass
 class PerVariableWeighting(Weighting):
   """Applies weights from a dictionary on a per-variable basis."""

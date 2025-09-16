@@ -343,9 +343,9 @@ class InferenceRunner:
       lead_start = output_step * self.output_freq
       lead_stop = (output_step + self.steps_per_unroll) * self.output_freq
       logging.info(f'getting dynamic inputs for {output_step=}')
-      data = self.model.dynamic_inputs_from_xarray(
-          dynamic_inputs_forecast.get_data(lead_start, lead_stop)
-      )
+      xarray_inputs = dynamic_inputs_forecast.get_data(lead_start, lead_stop)
+      logging.info(f'xarray_inputs: {xarray_inputs}')
+      data = self.model.dynamic_inputs_from_xarray(xarray_inputs)
       check_pytree_for_bad_state(data, f'dynamic inputs at {output_step=}')
       keys = {k: list(v) for k, v in data.items()}
       logging.info(f'dynamic inputs ready: {keys}')

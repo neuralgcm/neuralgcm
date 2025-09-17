@@ -169,9 +169,9 @@ class RunnerTest(parameterized.TestCase):
             'bar': cx.LabeledAxis('x', np.array([0.1, 0.2, 0.3])),
         }
     }
-    output_chunks = {'lead_time': 4, 'init_time': 1}
+    zarr_chunks = {'lead_time': 4, 'init_time': 1}
     if ensemble_size is not None:
-      output_chunks['realization'] = 1
+      zarr_chunks['realization'] = 1
     runner = runnerlib.InferenceRunner(
         model=model,
         inputs=inputs,
@@ -182,7 +182,7 @@ class RunnerTest(parameterized.TestCase):
         output_query=output_query,
         output_freq=np.timedelta64(6, 'h'),
         output_duration=np.timedelta64(48, 'h'),
-        output_chunks=output_chunks,
+        zarr_chunks=zarr_chunks,
         write_duration=np.timedelta64(24, 'h'),
         unroll_duration=np.timedelta64(12, 'h'),
         checkpoint_duration=np.timedelta64(24, 'h'),

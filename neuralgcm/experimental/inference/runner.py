@@ -180,12 +180,12 @@ class InferenceRunner:
   output_query: typing.Query
   output_freq: np.timedelta64
   output_duration: np.timedelta64
-  output_chunks: dict[str, int]  # should have a sane defaults
   unroll_duration: np.timedelta64
   write_duration: np.timedelta64
   checkpoint_duration: np.timedelta64
   zarr_attrs: dict[str, Any] = dataclasses.field(default_factory=dict)
-  zarr_format: int | None = None
+  zarr_chunks: dict[str, int] = dataclasses.field(default_factory=dict)
+  zarr_shards: dict[str, int] | None = None
   bad_state_strategy: str = 'raise'
   random_seed: int = 0
 
@@ -207,11 +207,11 @@ class InferenceRunner:
           f'write_duration in steps ({self.max_steps_per_write}) must be a '
           f'multiple of unroll_duration in steps ({self.steps_per_unroll})'
       )
-    if self.max_steps_per_write % self.output_chunks['lead_time'] != 0:
+    if self.max_steps_per_write % self.zarr_chunks['lead_time'] != 0:
       raise ValueError(
           f'write_duration in steps ({self.max_steps_per_write}) must be a'
-          " multiple of output_chunks['lead_time']"
-          f" ({self.output_chunks['lead_time']})"
+          " multiple of zarr_chunks['lead_time']"
+          f" ({self.zarr_chunks['lead_time']})"
       )
     if self.checkpoint_duration % self.write_duration != np.timedelta64(0):
       raise ValueError(
@@ -242,6 +242,24 @@ class InferenceRunner:
     # https://zarr-specs.readthedocs.io/en/latest/v3/core/index.html#node-names
     return epath.Path(self.output_path) / '__inference_checkpoints'
 
+  def _get_array_encoding(
+      self, array: xarray.DataArray
+  ) -> dict[str, tuple[int, ...]]:
+    """Return encoding for a DataArray."""
+    chunks = tuple(
+        self.zarr_chunks.get(dim, size) for dim, size in array.sizes.items()
+    )
+    # TODO(shoyer): Remove fill_value after Xarray defaults to NaN:
+    # https://github.com/pydata/xarray/pull/10757
+    encoding = {'chunks': chunks, 'fill_value': np.nan}
+    zarr_shards = self.zarr_shards
+    if zarr_shards is not None:
+      encoding['shards'] = tuple(
+          zarr_shards.get(dim, chunksize)
+          for dim, chunksize in zip(array.dims, chunks)
+      )
+    return encoding
+
   def setup(self) -> None:
     """Call once to setup metadata in output Zarr(s)."""
     checkpoints_path = self._checkpoints_path()
@@ -262,18 +280,28 @@ class InferenceRunner:
     # The use of expand_dims() here replicates
     # xarray_beam.replace_template_dims().
     template = _datatree_expand_dims(template, **expanded_dims)
-    template = template.chunk(self.output_chunks)
-
     template.attrs.update(self.zarr_attrs)
 
     # TODO(shoyer): Determine if there's anything we need to do to work around
     # idempotency issues in Zarr, or if using Zarr v3 is sufficient:
     # https://github.com/zarr-developers/zarr-python/issues/1435
 
-    # TODO(shoyer): Switch to Zarr v3, which will require setting a default fill
-    # value explicitly: https://github.com/pydata/xarray/issues/10646
-    logging.info(f'writing template to {self.output_path}:\n{template}')
-    template.to_zarr(self.output_path, compute=False, zarr_format=2)
+    encoding = {}
+    for node in template.subtree:
+      encoding[node.path] = {
+          k: self._get_array_encoding(v) for k, v in node.data_vars.items()
+      }
+
+    logging.info(
+        f'writing template to {self.output_path}:\n{encoding=}\n{template}'
+    )
+    template.to_zarr(
+        self.output_path,
+        compute=False,
+        encoding=encoding,
+        mode='w',  # override if exists, to ensure robustness to preemptions
+        zarr_format=3,
+    )
 
     # Add directory for inference checkpoints. The existance of this directory
     # is used as a marker to indicate that setup() has been called.

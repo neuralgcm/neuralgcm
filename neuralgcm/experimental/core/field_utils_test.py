@@ -254,8 +254,7 @@ class UtilsTest(parameterized.TestCase):
     actual = field_utils.shape_struct_fields_from_coords(coords)
     self.assertEqual(cx.get_coordinate(actual['a']), coords['a'])
     self.assertEqual(cx.get_coordinate(actual['b']), coords['b'])
-    # we check .data.value because non-jax arrays is wrapped with _ShapedLeaf.
-    self.assertIsInstance(actual['a'].data.value, jax.ShapeDtypeStruct)
+    self.assertIsInstance(actual['a'].data, jax.ShapeDtypeStruct)
 
 
 if __name__ == '__main__':

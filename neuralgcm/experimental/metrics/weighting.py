@@ -85,8 +85,7 @@ class GridAreaWeighting(Weighting):
       lats = grid.fields['latitude']
       lat_ax = cx.get_coordinate(lats)
       weights = get_weight(grid.fields['latitude'].untag(lat_ax)).tag(lat_ax)
-      dummy = cx.wrap(np.ones(grid.shape), grid)
-      weights = weights.broadcast_like(dummy)
+      weights = weights.broadcast_like(grid)
     elif isinstance(grid, coordinates.SphericalHarmonicGrid):
       # avoid counting padding towards overall weight by using mask.
       weights = grid.fields['mask'].astype(jnp.float32)

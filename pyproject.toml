@@ -46,7 +46,7 @@ tests = [
     "pytest",
 ]
 experimental = [
-    "coordax",
+    "coordax @ git+https://github.com/neuralgcm/coordax.git",
     "einops",
     "etils",
     # TODO(shoyer): use pypi version when there is a newer release than 0.3.0

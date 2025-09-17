@@ -44,15 +44,11 @@ class RadiationFeatures(transforms.TransformABC):
 
   @property
   def lon(self) -> typing.Array:
-    # TODO(dkochkov): support field broadcasting to a coordinate.
-    dummy = cx.wrap(jnp.zeros(self.grid.shape), self.grid)
-    return self.grid.fields['longitude'].broadcast_like(dummy).data
+    return self.grid.fields['longitude'].broadcast_like(self.grid).data
 
   @property
   def lat(self) -> typing.Array:
-    # TODO(dkochkov): support field broadcasting to a coordinate.
-    dummy = cx.wrap(jnp.zeros(self.grid.shape), self.grid)
-    return self.grid.fields['latitude'].broadcast_like(dummy).data
+    return self.grid.fields['latitude'].broadcast_like(self.grid).data
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     features = {}
@@ -73,10 +69,8 @@ class LatitudeFeatures(transforms.TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
-    # TODO(dkochkov): support field broadcasting to a coordinate.
-    dummy = cx.wrap(jnp.zeros(self.grid.shape), self.grid)
     latitudes = jnp.deg2rad(
-        self.grid.fields['latitude'].broadcast_like(dummy).data
+        self.grid.fields['latitude'].broadcast_like(self.grid).data
     )
     features = {
         'cos_latitude': cx.wrap(jnp.cos(latitudes), self.grid),

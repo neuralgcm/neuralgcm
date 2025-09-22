@@ -413,6 +413,7 @@ class InferenceRunner:
           if step_start + self.steps_per_unroll < self.total_steps:
             dynamic_inputs_task.submit(step_start + self.steps_per_unroll)
 
+          logging.info(f'{dynamic_inputs=}')
           state, trajectory_slice = unroll(state, dynamic_inputs)
           output_buffer.append(device_put_to_cpu(trajectory_slice))
 

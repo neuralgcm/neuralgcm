@@ -234,6 +234,7 @@ class Sel(TransformABC):
   """Selects a slice and an index along a specified dimensions."""
 
   sel_arg: dict[str, slice | float | int | np.ndarray | None]
+  method: Literal['nearest'] | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     """Applies sel operation to all Fields in inputs."""
@@ -246,12 +247,27 @@ class Sel(TransformABC):
       if dim in field.dims and selection is not None:
         if isinstance(selection, slice):
           raise NotImplementedError('Sel with slice is not supported yet')
-        matches = field.coord_fields[dim].data == selection
-        indices = np.argwhere(matches).astype(int).ravel()
+        if self.method is None:
+          matches = field.coord_fields[dim].data == selection
+          indices = np.argwhere(matches).astype(int).ravel()
+        elif self.method == 'nearest':
+          assert np.size(selection) == 1, (
+              'With method="nearest", selection must be a single value.'
+          )
+          indices = np.array(
+              [np.argmin(np.abs(field.coord_fields[dim].data - selection))]
+          )
+        else:
+          raise ValueError(f'Unsupported method: {self.method}')
         f = field.untag(dim)
         # pylint: disable=cell-var-from-loop
-        if indices.size > 1 or indices.size == 0:
+        if indices.size > 1:
           raise ValueError('Currently only single value slices are supported.')
+        elif indices.size == 0:
+          raise ValueError(
+              f'No match found for {selection} in dim {dim} with'
+              f' method={self.method}'
+          )
         elif indices.size == 1:
           slices[k] = cx.cmap(lambda x: x[indices.squeeze()])(f)
           assert not slices[k].positional_shape  # should never happen.

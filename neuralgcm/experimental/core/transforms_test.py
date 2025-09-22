@@ -45,6 +45,36 @@ class TransformsTest(parameterized.TestCase):
     }
     chex.assert_trees_all_close(actual, expected)
 
+  def test_sel(self):
+    x = cx.LabeledAxis('x', np.array([0.1, 0.5, 1.0, 1.5]))
+    inputs = {'field_a': cx.wrap(np.arange(4, dtype=np.float32) * 10, x)}
+
+    with self.subTest('exact_match_no_method'):
+      sel_transform = transforms.Sel(sel_arg={'x': 0.5})
+      actual = sel_transform(inputs)
+      expected = {'field_a': cx.wrap(10.0)}
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('nearest_match'):
+      sel_transform = transforms.Sel(sel_arg={'x': 0.55}, method='nearest')
+      actual = sel_transform(inputs)
+      expected = {'field_a': cx.wrap(10.0)}
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('no_match_no_method_raises'):
+      sel_transform = transforms.Sel(sel_arg={'x': 0.55})
+      with self.assertRaisesRegex(ValueError, 'No match found'):
+        sel_transform(inputs)
+
+    with self.subTest('nearest_with_array_selection_raises'):
+      sel_transform = transforms.Sel(
+          sel_arg={'x': np.array([0.1, 0.5])}, method='nearest'
+      )
+      with self.assertRaisesRegex(
+          AssertionError, 'selection must be a single value'
+      ):
+        sel_transform(inputs)
+
   def test_broadcast(self):
     broadcast_transform = transforms.Broadcast()
     x = cx.SizedAxis('x', 3)

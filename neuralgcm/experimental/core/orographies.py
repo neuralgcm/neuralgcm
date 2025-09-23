@@ -15,7 +15,6 @@
 """Modules that hold orographic data."""
 
 import coordax as cx
-from dinosaur import xarray_utils as dino_xarray_utils
 from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
@@ -43,8 +42,7 @@ class ModalOrography(nnx.Module):
       rngs: nnx.Rngs,
   ):
     self.ylm_transform = ylm_transform
-    # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
-    modal_shape_1d = (ylm_transform.dinosaur_grid.mask.sum(),)
+    modal_shape_1d = (ylm_transform.ylm_grid.fields['mask'].data.sum(),)
     self.orography = OrographyVariable(initializer(rngs, modal_shape_1d))
 
   @property
@@ -54,10 +52,9 @@ class ModalOrography(nnx.Module):
   @property
   def modal_orography(self) -> typing.Array:
     """Returns orography converted to modal representation with filtering."""
-    # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
-    mask = self.ylm_transform.dinosaur_grid.mask
+    mask = self.ylm_transform.modal_grid.fields['mask']
     modal_orography_2d = jnp.zeros(self.ylm_transform.modal_grid.shape)
-    return modal_orography_2d.at[mask].set(self.orography.value)
+    return modal_orography_2d.at[mask.data].set(self.orography.value)
 
   def update_orography_from_data(
       self,
@@ -88,9 +85,8 @@ class ModalOrography(nnx.Module):
     modal_orography = modal_orography.unwrap(self.ylm_transform.modal_grid)
     if isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       modal_orography = spatial_filter.filter_modal(modal_orography)
-    # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
     self.orography.value = modal_orography[
-        self.ylm_transform.dinosaur_grid.mask
+        self.ylm_transform.modal_grid.fields['mask'].data
     ]
 
 
@@ -120,8 +116,7 @@ class ModalOrographyWithCorrection(ModalOrography):
   @property
   def modal_orography(self) -> typing.Array:
     """Returns orography converted to modal representation with filtering."""
-    # TODO(dkochkov): add mask field to SphericalHarmonicGrid.
-    mask = self.ylm_transform.dinosaur_grid.mask
+    mask = self.ylm_transform.modal_grid.fields['mask'].data
     modal_orography_2d = jnp.zeros(mask.shape)
     modal_orography_1d = (
         self.orography.value + self.correction.value * self.correction_scale
@@ -162,9 +157,6 @@ class Orography(nnx.Module):
     )
     nodal_orography = coordinates.field_from_xarray(nodal_orography)
     data_grid = cx.get_coordinate(nodal_orography)
-    # TODO(dkochkov) Introduce objects for specifying nodal-modal conversions.
-    ylm_grid = dino_xarray_utils.LINEAR_SHAPE_TO_GRID_DICT[data_grid.shape]()
-    data_grid = coordinates.LonLatGrid.from_dinosaur_grid(ylm_grid)
     nodal_orography = nodal_orography.data
     nodal_orography = spatial_filter(nodal_orography)
     if data_grid != self.grid:

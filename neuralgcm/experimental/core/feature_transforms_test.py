@@ -208,10 +208,11 @@ class FeatureTransformsTest(parameterized.TestCase):
       self._test_feature_module(randomness_features, None)
 
     with self.subTest('batched_gaussian_random_fields'):
-      random_process = random_processes.BatchGaussianRandomField(
+      random_process = random_processes.VectorizedGaussianRandomField(
           ylm_transform=ylm_transform,
           dt=1.0,
           sim_units=units.DEFAULT_UNITS,
+          axis=cx.SizedAxis('grf', 2),
           correlation_times=[1.0, 2.0],
           correlation_lengths=[0.6, 0.9],
           variances=[1.0, 1.0],

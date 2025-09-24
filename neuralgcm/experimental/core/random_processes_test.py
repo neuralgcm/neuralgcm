@@ -13,16 +13,19 @@
 # limitations under the License.
 """Tests that random processes generate values with expected stats."""
 
+import functools
 import inspect
 import math
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import spherical_transforms
@@ -193,21 +196,32 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
 
     # generating multiple trajectories of random fields.
     n_samples = 500
+    samples_axis = cx.DummyAxis(None, n_samples)
     unroll_length = 40
-    init_rngs = jax.random.split(jax.random.key(5), n_samples)
-    graph, params = nnx.split(random_field)
-    sample_fn = lambda x: _nnx_merge_with_copy(
-        graph, params
-    ).unconditional_sample(x)
-    evaluate_fn = lambda x: _nnx_merge_with_copy(graph, params).state_values(
-        grid, x
+    init_rngs = cx.wrap(
+        jax.random.split(jax.random.key(5), n_samples), samples_axis
     )
-    advance_fn = lambda x: _nnx_merge_with_copy(graph, params).advance(x)
-    batch_sample_fn = jax.vmap(sample_fn)
-    batch_evaluate_fn = jax.vmap(evaluate_fn)
-    batch_advance_fn = jax.vmap(advance_fn)
-    initial_states = batch_sample_fn(init_rngs)
-    initial_values = batch_evaluate_fn(initial_states).data
+
+    module_utils.vectorize_module(
+        random_field, {typing.Randomness: samples_axis}
+    )
+    module_axis = nnx.StateAxes({typing.Randomness: 0, ...: None})
+    model_scan_axes = nnx.StateAxes({typing.Randomness: nnx.Carry, ...: None})
+
+    @functools.partial(nnx.vmap, in_axes=(module_axis, 0))
+    def _sample(model, rng):
+      model.unconditional_sample(rng)
+
+    @functools.partial(nnx.vmap, in_axes=(module_axis,))
+    def _advance(model):
+      model.advance()
+
+    @functools.partial(nnx.vmap, in_axes=(module_axis,))
+    def _evaluate(model):
+      return model.state_values(grid)
+
+    _sample(random_field, init_rngs)
+    initial_values = _evaluate(random_field).data
 
     with self.subTest('unconditional_sample_shape'):
       self.assertEqual(initial_values.shape, (n_samples,) + grid.shape)
@@ -244,14 +258,16 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
             var_tol_in_standard_errs=var_tol_in_standard_errs,
         )
 
-    def step_fn(c, _):
-      next_c = batch_advance_fn(c)
-      next_output = batch_evaluate_fn(next_c).data
-      return (next_c, next_output)
+    def step_fn(model):
+      _advance(model)
+      return _evaluate(model)
 
-    _, field_trajectory = jax.lax.scan(
-        step_fn, initial_states, xs=None, length=unroll_length
-    )
+    field_trajectory = nnx.scan(
+        step_fn,
+        length=unroll_length,
+        in_axes=(model_scan_axes,),
+        out_axes=0,
+    )(random_field).data
     field_trajectory = jax.device_get(field_trajectory)
 
     if run_correlation_time_check and variance is not None:
@@ -305,9 +321,9 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
   def check_nnx_state_structure_is_invariant(self, grf, grid):
     """Checks that random process does not mutate nnx.state(grf) structure."""
     init_nnx_state = nnx.state(grf, nnx.Param)
-    random_state = grf.unconditional_sample(jax.random.key(0))
-    random_state = grf.advance(random_state)
-    _ = grf.state_values(grid, random_state)
+    grf.unconditional_sample(jax.random.key(0))
+    grf.advance()
+    _ = grf.state_values(grid)
     nnx_state = nnx.state(grf, nnx.Param)
     chex.assert_trees_all_equal_shapes_and_dtypes(init_nnx_state, nnx_state)
 
@@ -467,10 +483,12 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       correlation_lengths,
       correlation_times,
   ):
-    return random_processes.BatchGaussianRandomField(
+    axis = cx.SizedAxis('grf', len(variances))
+    return random_processes.VectorizedGaussianRandomField(
         ylm_transform=self.ylm_transform,
         dt=self.dt,
         sim_units=self.sim_units,
+        axis=axis,
         correlation_times=correlation_times,
         correlation_lengths=correlation_lengths,
         variances=variances,
@@ -497,32 +515,45 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     n_fields = len(variances)
     unroll_length = 10
     n_samples = 1000
-    rngs = jax.random.split(jax.random.key(802701), n_samples)
+    samples_axis = cx.DummyAxis(None, n_samples)
 
     ###
     grid = self.ylm_transform.lon_lat_grid
-    graph, params = nnx.split(random_field)
-    sample_fn = lambda x: _nnx_merge_with_copy(
-        graph, params
-    ).unconditional_sample(x)
-    evaluate_fn = lambda x: _nnx_merge_with_copy(graph, params).state_values(
-        grid, x
+    init_rngs = cx.wrap(
+        jax.random.split(jax.random.key(5), n_samples), samples_axis
     )
-    advance_fn = lambda x: _nnx_merge_with_copy(graph, params).advance(x)
-    batch_sample_fn = jax.vmap(sample_fn)
-    batch_evaluate_fn = jax.vmap(evaluate_fn)
-    batch_advance_fn = jax.vmap(advance_fn)
-    initial_states = batch_sample_fn(rngs)
-    initial_values = batch_evaluate_fn(initial_states).data
 
-    def step_fn(c, _):
-      next_c = batch_advance_fn(c)
-      next_output = batch_evaluate_fn(next_c).data
-      return (next_c, next_output)
-
-    _, field_trajectory = jax.lax.scan(
-        step_fn, initial_states, xs=None, length=unroll_length
+    module_utils.vectorize_module(
+        random_field, {typing.Randomness: samples_axis}
     )
+    module_axis = nnx.StateAxes({typing.Randomness: 0, ...: None})
+    model_scan_axes = nnx.StateAxes({typing.Randomness: nnx.Carry, ...: None})
+
+    @functools.partial(nnx.vmap, in_axes=(module_axis, 0))
+    def _sample(model, rng):
+      model.unconditional_sample(rng)
+
+    @functools.partial(nnx.vmap, in_axes=(module_axis,))
+    def _advance(model):
+      model.advance()
+
+    @functools.partial(nnx.vmap, in_axes=(module_axis,))
+    def _evaluate(model):
+      return model.state_values(grid)
+
+    _sample(random_field, init_rngs)
+    initial_values = _evaluate(random_field).data
+
+    def step_fn(model):
+      _advance(model)
+      return _evaluate(model)
+
+    field_trajectory = nnx.scan(
+        step_fn,
+        length=unroll_length,
+        in_axes=(model_scan_axes,),
+        out_axes=0,
+    )(random_field).data
     field_trajectory = jax.device_get(field_trajectory)
     ###
     self.assertEqual(
@@ -530,11 +561,6 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         field_trajectory.shape,
     )
     final_nodal_value = field_trajectory[-1, ...]
-
-    self.assertEqual(
-        (n_samples, n_fields) + self.ylm_transform.modal_grid.shape,
-        initial_states.core.shape,
-    )
 
     # Nodal values should have the right statistics.
     for i, (variance, correlation_length) in enumerate(
@@ -612,10 +638,12 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         mesh=parallelism.Mesh(),
     )
     grid = ylm_transform.nodal_grid
-    grf = random_processes.BatchGaussianRandomField(
+    axis = cx.SizedAxis('grf', 2)  # 2 fields.
+    grf = random_processes.VectorizedGaussianRandomField(
         ylm_transform=ylm_transform,
         dt=self.dt,
         sim_units=self.sim_units,
+        axis=axis,
         correlation_times=(1.0, 2.7),
         correlation_lengths=(0.15, 0.2),
         variances=(1, 2.1),
@@ -652,10 +680,11 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
 
     @nnx.jit
     def build_grf():
-      grf = random_processes.BatchGaussianRandomField(
+      grf = random_processes.VectorizedGaussianRandomField(
           ylm_transform=ylm_transform,
           dt=self.dt,
           sim_units=self.sim_units,
+          axis=cx.SizedAxis('grf', 2),
           correlation_times=(1.0, 2.7),
           correlation_lengths=(0.15, 0.2),
           variances=(1, 2.1),

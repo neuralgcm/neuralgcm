@@ -46,7 +46,9 @@ def _advance_prng_key(prng_key: jax.Array, prng_step: int):
   return jax.random.fold_in(prng_key, salt)
 
 
-def _get_advance_prng_key(randomness: typing.Randomness) -> jax.Array | None:
+def _get_advance_prng_key(
+    randomness: typing.RandomnessTuple,
+) -> jax.Array | None:
   """Extracts advance_prng_key from Randomness."""
   return _advance_prng_key(randomness.prng_key, randomness.prng_step)
 
@@ -58,21 +60,21 @@ class RandomProcessModule(nnx.Module, abc.ABC):
   def unconditional_sample(
       self,
       rng: jax.Array,
-  ) -> typing.Randomness:
+  ) -> typing.RandomnessTuple:
     """Samples the random field unconditionally."""
 
   @abc.abstractmethod
   def advance(
       self,
-      state: typing.Randomness | None = None,
-  ) -> typing.Randomness:
+      state: typing.RandomnessTuple | None = None,
+  ) -> typing.RandomnessTuple:
     """Updates the state of a random field."""
 
   @abc.abstractmethod
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.Randomness | None = None,
+      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
     ...
 
@@ -97,7 +99,7 @@ class UniformUncorrelated(RandomProcessModule):
     self.maxval = maxval
     key, state_rng = jax.random.split(rngs.params())
     self.randomness_state = RandomnessValue(
-        typing.Randomness(state_rng, 0, self._sample_core(key))
+        typing.RandomnessTuple(state_rng, 0, self._sample_core(key))
     )
 
   def _sample_core(self, rng: jax.Array) -> jax.Array:
@@ -109,21 +111,21 @@ class UniformUncorrelated(RandomProcessModule):
         shape=self.coords.shape,
     )
 
-  def unconditional_sample(self, rng: jax.Array) -> typing.Randomness:
+  def unconditional_sample(self, rng: jax.Array) -> typing.RandomnessTuple:
     key, state_rng = jax.random.split(rng)
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         state_rng, 0, self._sample_core(key)
     )
     return self.randomness_state.value
 
   def advance(
       self,
-      state: typing.Randomness | None = None,
-  ) -> typing.Randomness:
+      state: typing.RandomnessTuple | None = None,
+  ) -> typing.RandomnessTuple:
     if state is None:
       state = self.randomness_state.value
     key = _get_advance_prng_key(state)
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         state.prng_key, state.prng_step + 1, self._sample_core(key)
     )
     return self.randomness_state.value
@@ -131,7 +133,7 @@ class UniformUncorrelated(RandomProcessModule):
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.Randomness | None = None,
+      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
     if state is None:
       state = self.randomness_state.value
@@ -159,7 +161,7 @@ class NormalUncorrelated(RandomProcessModule):
     self.std = std
     key, state_rng = jax.random.split(rngs.params())
     self.randomness_state = RandomnessValue(
-        typing.Randomness(state_rng, 0, self._sample_core(key))
+        typing.RandomnessTuple(state_rng, 0, self._sample_core(key))
     )
 
   def _sample_core(self, rng: jax.Array) -> jax.Array:
@@ -168,21 +170,23 @@ class NormalUncorrelated(RandomProcessModule):
         rng, shape=self.coords.shape
     )
 
-  def unconditional_sample(self, rng: typing.PRNGKeyArray) -> typing.Randomness:
+  def unconditional_sample(
+      self, rng: typing.PRNGKeyArray
+  ) -> typing.RandomnessTuple:
     key, state_rng = jax.random.split(rng)
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         state_rng, 0, self._sample_core(key)
     )
     return self.randomness_state.value
 
   def advance(
       self,
-      state: typing.Randomness | None = None,
-  ) -> typing.Randomness:
+      state: typing.RandomnessTuple | None = None,
+  ) -> typing.RandomnessTuple:
     if state is None:
       state = self.randomness_state.value
     key = _get_advance_prng_key(state)
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         state.prng_key, state.prng_step + 1, self._sample_core(key)
     )
     return self.randomness_state.value
@@ -190,7 +194,7 @@ class NormalUncorrelated(RandomProcessModule):
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.Randomness | None = None,
+      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
     if state is None:
       state = self.randomness_state.value
@@ -414,17 +418,19 @@ class GaussianRandomField(RandomProcessModule):
     prng_key = rngs.params()
     core_rngs = rngs.params()
     self.randomness_state = RandomnessValue(
-        typing.Randomness(
+        typing.RandomnessTuple(
             prng_key=prng_key,
             prng_step=0,
             core=self.grf.sample_core(core_rngs),
         )
     )
 
-  def unconditional_sample(self, rng: typing.PRNGKeyArray) -> typing.Randomness:
+  def unconditional_sample(
+      self, rng: typing.PRNGKeyArray
+  ) -> typing.RandomnessTuple:
     """Returns a randomly initialized state for the autoregressive process."""
     rng, next_rng = jax.random.split(rng)
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         prng_key=next_rng,
         prng_step=0,
         core=self.grf.sample_core(rng),
@@ -432,12 +438,12 @@ class GaussianRandomField(RandomProcessModule):
     return self.randomness_state.value
 
   def advance(
-      self, state: typing.Randomness | None = None
-  ) -> typing.Randomness:
+      self, state: typing.RandomnessTuple | None = None
+  ) -> typing.RandomnessTuple:
     """Updates the CoreRandomState of a random gaussian field."""
     if state is None:
       state = self.randomness_state.value
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         core=self.grf.advance_core(state.core, state.prng_key, state.prng_step),
         prng_key=state.prng_key,
         prng_step=state.prng_step + 1,
@@ -447,7 +453,7 @@ class GaussianRandomField(RandomProcessModule):
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.Randomness | None = None,
+      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
     if coords is None:
       coords = self.ylm_transform.nodal_grid
@@ -515,7 +521,7 @@ class BatchGaussianRandomField(RandomProcessModule):
     core_rngs = jax.random.split(rngs.params(), num=self.n_fields)
     sample_fn = lambda grf, rng: grf.sample_core(rng)
     self.randomness_state = RandomnessValue(
-        typing.Randomness(
+        typing.RandomnessTuple(
             prng_key=prng_key,
             prng_step=0,
             core=nnx.vmap(sample_fn)(self.batch_grf_core, core_rngs),
@@ -527,12 +533,14 @@ class BatchGaussianRandomField(RandomProcessModule):
   def event_shape(self) -> tuple[int, ...]:
     return tuple([self.n_fields])
 
-  def unconditional_sample(self, rng: typing.PRNGKeyArray) -> typing.Randomness:
+  def unconditional_sample(
+      self, rng: typing.PRNGKeyArray
+  ) -> typing.RandomnessTuple:
     all_rngs = jax.random.split(rng, num=(self.n_fields + 1))
     next_rng = all_rngs[-1]
     rngs = all_rngs[:-1]
     sample_fn = lambda grf, rng: grf.sample_core(rng)
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         prng_key=next_rng,
         prng_step=0,
         core=nnx.vmap(sample_fn)(self.batch_grf_core, rngs),
@@ -540,15 +548,15 @@ class BatchGaussianRandomField(RandomProcessModule):
     return self.randomness_state.value
 
   def advance(
-      self, state: typing.Randomness | None = None
-  ) -> typing.Randomness:
+      self, state: typing.RandomnessTuple | None = None
+  ) -> typing.RandomnessTuple:
     if state is None:
       state = self.randomness_state.value
     advance_fn = lambda grf, core, key, step: grf.advance_core(core, key, step)
     in_axes = (0, 0, 0, None)
     advance_fn = nnx.vmap(advance_fn, in_axes=in_axes)
     rngs = jax.random.split(state.prng_key, num=self.n_fields)
-    self.randomness_state.value = typing.Randomness(
+    self.randomness_state.value = typing.RandomnessTuple(
         core=advance_fn(self.batch_grf_core, state.core, rngs, state.prng_step),
         prng_key=state.prng_key,
         prng_step=state.prng_step + 1,
@@ -558,7 +566,7 @@ class BatchGaussianRandomField(RandomProcessModule):
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.Randomness | None = None,
+      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
     if coords is None:
       coords = self.ylm_transform.nodal_grid

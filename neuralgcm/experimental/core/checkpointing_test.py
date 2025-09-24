@@ -29,7 +29,7 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import random_processes
 
 
-class MockForecastSystem(api.ForecastSystem):
+class MockForecastSystem(api.Model):
   """Mock ForecastSystem for testing."""
 
   def __init__(self, grid: cx.Coordinate, rngs: nnx.Rngs):
@@ -42,13 +42,17 @@ class MockForecastSystem(api.ForecastSystem):
     )
     self.linear = nnx.Linear(in_features=1, out_features=1, rngs=rngs)
 
-  def advance_prognostics(self, *args, **kwargs):
+  def advance(self, *args, **kwargs):
     ...
 
-  def assimilate_prognostics(self, *args, **kwargs):
+  def assimilate(self, *args, **kwargs):
     ...
 
-  def observe_from_prognostics(self, *args, **kwargs):
+  def observe(self, *args, **kwargs):
+    ...
+
+  @property
+  def timestep(self):
     ...
 
 
@@ -65,7 +69,7 @@ class CheckpointingTest(parameterized.TestCase):
   def test_save_and_load_roundtrip(self):
     path = os.path.join(self.create_tempdir(), 'checkpoint')
     model_cfg = build_model.as_buildable()
-    model = api.ForecastSystem.from_fiddle_config(model_cfg)
+    model = api.Model.from_fiddle_config(model_cfg)
     checkpointing.save_checkpoint(model, path)
     restored_model = checkpointing.load_model_checkpoint(path)
     restored_model_params = nnx.state(restored_model)

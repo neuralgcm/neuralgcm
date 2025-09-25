@@ -334,6 +334,10 @@ class InferenceRunner:
     init_time = self.init_times[init_time_index].astype('datetime64[ns]')
     dynamic_inputs_forecast = self.dynamic_inputs.get_forecast(init_time)
 
+    # TODO(shoyer): Find a less hacky way to ensure that calling
+    # dynamic_inputs_from_xarray() is thread-safe.
+    model2 = nnx.clone(self.model)
+
     # Initialize state from checkpoint or from scratch.
     task_path = self._task_path(task_id)
     if task_path.exists():
@@ -354,8 +358,8 @@ class InferenceRunner:
       selected_inputs = {
           k: v.sel(time=[init_time]) for k, v in self.inputs.items()
       }
-      input_obs = self.model.inputs_from_xarray(selected_inputs)
-      dynamic_inputs = self.model.dynamic_inputs_from_xarray(
+      input_obs = model2.inputs_from_xarray(selected_inputs)
+      dynamic_inputs = model2.dynamic_inputs_from_xarray(
           dynamic_inputs_forecast.get_data(
               np.timedelta64(0), self.model.timestep
           )
@@ -373,7 +377,7 @@ class InferenceRunner:
       logging.info(f'getting dynamic inputs for {output_step=}')
       xarray_inputs = dynamic_inputs_forecast.get_data(lead_start, lead_stop)
       logging.info(f'xarray_inputs: {xarray_inputs}')
-      data = self.model.dynamic_inputs_from_xarray(xarray_inputs)
+      data = model2.dynamic_inputs_from_xarray(xarray_inputs)
       check_pytree_for_bad_state(data, f'dynamic inputs at {output_step=}')
       keys = {k: list(v) for k, v in data.items()}
       logging.info(f'dynamic inputs ready: {keys}')

@@ -22,10 +22,8 @@ from fiddle.experimental import serialization
 from flax import nnx
 import jax
 from neuralgcm.experimental.core import api
-from neuralgcm.experimental.core import diagnostics
-from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import random_processes
+from neuralgcm.experimental.core import typing
 import orbax.checkpoint as ocp
 
 
@@ -40,9 +38,10 @@ class _SplitState:
 
 
 UNSAVED_VARIABLE_TYPES = (
-    diagnostics.DiagnosticValue,
-    dynamic_io.DynamicInputValue,
-    random_processes.RandomnessValue,
+    typing.Prognostic,
+    typing.Diagnostic,
+    typing.DynamicInput,
+    typing.Randomness,
 )
 
 
@@ -72,15 +71,15 @@ def load_model_checkpoint(
     field_partitions_updates: (
         dict[parallelism.TagOrMeshType, parallelism.FieldPartitions] | None
     ) = None,
-) -> api.ForecastSystem:
-  """Loades a ForecastSystem model from a checkpoint."""
+) -> api.Model:
+  """Loads a Model from a checkpoint."""
   checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
 
   # Create model from checkpoint metadata.
   config_args = ocp.args.Composite(**{_CONFIG_KEY: ocp.args.JsonRestore()})
   model_config_dict = checkpointer.restore(path, config_args)[_CONFIG_KEY]
   model_config = serialization.load_json(json.dumps(model_config_dict))
-  model = api.ForecastSystem.from_fiddle_config(
+  model = api.Model.from_fiddle_config(
       model_config,
       spmd_mesh_updates=spmd_mesh_updates,
       array_partitions_updates=array_partitions_updates,
@@ -97,9 +96,9 @@ def load_model_checkpoint(
 
 
 def save_checkpoint(
-    model: api.ForecastSystem,
+    model: api.Model,
     path: str | epath.PathLike,
-    fiddle_config: fdl.Config[api.ForecastSystem] | None = None,
+    fiddle_config: fdl.Config[api.Model] | None = None,
 ):
   """Saves model to a checkpoint."""
   if fiddle_config is None:

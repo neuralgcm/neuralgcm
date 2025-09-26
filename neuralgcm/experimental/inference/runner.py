@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """High performance inference API for NeuralGCM models."""
+
 import contextlib
 import dataclasses
 import logging
@@ -32,7 +33,9 @@ from neuralgcm.experimental.inference import streaming
 from neuralgcm.experimental.inference import timing
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 import xarray
+
 
 # pylint: disable=logging-fstring-interpolation
 
@@ -171,10 +174,10 @@ def _atomic_write(path):
 class InferenceRunner:
   """High performance inference runner for NeuralGCM models."""
 
-  model: api.ForecastSystem
+  model: api.ForecastSystem | None
   inputs: NestedData
   dynamic_inputs: dynamic_inputs_lib.DynamicInputs
-  init_times: npt.NDArray[np.datetime64]
+  init_times: npt.NDArray[np.datetime64] | pd.DatetimeIndex
   ensemble_size: int | None  # ensemble_size=None for deterministic models
   output_path: str
   output_query: typing.Query
@@ -220,6 +223,8 @@ class InferenceRunner:
       )
     if self.bad_state_strategy not in ('raise', 'impute_nan'):
       raise ValueError(f'Unknown bad_state_strategy: {self.bad_state_strategy}')
+    if isinstance(self.init_times, pd.DatetimeIndex):
+      self.init_times = self.init_times.to_numpy()
 
   @property
   def total_steps(self) -> int:
@@ -328,6 +333,8 @@ class InferenceRunner:
     Raises:
       SomeException: if setup() has not been completed first.
     """
+    if self.model is None:
+      raise ValueError('model must be set before calling InferenceRunner.run()')
     init_time_index = (
         task_id if self.ensemble_size is None else task_id // self.ensemble_size
     )
@@ -463,6 +470,8 @@ class InferenceRunner:
       self, output_buffer: list[typing.Pytree], task_id: int, steps_written: int
   ) -> None:
     """Write Zarr chunk to disk."""
+    if self.model is None:
+      raise ValueError('model must be set before calling InferenceRunner.run()')
     if self.ensemble_size is None:
       init_time_index = task_id
       realization_index = None

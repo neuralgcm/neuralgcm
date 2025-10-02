@@ -792,6 +792,46 @@ class ToModalWithFilteredGradients:
   ) -> dict[typing.KeyWithCosLatFactor, cx.Field]:
     return nnx.eval_shape(self.__call__, input_shapes)
 
+@nnx_compat.dataclass
+class WithConservation(TransformABC):
+  """Wraps a transform to apply conservation to one of its outputs."""
+  prediction_transform: TransformABC
+  coarse_field_transform: TransformABC
+  coarse_grid: coordinates.LonLatGrid
+  hres_grid: coordinates.LonLatGrid
+  hres_key: str
+  coarse_key: str
+  epsilon: float = 1e-8
+
+  def __post_init__(self):
+    self.regrid_to_coarse = Regrid(
+        regridder=interpolators.ConservativeRegridder(self.coarse_grid)
+    )
+    self.regrid_to_hres = Regrid(
+        regridder=interpolators.ConservativeRegridder(self.hres_grid)
+    )
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    hres_outputs = self.prediction_transform(inputs)
+
+    if self.hres_key not in hres_outputs:
+      return hres_outputs
+
+    coarse_outputs = self.coarse_field_transform(inputs)
+    coarse_field = coarse_outputs[self.coarse_key]
+    hres_field = hres_outputs[self.hres_key]
+
+    downsampled_hres = self.regrid_to_coarse({self.hres_key: hres_field})[
+        self.hres_key
+    ]
+    ratio = coarse_field / (downsampled_hres + self.epsilon)
+    upsampled_ratio = self.regrid_to_hres({self.hres_key: ratio})[
+        self.hres_key
+    ]
+    conserved_hres_field = hres_field * upsampled_ratio
+    hres_outputs[self.hres_key] = conserved_hres_field
+    return hres_outputs
+
 
 @nnx_compat.dataclass
 class VelocityFromModalDivCurl(TransformABC):

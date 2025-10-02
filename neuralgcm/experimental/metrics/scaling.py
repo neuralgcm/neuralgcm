@@ -15,8 +15,11 @@
 """Defines classes that implement rescaling schemes for statistics."""
 
 from __future__ import annotations
+
 import abc
 import dataclasses
+from typing import Literal
+
 import coordax as cx
 from neuralgcm.experimental.core import coordinates
 import numpy as np
@@ -76,6 +79,7 @@ class PerVariableScaler(ScaleFactor):
   """Applies scalers from a dictionary to fields with matching names."""
 
   scalers_by_name: dict[str, ScaleFactor]
+  default_scaler: ScaleFactor | None = None
 
   def scales(
       self, field: cx.Field, field_name: str | None = None
@@ -83,7 +87,18 @@ class PerVariableScaler(ScaleFactor):
     """Return scales for `field` computed by a scaler for `field_name`."""
     if field_name is None:
       raise ValueError('PerVariableScaler requires a `field_name`.')
-    return self.scalers_by_name[field_name].scales(field, field_name)
+
+    scaler = self.scalers_by_name.get(field_name)
+    if scaler is not None:
+      return scaler.scales(field, field_name)
+
+    if self.default_scaler is not None:
+      return self.default_scaler.scales(field, field_name)
+
+    raise KeyError(
+        f"'{field_name}' not found in scalers_by_name and no default_scaler is"
+        ' set.'
+    )
 
 
 @dataclasses.dataclass
@@ -117,6 +132,35 @@ class WavenumberScaler(ScaleFactor):
       return 1.0
     else:
       raise ValueError(f'No SphericalHarmonicGrid on {field=}')
+
+
+@dataclasses.dataclass
+class MaskedScaler(ScaleFactor):
+  """Masks a specified number of elements from the start or end of a dimension."""
+
+  coord_name: str
+  n_to_mask: int
+  mask_position: Literal['start', 'end'] = 'start'
+  masked_value: float = 0.0
+  unmasked_value: float = 1.0
+
+  def scales(
+      self, field: cx.Field, field_name: str | None = None
+  ) -> cx.Field | float:
+    del field_name
+    coord = field.axes.get(self.coord_name)
+    if coord is None:
+      raise ValueError(f"Dimension '{self.coord_name}' not found in field.")
+
+    scales = np.full(coord.shape, self.unmasked_value, dtype=np.float32)
+    if self.mask_position == 'start':
+      scales[:self.n_to_mask] = self.masked_value
+    elif self.mask_position == 'end':
+      scales[-self.n_to_mask:] = self.masked_value
+    else:
+      raise ValueError("`mask_position` must be either 'start' or 'end'.")
+
+    return cx.wrap(scales, coord)
 
 
 @dataclasses.dataclass

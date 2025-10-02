@@ -179,7 +179,6 @@ class ForecastSystem(nnx.Module, abc.ABC):
   def format_diagnostics(
       self,
       state: typing.ModelState | None = None,
-      time: jdt.Datetime | None = None,
   ) -> typing.Pytree:
     if state is not None:
       nnx.update(self, state.diagnostics)
@@ -187,7 +186,7 @@ class ForecastSystem(nnx.Module, abc.ABC):
     for diagnostic_module in module_utils.retrieve_subclass_modules(
         self, diagnostics.DiagnosticModule
     ):
-      outputs |= diagnostic_module.format_diagnostics(time)
+      outputs |= diagnostic_module.format_diagnostics()
     return outputs
 
   def unroll(

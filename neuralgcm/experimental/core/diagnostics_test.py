@@ -72,7 +72,7 @@ class DiagnosticsTest(parameterized.TestCase):
           'x': cx.wrap(x_sum, self.x_coord),
           'y': cx.wrap(y_sum, self.y_coord),
       }
-      actual_cumulatives = diagnostic.format_diagnostics(None)
+      actual_cumulatives = diagnostic.format_diagnostics()
       chex.assert_trees_all_close(actual_cumulatives, expected_cumulatives)
 
   def test_cumulative_on_custom_method(self):
@@ -93,7 +93,7 @@ class DiagnosticsTest(parameterized.TestCase):
         'x': cx.wrap(x_sum, self.x_coord),
         'y': cx.wrap(y_sum, self.y_coord),
     }
-    actual_cumulatives = diagnostic.format_diagnostics(None)
+    actual_cumulatives = diagnostic.format_diagnostics()
     chex.assert_trees_all_close(actual_cumulatives, expected_cumulatives)
 
   def test_instant(self):
@@ -117,7 +117,7 @@ class DiagnosticsTest(parameterized.TestCase):
           'x': cx.wrap(x_final, self.x_coord),
           'y': cx.wrap(y_final, self.y_coord),
       }
-      actual_final = diagnostic.format_diagnostics(None)
+      actual_final = diagnostic.format_diagnostics()
       chex.assert_trees_all_close(expected_final, actual_final)
 
   def test_interval(self):
@@ -146,7 +146,7 @@ class DiagnosticsTest(parameterized.TestCase):
           'x': cx.wrap(x_sum_last_2, self.x_coord),
           'y': cx.wrap(y_sum_last_2, self.y_coord),
       }
-      actual_final = diagnostic.format_diagnostics(None)
+      actual_final = diagnostic.format_diagnostics()
       chex.assert_trees_all_close(expected_final, actual_final)
 
 

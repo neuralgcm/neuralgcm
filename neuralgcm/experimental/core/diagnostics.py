@@ -19,7 +19,6 @@ from typing import Protocol
 import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
-import jax_datetime as jdt
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 
@@ -32,7 +31,7 @@ class DiagnosticValue(nnx.Intermediate):
 class DiagnosticModule(nnx.Module):
   """Base API for diagnostic modules."""
 
-  def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
+  def format_diagnostics(self) -> typing.Pytree:
     """Returns formatted diagnostics computed from the internal module state."""
     raise NotImplementedError(f'`format_diagnostics` on {self.__name__=}.')
 
@@ -78,7 +77,7 @@ class CumulativeDiagnostic(DiagnosticModule):
     for k, v in self.cumulatives.items():
       self.cumulatives[k].value = jnp.zeros_like(v)
 
-  def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
+  def format_diagnostics(self) -> typing.Pytree:
     # TODO(dkochkov): remove time arg, it is no longer used.
     return {
         k: cx.wrap(v.value, self.extract_coords[k])
@@ -110,7 +109,7 @@ class InstantDiagnostic(DiagnosticModule):
     for k, v in self.instants.items():
       self.instants[k].value = jnp.zeros_like(v)
 
-  def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
+  def format_diagnostics(self) -> typing.Pytree:
     # TODO(dkochkov): remove time arg, it is no longer used.
     return {
         k: cx.wrap(v.value, self.extract_coords[k])
@@ -179,7 +178,7 @@ class IntervalDiagnostic(DiagnosticModule):
           self.cumulative[k].value[jnp.newaxis],
       ])
 
-  def format_diagnostics(self, time: jdt.Datetime) -> typing.Pytree:
+  def format_diagnostics(self) -> typing.Pytree:
     # TODO(dkochkov): remove time arg, it is no longer used.
     if self.include_instant:
       return {

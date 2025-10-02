@@ -23,6 +23,7 @@ from flax import nnx
 import jax.numpy as jnp
 import jax_solar
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import orographies
@@ -77,6 +78,16 @@ class LatitudeFeatures(transforms.TransformABC):
         'sin_latitude': cx.wrap(jnp.sin(latitudes), self.grid),
     }
     return features
+
+
+@nnx_compat.dataclass
+class DiagnosticValueTransform(transforms.TransformABC):
+  """Returns diagnostic values to be used as features."""
+
+  diagnostic_module: diagnostics.DiagnosticModule
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    del inputs  # unused
+    return self.diagnostic_module.format_diagnostics()
 
 
 @nnx_compat.dataclass

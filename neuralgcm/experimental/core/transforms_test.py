@@ -455,6 +455,67 @@ class TransformsTest(parameterized.TestCase):
         out.data.var(ddof=1, axis=0), np.ones(x.shape), atol=1e-6
     )
 
+  def test_with_conservation(self):
+    hres_grid = coordinates.LonLatGrid.TL63()
+    coarse_grid = coordinates.LonLatGrid.T21()
+    hres_key = 'hres_precip'
+    coarse_key = 'coarse_precip'
+
+    class HresTransform(transforms.TransformABC):
+
+      def __init__(self, grid, key):
+        super().__init__()
+        self.grid = grid
+        self.key = key
+
+      def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+        return {
+            self.key: cx.wrap(
+                np.ones(self.grid.shape, dtype=np.float32), self.grid
+            )
+        }
+
+    class CoarseTransform(transforms.TransformABC):
+
+      def __init__(self, grid, key):
+        super().__init__()
+        self.grid = grid
+        self.key = key
+
+      def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+        return {
+            self.key: cx.wrap(
+                np.ones(self.grid.shape, dtype=np.float32) * 2.0, self.grid
+            )
+        }
+
+    prediction_transform = HresTransform(hres_grid, hres_key)
+    coarse_field_transform = CoarseTransform(coarse_grid, coarse_key)
+
+    with self.subTest('conservation_applied'):
+      transform = transforms.WithConservation(
+          prediction_transform=prediction_transform,
+          coarse_field_transform=coarse_field_transform,
+          coarse_grid=coarse_grid,
+          hres_grid=hres_grid,
+          hres_key=hres_key,
+          coarse_key=coarse_key,
+          epsilon=1e-9,
+      )
+      outputs = transform({})
+      conserved_hres_field = outputs[hres_key]
+      # check that conserved_hres_field downscaled equals coarse field.
+      regrid_to_coarse = transforms.Regrid(
+          regridder=interpolators.ConservativeRegridder(coarse_grid)
+      )
+      downscaled_conserved_hres = regrid_to_coarse(
+          {hres_key: conserved_hres_field}
+      )[hres_key]
+      expected_coarse = coarse_field_transform({})[coarse_key]
+      chex.assert_trees_all_close(
+          downscaled_conserved_hres, expected_coarse, atol=1e-5
+      )
+
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

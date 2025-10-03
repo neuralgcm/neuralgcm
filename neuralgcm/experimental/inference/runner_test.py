@@ -51,7 +51,7 @@ class MockForecastSystem(api.ForecastSystem):
       dynamic_inputs: typing.Observation | None = None,
       rng: typing.PRNGKeyArray | None = None,
       initial_state: typing.ModelState | None = None,
-  ) -> typing.Prognostics:
+  ) -> typing.PrognosticsDict:
     state = jax.tree.map(
         # TODO(shoyer): create a .isel() method on Field?
         cx.cmap(lambda x: x[-1]),
@@ -64,8 +64,8 @@ class MockForecastSystem(api.ForecastSystem):
     return state
 
   def advance_prognostics(
-      self, prognostics: typing.Prognostics
-  ) -> typing.Prognostics:
+      self, prognostics: typing.PrognosticsDict
+  ) -> typing.PrognosticsDict:
     prognostics = prognostics.copy()
     time = prognostics.pop('time')
     sliced_inputs = self.dynamic_input_slice(time)
@@ -76,7 +76,7 @@ class MockForecastSystem(api.ForecastSystem):
     return next_prognostics
 
   def observe_from_prognostics(
-      self, prognostics: typing.Prognostics, query: typing.Query
+      self, prognostics: typing.PrognosticsDict, query: typing.Query
   ) -> typing.Observation:
     return {
         'state': {k: v for k, v in prognostics.items() if k in query['state']}

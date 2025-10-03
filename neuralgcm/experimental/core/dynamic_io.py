@@ -15,7 +15,6 @@
 """API for providing dynamic inputs to NeuralGCM models."""
 
 import abc
-import functools
 
 import coordax as cx
 from flax import nnx
@@ -27,8 +26,7 @@ from neuralgcm.experimental.core import typing
 import numpy as np
 
 
-class DynamicInputValue(nnx.Intermediate):
-  ...
+DynamicInput = typing.DynamicInput
 
 
 class DynamicInputModule(nnx.Module, abc.ABC):
@@ -37,10 +35,6 @@ class DynamicInputModule(nnx.Module, abc.ABC):
   @abc.abstractmethod
   def update_dynamic_inputs(self, dynamic_inputs):
     """Ingests relevant data from `dynamic_inputs` onto the internal state."""
-    raise NotImplementedError()
-
-  @abc.abstractmethod
-  def output_shapes(self) -> typing.Pytree:
     raise NotImplementedError()
 
   @abc.abstractmethod
@@ -61,16 +55,21 @@ class DynamicInputSlice(DynamicInputModule):
     self.keys_to_coords = keys_to_coords
     self.observation_key = observation_key
     self.time_axis = time_axis
-    self.time = DynamicInputValue(jdt.to_datetime('1970-01-01T00')[np.newaxis])
     mock_dt = coordinates.TimeDelta(np.array([np.timedelta64(1, 'h')]))
+    self.time = DynamicInput(
+        cx.wrap(jdt.to_datetime('1970-01-01T00')[np.newaxis], mock_dt)
+    )
     dummy_data = {}
     for k, v in self.keys_to_coords.items():
       value = jnp.nan * jnp.zeros(mock_dt.shape + v.shape)
       dummy_data[k] = cx.wrap(value, mock_dt, v)
-    self.data = DynamicInputValue(dummy_data)
+    self.data = DynamicInput(dummy_data)
 
-  def update_dynamic_inputs(self, dynamic_inputs):
+  def update_dynamic_inputs(
+      self, dynamic_inputs: dict[str, dict[str, cx.Field]]
+  ) -> None:
     if self.observation_key not in dynamic_inputs:
+      # TODO(dkochkov): Consider allowing partial updates.
       raise ValueError(
           f'Observation key {self.observation_key!r} not found in dynamic'
           f' inputs: {dynamic_inputs.keys()}'
@@ -82,18 +81,22 @@ class DynamicInputSlice(DynamicInputModule):
           f" required 'time' variable: {inputs.keys()}"
       )
     time = inputs['time']
-    if time.ndim != 1 or time.dims[0] != 'timedelta':
-      raise ValueError(f'Expected time to be 1D timedelta, got {time.dims=}')
-    self.time.value = time.data
+    self.time.value = time
     data_dict = {}
-    for k, expected_coord in self.keys_to_coords.items():
+    for k in self.keys_to_coords:
       if k not in inputs:
-        raise ValueError(f'Key {k!r} not found in dynamic inputs: {inputs.keys()}')
+        # TODO(dkochkov): Consider allowing partial updates.
+        raise ValueError(
+            f'Key {k!r} not found in dynamic inputs: {inputs.keys()}'
+        )
       v = inputs[k]
       if v.axes.get('timedelta', None) != time.axes['timedelta']:
         raise ValueError(f'{v.axes=} does not contain {time.axes=}.')
       data_coord = cx.compose_coordinates(
           *[v.axes[d] for d in v.dims if d != 'timedelta']
+      )
+      expected_coord = cx.compose_coordinates(
+          *[self.data.value[k].axes[d] for d in v.dims if d != 'timedelta']
       )
       if data_coord != expected_coord:
         raise ValueError(
@@ -103,26 +106,25 @@ class DynamicInputSlice(DynamicInputModule):
       data_dict[k] = v
     self.data.value = data_dict
 
-  def output_shapes(self) -> typing.Pytree:
-    return {
-        k: typing.ShapeFloatStruct(coord.shape)
-        for k, coord in self.keys_to_coords.items()
-    }
+  def _slice_data_at_time(
+      self,
+      time: typing.Array,
+      available_time: typing.Array,
+      array: typing.Array,
+  ) -> typing.Array:
+    """Returns slice of array ."""
+    time_indices = jnp.arange(available_time.size)
+    approx_index = jdt.interp(time, available_time, time_indices)
+    # TODO(shoyer): switch to jnp.floor?
+    index = jnp.round(approx_index).astype(int)
+    return jax.lax.dynamic_index_in_dim(array, index, keepdims=False)
 
   def __call__(self, time: cx.Field) -> dict[str, cx.Field]:
     """Returns covariates at the specified time."""
-    time = time.unwrap()
-    time_indices = jnp.arange(self.time.size)
-    approx_index = jdt.interp(time, self.time.value, time_indices)
-    # TODO(shoyer): switch to jnp.floor?
-    index = jnp.round(approx_index).astype(int)
-    field_index_fn = functools.partial(
-        jax.lax.dynamic_index_in_dim,
-        index=index,
-        keepdims=False,
-    )
     outputs = {}
-    for k, v in self.data.value.items():  # pylint: disable=attribute-error
-      out_axes = {k: i for i, k in enumerate(self.keys_to_coords[k].dims)}
-      outputs[k] = cx.cmap(field_index_fn, out_axes)(v.untag('timedelta'))
+    for k, v in self.data.value.items():
+      field_index_fn = cx.cmap(self._slice_data_at_time)
+      outputs[k] = field_index_fn(
+          time, self.time.value.untag('timedelta'), v.untag('timedelta')
+      )
     return outputs

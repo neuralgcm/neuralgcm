@@ -96,19 +96,19 @@ class ForecastSystem(nnx.Module, abc.ABC):
       dynamic_inputs: typing.Observation | None = None,
       rng: typing.PRNGKeyArray | None = None,
       initial_state: typing.ModelState | None = None,
-  ) -> typing.Prognostics:
+  ) -> typing.PrognosticsDict:
     raise NotImplementedError()
 
   @abc.abstractmethod
   def advance_prognostics(
-      self, prognostics: typing.Prognostics
-  ) -> typing.Prognostics:
+      self, prognostics: typing.PrognosticsDict
+  ) -> typing.PrognosticsDict:
     raise NotImplementedError()
 
   @abc.abstractmethod
   def observe_from_prognostics(
       self,
-      prognostics: typing.Prognostics,
+      prognostics: typing.PrognosticsDict,
       query: typing.Query,
       dynamic_inputs: typing.Observation | None = None,
   ) -> typing.Observation:

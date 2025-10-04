@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Types used by neuralgcm.experimental API."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -21,6 +22,7 @@ import functools
 from typing import Any, Callable, Generic, TypeVar
 
 import coordax as cx
+from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import scales
@@ -46,7 +48,7 @@ Quantity = scales.Quantity
 #
 # Main structured API types.
 #
-Prognostics = dict[str, cx.Field]
+PrognosticsDict = dict[str, cx.Field]
 Observation = dict[str, dict[str, cx.Field]]
 Query = dict[str, dict[str, cx.Coordinate | cx.Field]]
 
@@ -59,8 +61,61 @@ PyTreeState = TypeVar('PyTreeState')
 
 
 #
-# Simulation function signatures.
+# Simulation state types, structs and function signatures.
 #
+
+
+class DynamicInput(nnx.Variable):
+  """A class for variables that hold conditioning data for the simulation."""
+
+
+class SimulationVariable(nnx.Variable):
+  """A base class for variables that capture dynamic simulation state."""
+
+
+class Prognostic(SimulationVariable):
+  """Variables that represent the prognostic state of the simulation."""
+
+
+class Diagnostic(SimulationVariable):
+  """Variables that represent the diagnostic state of the simulation."""
+
+
+class Randomness(SimulationVariable):
+  """Variables that represent the random processes state of the simulation."""
+
+
+class Coupling(SimulationVariable):
+  """Variables that represent the coupling state of the simulation."""
+
+
+State = TypeVar('State')
+
+
+@dataclasses.dataclass(frozen=True)
+class SimulationState(Generic[State]):
+  """Simulation state decomposed into prognostic, diagnostic and randomness.
+
+  Attributes:
+    prognostics: Prognostic state of the simulation.
+    diagnostics: Optional diagnostic state of the simulation.
+    randomness: Optional state of random processes in the simulation.
+    extras: Optional additional simulation state variables.
+  """
+
+  prognostics: State
+  diagnostics: State
+  randomness: State
+  extras: dict[str, State] = dataclasses.field(default_factory=dict)
+
+
+jax.tree_util.register_dataclass(
+    SimulationState,
+    data_fields=('prognostics', 'diagnostics', 'randomness', 'extras'),
+    meta_fields=(),
+)
+
+
 StepFn = Callable[[PyTreeState], PyTreeState]
 
 
@@ -81,7 +136,7 @@ class ModelState(Generic[PyTreeState]):
 
 @jax.tree_util.register_pytree_node_class
 @dataclasses.dataclass
-class Randomness:
+class RandomnessTuple:
   """State describing the random process."""
 
   prng_key: jax.Array

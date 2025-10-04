@@ -16,11 +16,12 @@
 
 import functools
 import itertools
-from typing import Sequence
+from typing import overload, Sequence
 
 import coordax as cx
 import jax
 import jax.numpy as jnp
+from neuralgcm.experimental.core import typing
 import numpy as np
 
 
@@ -163,6 +164,91 @@ def split_to_fields(
       k: maybe_tag(splits[i], new_axes[i]).order_as(*c.dims)
       for i, (k, c) in enumerate(targets.items())
   }
+
+
+@overload
+def in_axes_for_coord(
+    inputs: typing.Pytree,
+    coord: cx.Coordinate,
+) -> typing.Pytree:
+  ...
+
+
+@overload
+def in_axes_for_coord(
+    inputs: typing.Pytree,
+    coord: Sequence[cx.Coordinate],
+) -> Sequence[typing.Pytree]:
+  ...
+
+
+def in_axes_for_coord(
+    inputs: typing.Pytree,
+    coord: cx.Coordinate | Sequence[cx.Coordinate],
+) -> typing.Pytree | Sequence[typing.Pytree]:
+  """Returns vmap `in_axes` specs for mapping over `coord` in `inputs`.
+
+  If multiple coordinates are provided, then in_axes are computed for a nested
+  vmap calls, accounting for axes consumed by vmap on the outer coordinates.
+  Any leaves in inputs that are not of Field type will be set for replication.
+
+  Args:
+    inputs: A pytree of fields.
+    coord: A single coordinate or a sequence of coordinates.
+
+  Returns:
+    Per element `in_axes` specs for mapping over `coord` in `inputs`.
+
+  Examples:
+    x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
+    f1 = cx.wrap(np.zeros((3, 4)), x, y)
+    f2 = cx.wrap(np.zeros((4, 3)), y, x)
+    f3 = cx.wrap(np.zeros((4,)), y)
+    inputs = {'a': f1, 'b': (f2, 123, f3)}
+    # in_axes for mapping over x:
+    # in_axes_for_coord(inputs, x) returns {'a': 0, 'b': (1, None, None)}
+    # in_axes for mapping over y:
+    # in_axes_for_coord(inputs, y) returns {'a': 1, 'b': (0, None, 0)}
+  """
+  if isinstance(coord, Sequence):
+    return nest_in_axes(*(in_axes_for_coord(inputs, c) for c in coord))
+  if coord.ndim != 1:
+    raise ValueError(f'idx can be computed only for 1d coord, got {coord}')
+  dim = coord.dims[0]
+  leaves, treedef = jax.tree.flatten(inputs, is_leaf=cx.is_field)
+  indices = [x.named_axes.get(dim) if cx.is_field(x) else None for x in leaves]
+  return jax.tree.unflatten(treedef, indices)
+
+
+def nest_in_axes(*in_axes_to_nest: typing.Pytree) -> tuple[typing.Pytree, ...]:
+  """Computes adjusted `in_axes_to_nest` for a series of nested `vmap` calls."""
+  if not in_axes_to_nest:
+    return ()
+
+  def _validate_in_axes_for_leaf(*original_axes: Sequence[int | None]):
+    non_none_axes = [ax for ax in original_axes if ax is not None]
+    if any(ax < 0 for ax in non_none_axes):
+      raise ValueError(f'Negative axes are not allowed. Got: {original_axes}')
+    if len(set(non_none_axes)) != len(non_none_axes):
+      raise ValueError(
+          'leaf in *in_axes is mapped over the same axis multiple times. '
+          f'Got: {original_axes} '
+      )
+  is_none = lambda x: x is None
+  jax.tree.map(_validate_in_axes_for_leaf, *in_axes_to_nest, is_leaf=is_none)
+
+  def _nest_once(current: typing.Pytree, outer: typing.Pytree) -> typing.Pytree:
+    # shifts if outer index is smaller than current, resulting in a shift.
+    shift_idx = lambda i, o: i if i is None or o is None or i < o else i - 1
+    return jax.tree.map(shift_idx, current, outer, is_leaf=is_none)
+
+  nested_in_axes = [in_axes_to_nest[0]]  # no shifts in outermost vmap.
+  for i in range(1, len(in_axes_to_nest)):
+    adjusted = functools.reduce(  # shift by outer in_axes in reverse order.
+        _nest_once, reversed(in_axes_to_nest[:i]), in_axes_to_nest[i]
+    )
+    nested_in_axes.append(adjusted)
+  return tuple(nested_in_axes)
 
 
 def shape_struct_fields_from_coords(

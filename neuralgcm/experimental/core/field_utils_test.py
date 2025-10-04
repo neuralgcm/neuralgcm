@@ -257,5 +257,99 @@ class UtilsTest(parameterized.TestCase):
     self.assertIsInstance(actual['a'].data, jax.ShapeDtypeStruct)
 
 
+class InAxesUtilTest(parameterized.TestCase):
+  """Tests in_axes utility functions."""
+
+  def test_in_axes_for_coord(self):
+    x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
+    f1 = cx.wrap(np.zeros((3, 4)), x, y)
+    f2 = cx.wrap(np.zeros((4, 3)), y, x)
+    f3 = cx.wrap(np.zeros((4,)), y)
+    inputs = {'a': f1, 'b': (f2, 123, f3)}
+    with self.subTest('map_over_x'):
+      actual = field_utils.in_axes_for_coord(inputs, x)
+      expected = {'a': 0, 'b': (1, None, None)}
+      chex.assert_trees_all_equal(actual, expected)
+    with self.subTest('map_over_y'):
+      actual = field_utils.in_axes_for_coord(inputs, y)
+      expected = {'a': 1, 'b': (0, None, 0)}
+      chex.assert_trees_all_equal(actual, expected)
+
+  def test_in_axes_for_coord_raises_for_non_1d_coord(self):
+    x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
+    f1 = cx.wrap(np.zeros((3, 4)), x, y)
+    xy = cx.compose_coordinates(x, y)
+    with self.assertRaisesRegex(ValueError, 'idx can be computed only for 1d'):
+      field_utils.in_axes_for_coord(f1, xy)
+
+  def test_in_axes_for_coord_with_nesting(self):
+    x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
+    f = {
+        'a': cx.wrap(np.zeros((3, 4)), x, y),
+        'b': cx.wrap(np.zeros((4, 3)), y, x),
+    }
+    actual_outer, actual_inner = field_utils.in_axes_for_coord(f, [x, y])
+    expected_outer = {'a': 0, 'b': 1}
+    expected_inner = {'a': 0, 'b': 0}
+    chex.assert_trees_all_equal(actual_outer, expected_outer)
+    chex.assert_trees_all_equal(actual_inner, expected_inner)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='one_level',
+          in_axes=((0, 1),),
+          expected=((0, 1),),
+      ),
+      dict(
+          testcase_name='two_levels_no_shift',
+          in_axes=((1, 1), (0, 0)),
+          expected=((1, 1), (0, 0)),
+      ),
+      dict(
+          testcase_name='two_levels_with_shift',
+          in_axes=({'a': 0, 'b': 1}, {'a': 1, 'b': 0}),
+          expected=({'a': 0, 'b': 1}, {'a': 0, 'b': 0}),
+      ),
+      dict(
+          testcase_name='three_levels_with_shifts_and_none',
+          in_axes=((1, None, 2), (0, 1, 0), (2, 0, 1)),
+          expected=(
+              (1, None, 2),
+              (0, 1, 0),
+              (0, 0, 0),
+          ),
+      ),
+      dict(
+          testcase_name='two_levels_not_leading_axes',
+          in_axes=((0, 2), (1, 0)),
+          expected=((0, 2), (0, 0)),
+      ),
+      dict(
+          testcase_name='nested_dict_structure',
+          in_axes=({'a': {'b': 0}}, {'a': {'b': 1}}),
+          expected=({'a': {'b': 0}}, {'a': {'b': 0}}),
+      ),
+      dict(
+          testcase_name='repeated_none',
+          in_axes=((None, 0), (None, 1)),
+          expected=((None, 0), (None, 0)),
+      ),
+  )
+  def test_nest_in_axes(self, in_axes, expected):
+    actual = field_utils.nest_in_axes(*in_axes)
+    chex.assert_trees_all_equal(actual, expected)
+
+  def test_nest_in_axes_raises_on_negative_axis(self):
+    with self.assertRaisesRegex(ValueError, 'Negative axes are not allowed'):
+      field_utils.nest_in_axes((-1, 0))
+
+  def test_nest_in_axes_raises_on_repeated_axis(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'leaf in.*is mapped over the same axis multiple times',
+    ):
+      field_utils.nest_in_axes((0, 1), (0, 2))
+
+
 if __name__ == '__main__':
   absltest.main()

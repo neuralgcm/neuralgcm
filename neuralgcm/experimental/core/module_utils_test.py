@@ -169,6 +169,60 @@ class ModuleUtilsTest(parameterized.TestCase):
         module.u_trajectory.coordinate, cx.compose_coordinates(b, u_traj_coords)
     )
 
+  def test_tag_untag_module_state(self):
+    module = MockModule()
+    u_coord = module.u.coordinate
+    u_traj_coord = module.u_trajectory.coordinate
+    b, e = cx.SizedAxis('batch', 3), cx.SizedAxis('ensemble', 2)
+    vectorization_specs = {
+        typing.Prognostic: b,
+        typing.Diagnostic: e,
+        typing.DynamicInput: cx.compose_coordinates(b, e),
+    }
+    module_utils.vectorize_module(module, vectorization_specs)
+    with self.subTest('original_state'):
+      self.assertEqual(module.u_sum.coordinate, e)
+      self.assertEqual(module.u.coordinate, cx.compose_coordinates(b, u_coord))
+      self.assertEqual(
+          module.u_trajectory.coordinate,
+          cx.compose_coordinates(b, e, u_traj_coord),
+      )
+
+    # Untag batch axis
+    pos_b, pos_e = cx.DummyAxis(None, 3), cx.DummyAxis(None, 2)
+    with self.subTest('untag_batch_axis'):
+      module_utils.untag_module_state(module, b, vectorization_specs)
+      self.assertEqual(module.u_sum.coordinate, e)
+      self.assertEqual(
+          module.u.coordinate, cx.compose_coordinates(pos_b, u_coord)
+      )
+      self.assertEqual(
+          module.u_trajectory.coordinate,
+          cx.compose_coordinates(pos_b, e, u_traj_coord),  # None, e, ...
+      )
+      module_utils.tag_module_state(module, b, vectorization_specs)  # retag.
+
+    with self.subTest('untag_ensemble_axis'):
+      module_utils.untag_module_state(module, e, vectorization_specs)
+      self.assertEqual(module.u_sum.coordinate, pos_e)
+      self.assertEqual(
+          module.u.coordinate, cx.compose_coordinates(b, u_coord)  # b, ...
+      )
+      self.assertEqual(
+          module.u_trajectory.coordinate,
+          cx.compose_coordinates(b, pos_e, u_traj_coord),  # b, None, ...;
+      )
+      module_utils.tag_module_state(module, e, vectorization_specs)  # retag.
+
+    with self.subTest('axis_not_in_vectorized_axes'):
+      new_b = cx.LabeledAxis('batch', np.linspace(0, 1, 3))
+      with self.assertRaisesRegex(ValueError, 'not present anywhere in'):
+        module_utils.untag_module_state(module, new_b, vectorization_specs)
+
+      module_utils.untag_module_state(module, b, vectorization_specs)
+      with self.assertRaisesRegex(ValueError, 'not present anywhere in'):
+        module_utils.tag_module_state(module, new_b, vectorization_specs)
+
 
 if __name__ == '__main__':
   config.update('jax_traceback_filtering', 'off')

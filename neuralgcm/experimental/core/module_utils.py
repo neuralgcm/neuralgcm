@@ -17,6 +17,7 @@
 from __future__ import annotations
 import dataclasses
 import functools
+import operator
 from typing import Iterable, NamedTuple, Sequence
 import chex
 import coordax as cx
@@ -119,6 +120,50 @@ def vectorize_module(
         is_leaf=cx.is_field,
     )
     nnx.update(module, k_state)
+
+
+def untag_module_state(
+    module: nnx.Module,
+    coordinate: cx.Coordinate,
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+) -> None:
+  """Untags axes of `coordinate` from the state of the `module`."""
+  vectorized_axes_set = functools.reduce(
+      operator.or_, (set(v.axes) for v in vectorized_axes.values())
+  )
+  if any(ax not in vectorized_axes_set for ax in coordinate.axes):
+    raise ValueError(
+        f'untag_module_state got {coordinate=} with axis that is not present '
+        f'anywhere in {vectorized_axes=}'
+    )
+  for state_filter, coord in vectorized_axes.items():
+    untag_components = [ax for ax in coordinate.axes if ax in coord.axes]
+    if untag_components:
+      untag_axis = cx.compose_coordinates(*untag_components)
+      state_to_untag = nnx.state(module, state_filter)
+      nnx.update(module, cx.untag(state_to_untag, untag_axis))
+
+
+def tag_module_state(
+    module: nnx.Module,
+    coordinate: cx.Coordinate,
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+) -> None:
+  """Tags axes of `coordinate` to the state of the `module`."""
+  vectorized_axes_set = functools.reduce(
+      operator.or_, (set(v.axes) for v in vectorized_axes.values())
+  )
+  if any(ax not in vectorized_axes_set for ax in coordinate.axes):
+    raise ValueError(
+        f'tag_module_state got {coordinate=} with axis that is not present '
+        f'anywhere in {vectorized_axes=}'
+    )
+  for state_filter, coord in vectorized_axes.items():
+    tag_components = [ax for ax in coordinate.axes if ax in coord.axes]
+    if tag_components:
+      tag_axis = cx.compose_coordinates(*tag_components)
+      state_to_untag = nnx.state(module, state_filter)
+      nnx.update(module, cx.tag(state_to_untag, tag_axis))
 
 
 class ModuleAndMethod(NamedTuple):

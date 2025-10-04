@@ -15,12 +15,110 @@
 """Utilities for manipulating and transforming modules."""
 
 from __future__ import annotations
-
 import dataclasses
 import functools
-from typing import Iterable, NamedTuple
-
+from typing import Iterable, NamedTuple, Sequence
+import chex
+import coordax as cx
 from flax import nnx
+import jax
+from neuralgcm.experimental.core import pytree_utils
+from neuralgcm.experimental.core import typing
+
+
+def ensure_unchanged_state_structure(
+    method=None, *, excluded_dims: Sequence[str] | None = None
+):
+  """Wraps `method` of a nnx.Module checking that pytree struct is unchanged.
+
+  The check is performed by comparing the coordinate structure of the module
+  state before and after calling the `method`. Coordinates with dimension names
+  in excluded_dims are only checked for existence by squeezing coordinates to
+  size 1. This enables checks on methods where a subset of dimensions may
+  change shape, e.g. updating dynamic state of the model.
+
+  Args:
+    method: The method to wrap. If None, works as a decorator.
+    excluded_dims: Dimensions to exclude from the coordinate structure check.
+
+  Returns:
+    The wrapped method or a decorator.
+  """
+  excluded_dims = excluded_dims or []
+
+  if method is None:
+    return functools.partial(
+        ensure_unchanged_state_structure, excluded_dims=excluded_dims
+    )
+
+  def _get_coord_struct(pytree: typing.Pytree) -> typing.Pytree:
+    is_coord = lambda x: isinstance(x, cx.Coordinate)
+    to_coord = lambda c: c.coordinate if cx.is_field(c) else c
+
+    def squeeze_excluded(c: cx.Coordinate) -> cx.Coordinate:
+      if not is_coord(c):
+        return c
+      axes = [
+          cx.DummyAxis(ax.dims[0], 1) if ax.dims[0] in excluded_dims else ax
+          for ax in c.axes
+      ]
+      return cx.compose_coordinates(*axes)
+
+    field_struct = pytree_utils.shape_structure(pytree)
+    coord_struct = jax.tree.map(to_coord, field_struct, is_leaf=cx.is_field)
+    coord_struct = jax.tree.map(
+        squeeze_excluded, coord_struct, is_leaf=is_coord
+    )
+    return coord_struct
+
+  @functools.wraps(method)
+  def wrapper(module: nnx.Module, *args, **kwargs):
+    if not isinstance(module, nnx.Module):
+      raise TypeError(
+          '`ensure_unchanged_state_structure` must wrap an nnx.Module method'
+      )
+    graph_def_before, state_before = nnx.split(module)
+    state_before = _get_coord_struct(state_before)
+    result = method(module, *args, **kwargs)  # runs the method.
+    graph_def_after, state_after = nnx.split(module)
+    state_after = _get_coord_struct(state_after)
+    if graph_def_after != graph_def_before:
+      raise ValueError(
+          f'GraphDef changed: {graph_def_before=} {graph_def_after=}'
+      )
+    try:
+      chex.assert_trees_all_equal_shapes_and_dtypes(state_before, state_after)
+    except (AssertionError, ValueError) as e:
+      raise ValueError(
+          'change in the pytree structure detected while running'
+          f' "{method.__name__}":\n{e}'
+      ) from e
+    return result
+
+  return wrapper
+
+
+def vectorize_module(
+    module: nnx.Module,
+    vectorization_specs: dict[nnx.filterlib.Filter, cx.Coordinate],
+) -> None:
+  """Vectorizes the state of a `module` in place using `vectorization_specs`."""
+
+  def broadcast(x: cx.Field, coord: cx.Coordinate) -> cx.Field:
+    if not cx.is_field(x):
+      raise ValueError(
+          'module state vectorization requires Field variables, but'
+          f' encountered {type(x)=}'
+      )
+    return x.broadcast_like(cx.compose_coordinates(coord, x.coordinate))
+
+  for k, coord in vectorization_specs.items():
+    k_state = jax.tree.map(
+        functools.partial(broadcast, coord=coord),
+        nnx.state(module, k),
+        is_leaf=cx.is_field,
+    )
+    nnx.update(module, k_state)
 
 
 class ModuleAndMethod(NamedTuple):

@@ -398,6 +398,85 @@ class StateInAxesUtilTest(parameterized.TestCase):
     for k, v in actual_inner.items():
       self.assertEqual(v, expected_inner[k])
 
+
+class VectorizeModuleFnTest(parameterized.TestCase):
+  """Tests vectorize_module_fn transformation."""
+
+  def test_vectorize_fn_no_args_state_update(self):
+    b = cx.SizedAxis('batch', 3)
+    module = MockModule()
+    vector_axes = {typing.Diagnostic: b}
+    module_utils.vectorize_module(module, vector_axes)
+    # u_sum is Diagnostic, starts as 0, vectorized to [0,0,0] over b.
+
+    def update_module_no_arg(module):
+      module.always_preserves_state(cx.wrap(1.0))
+
+    v_fn = module_utils.vectorize_module_fn(
+        update_module_no_arg, vector_axes, b
+    )
+    v_fn(module)
+    expected = cx.wrap(jnp.ones(3), b)
+    chex.assert_trees_all_close(module.u_sum.value, expected)
+
+  def test_vectorize_fn_with_arg_state_update(self):
+    b = cx.SizedAxis('batch', 3)
+    module = MockModule()
+    x = module.x
+    vector_axes = {typing.Prognostic: b}
+    module_utils.vectorize_module(module, vector_axes)
+    # u is Prognostic, starts as zeros(5,), vectorized to zeros(3,5) over b, x.
+
+    def update_module_with_arg(module, u_field):
+      module.preserves_state_if_same_coords(u_field)
+
+    arg = cx.wrap(jnp.arange(b.size), b) * cx.wrap(jnp.ones(x.size), x)
+    v_fn = module_utils.vectorize_module_fn(
+        update_module_with_arg, vector_axes, b
+    )
+    v_fn(module, arg)
+    expected = arg
+    chex.assert_trees_all_close(module.u.value, expected)
+
+  def test_vectorize_fn_with_return_value(self):
+    b = cx.SizedAxis('batch', 3)
+    module = MockModule()
+    vector_axes = {typing.Prognostic: b}
+    module_utils.vectorize_module(module, vector_axes)
+
+    def get_u_plus_arg(module, arg_field):
+      return module.u.value + arg_field
+
+    arg = cx.wrap(jnp.ones((b.size, module.x.size)), b, module.x)
+    v_fn = module_utils.vectorize_module_fn(get_u_plus_arg, vector_axes, b)
+    result = v_fn(module, arg)
+    expected = module.u.value + arg
+    chex.assert_trees_all_close(result, expected)
+
+  def test_vectorize_fn_nested_axes_with_state_update(self):
+    b = cx.SizedAxis('batch', 3)
+    e = cx.SizedAxis('ensemble', 2)
+    module = MockModule()
+    x = module.x
+    vector_axes = {typing.Prognostic: cx.compose_coordinates(e, b)}
+    module_utils.vectorize_module(module, vector_axes)
+    # u is Prognostic, shape (2,3,5), coords (e,b,x)
+
+    def update_module_with_arg(module, u_field):
+      module.preserves_state_if_same_coords(u_field)
+
+    arg_e = cx.wrap(jnp.arange(e.size), e)
+    arg_b = cx.wrap(jnp.arange(b.size), b)
+    arg_x = cx.wrap(jnp.ones(x.size), x)
+    arg = arg_e * arg_b * arg_x  # shape (2,3,5), coords (e,b,x)
+
+    v_fn = module_utils.vectorize_module_fn(
+        update_module_with_arg, vector_axes, [e, b]
+    )
+    v_fn(module, arg)
+    expected = arg
+    chex.assert_trees_all_close(module.u.value, expected)
+
   @parameterized.named_parameters(
       dict(
           testcase_name='one_level',

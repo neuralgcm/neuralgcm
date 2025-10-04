@@ -15,15 +15,18 @@
 """Utilities for manipulating and transforming modules."""
 
 from __future__ import annotations
+
 import dataclasses
 import functools
 import itertools
 import operator
-from typing import Iterable, NamedTuple, Sequence
+from typing import Iterable, NamedTuple, Sequence, overload
+
 import chex
 import coordax as cx
 from flax import nnx
 import jax
+from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
 
@@ -329,6 +332,68 @@ def merge_vectorized_axes(
     merged[...] = combined_ellipsis
 
   return merged
+
+
+@overload
+def state_in_axes_for_coord(
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    coord: cx.Coordinate,
+) -> nnx.StateAxes:
+  ...
+
+
+@overload
+def state_in_axes_for_coord(
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    coord: Sequence[cx.Coordinate],
+) -> Sequence[nnx.StateAxes]:
+  ...
+
+
+def state_in_axes_for_coord(
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    coord: cx.Coordinate | Sequence[cx.Coordinate],
+) -> nnx.StateAxes | Sequence[nnx.StateAxes]:
+  if isinstance(coord, Sequence):
+    return nest_state_in_axes(
+        *(state_in_axes_for_coord(vectorized_axes, c) for c in coord)
+    )
+  dummy = {k: cx.shape_struct_field(v) for k, v in vectorized_axes.items()}
+  axes = {k: field_utils.in_axes_for_coord(v, coord) for k, v in dummy.items()}
+  return nnx.StateAxes(axes)
+
+
+def nest_state_in_axes(
+    *state_axes_to_nest: nnx.StateAxes,
+) -> tuple[nnx.StateAxes, ...]:
+  """Returns `state_axes_to_nest` adjusted for vmap nesting from outer to inner.
+
+  Args:
+    *state_axes_to_nest: A sequence of `nnx.StateAxes` with equal keys
+      representing `vmap` indices from outermost to innermost.
+
+  Returns:
+    A tuple of adjusted `nnx.StateAxes` for each level of `vmap`.
+  """
+  if not state_axes_to_nest:
+    return ()
+
+  state_filters = {tuple(x.keys()) for x in state_axes_to_nest}
+  if len(state_filters) != 1:
+    raise ValueError(
+        f'nesting state_in_axes requires same keys, got {state_filters}'
+    )
+  [state_filters] = list(state_filters)
+  axes_by_filter = {
+      f: tuple(s[f] for s in state_axes_to_nest) for f in state_filters
+  }
+  nested_axes_by_filter = {
+      f: field_utils.nest_in_axes(*trees) for f, trees in axes_by_filter.items()
+  }
+  return tuple(
+      nnx.StateAxes({f: nested_axes_by_filter[f][i] for f in state_filters})
+      for i in range(len(state_axes_to_nest))
+  )
 
 
 class ModuleAndMethod(NamedTuple):

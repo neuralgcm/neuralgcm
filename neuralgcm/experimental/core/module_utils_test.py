@@ -15,6 +15,7 @@
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import chex
 import coordax as cx
 from flax import nnx
 import jax
@@ -331,6 +332,120 @@ class ModuleUtilsTest(parameterized.TestCase):
     spec2 = {(typing.Prognostic, typing.Diagnostic): e}
     with self.assertRaisesRegex(ValueError, 'potentially overlapping filters'):
       module_utils.merge_vectorized_axes(spec1, spec2)
+
+
+class StateInAxesUtilTest(parameterized.TestCase):
+  """Tests in_axes utility functions."""
+
+  def test_state_in_axes_for_coord(self):
+    b, e = cx.SizedAxis('batch', 3), cx.SizedAxis('ensemble', 2)
+    x = cx.SizedAxis('x', 5)
+    vectorized_axes = {
+        typing.Prognostic: cx.compose_coordinates(b, x),
+        typing.Diagnostic: e,
+        typing.DynamicInput: cx.compose_coordinates(b, e, x),
+    }
+    with self.subTest('map_over_b'):
+      actual = module_utils.state_in_axes_for_coord(vectorized_axes, b)
+      expected = nnx.StateAxes({
+          typing.Prognostic: 0,
+          typing.Diagnostic: None,
+          typing.DynamicInput: 0,
+      })
+      chex.assert_trees_all_equal(actual, expected)
+    with self.subTest('map_over_e'):
+      actual = module_utils.state_in_axes_for_coord(vectorized_axes, e)
+      expected = nnx.StateAxes({
+          typing.Prognostic: None,
+          typing.Diagnostic: 0,
+          typing.DynamicInput: 1,
+      })
+      chex.assert_trees_all_equal(actual, expected)
+    with self.subTest('map_over_x'):
+      actual = module_utils.state_in_axes_for_coord(vectorized_axes, x)
+      expected = nnx.StateAxes({
+          typing.Prognostic: 1,
+          typing.Diagnostic: None,
+          typing.DynamicInput: 2,
+      })
+      chex.assert_trees_all_equal(actual, expected)
+
+  def test_state_in_axes_for_coord_with_nesting(self):
+    b, e = cx.SizedAxis('batch', 3), cx.SizedAxis('ensemble', 2)
+    x = cx.SizedAxis('x', 5)
+    vectorized_axes = {
+        typing.Prognostic: cx.compose_coordinates(b, x),
+        typing.Diagnostic: e,
+        typing.DynamicInput: cx.compose_coordinates(b, e, x),
+    }
+    actual_outer, actual_inner = module_utils.state_in_axes_for_coord(
+        vectorized_axes, [b, e]
+    )
+    expected_outer = nnx.StateAxes({
+        typing.Prognostic: 0,
+        typing.Diagnostic: None,
+        typing.DynamicInput: 0,
+    })
+    expected_inner = nnx.StateAxes({
+        typing.Prognostic: None,
+        typing.Diagnostic: 0,
+        typing.DynamicInput: 0,
+    })
+    self.assertEqual(set(actual_outer.keys()), set(expected_outer.keys()))
+    self.assertEqual(set(actual_inner.keys()), set(expected_inner.keys()))
+    for k, v in actual_outer.items():
+      self.assertEqual(v, expected_outer[k])
+    for k, v in actual_inner.items():
+      self.assertEqual(v, expected_inner[k])
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='one_level',
+          in_axes=(nnx.StateAxes({'a': 0, 'b': 1}),),
+          expected_nested=(nnx.StateAxes({'a': 0, 'b': 1}),),
+      ),
+      dict(
+          testcase_name='two_levels_no_shift',
+          in_axes=(
+              nnx.StateAxes({'a': 1, 'b': 1}),
+              nnx.StateAxes({'a': 0, 'b': 0}),
+          ),
+          expected_nested=(
+              nnx.StateAxes({'a': 1, 'b': 1}),
+              nnx.StateAxes({'a': 0, 'b': 0}),
+          ),
+      ),
+      dict(
+          testcase_name='two_levels_with_shift',
+          in_axes=(
+              nnx.StateAxes({typing.Prognostic: 0, typing.Diagnostic: 1}),
+              nnx.StateAxes({typing.Prognostic: 1, typing.Diagnostic: 0}),
+          ),
+          expected_nested=(
+              nnx.StateAxes({typing.Prognostic: 0, typing.Diagnostic: 1}),
+              nnx.StateAxes({typing.Prognostic: 0, typing.Diagnostic: 0}),
+          ),
+      ),
+      dict(
+          testcase_name='three_levels_with_shifts_and_none',
+          in_axes=(
+              nnx.StateAxes({'a': 1, nnx.Param: None, 'c': 2}),
+              nnx.StateAxes({'a': 0, nnx.Param: 1, 'c': 0}),
+              nnx.StateAxes({'a': 2, nnx.Param: 0, 'c': 1}),
+          ),
+          expected_nested=(
+              nnx.StateAxes({'a': 1, nnx.Param: None, 'c': 2}),
+              nnx.StateAxes({'a': 0, nnx.Param: 1, 'c': 0}),
+              nnx.StateAxes({'a': 0, nnx.Param: 0, 'c': 0}),
+          ),
+      ),
+  )
+  def test_nest_state_in_axes(self, in_axes, expected_nested):
+    nested_in_axes = module_utils.nest_state_in_axes(*in_axes)
+    for actual, expected in zip(nested_in_axes, expected_nested):
+      self.assertEqual(set(actual.keys()), set(expected.keys()))
+      for k, v in actual.items():
+        self.assertEqual(v, expected[k])
 
 
 if __name__ == '__main__':

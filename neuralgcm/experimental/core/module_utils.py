@@ -17,6 +17,7 @@
 from __future__ import annotations
 import dataclasses
 import functools
+import itertools
 import operator
 from typing import Iterable, NamedTuple, Sequence
 import chex
@@ -164,6 +165,170 @@ def tag_module_state(
       tag_axis = cx.compose_coordinates(*tag_components)
       state_to_untag = nnx.state(module, state_filter)
       nnx.update(module, cx.tag(state_to_untag, tag_axis))
+
+
+def _are_certainly_disjoint_predicates(
+    p1: nnx.Predicate, p2: nnx.Predicate
+) -> bool:
+  """Returns True if we can guarantee that two predicates are disjoint."""
+  # Note this implementation assumes deconstruction of p1, some cases can be
+  # handled by considering disjointness of (p2, p1).
+  if isinstance(p1, nnx.filterlib.Nothing):  # Handle Nothing.
+    return True
+
+  if isinstance(p1, nnx.filterlib.Everything):  # Handle Everything.
+    return isinstance(p2, nnx.filterlib.Nothing)
+
+  if isinstance(p1, nnx.filterlib.Not):  # Handle Not.
+    if p1.predicate == p2:
+      return True
+
+  if isinstance(p1, nnx.filterlib.Any):  # Handle Any.
+    return all(
+        _are_certainly_disjoint_filters(sub_p, p2) for sub_p in p1.predicates
+    )
+
+  if isinstance(p1, nnx.filterlib.All):  # Handle All
+    return any(
+        _are_certainly_disjoint_filters(sub_p, p2) for sub_p in p1.predicates
+    )
+
+  if isinstance(p1, nnx.filterlib.OfType):
+    if isinstance(p2, nnx.filterlib.OfType):
+      t1, t2 = p1.type, p2.type  # check if filters are in subclass relation.
+      if not issubclass(t1, t2) and not issubclass(t2, t1):
+        return True
+
+  if isinstance(p1, nnx.filterlib.WithTag):  # Handle WithTag.
+    if isinstance(p2, nnx.filterlib.WithTag):
+      if p1.tag != p2.tag:
+        return True
+  # Other cases are hard to check, so we conservatively return False.
+  return False
+
+
+def _is_certainly_subset_predicate(
+    p1: nnx.Predicate, p2: nnx.Predicate
+) -> bool:
+  """Returns True if we can guarantee that p1 is a subset of p2."""
+  if isinstance(p2, nnx.filterlib.Everything):
+    return True
+  if isinstance(p1, nnx.filterlib.Nothing):
+    return True
+  if p1 == p2:
+    return True
+
+  if isinstance(p1, nnx.filterlib.OfType) and isinstance(
+      p2, nnx.filterlib.OfType
+  ):
+    if issubclass(p1.type, p2.type):
+      return True
+
+  if isinstance(p1, nnx.filterlib.Any):
+    return all(
+        _is_certainly_subset_predicate(sub_p, p2) for sub_p in p1.predicates
+    )
+
+  if isinstance(p2, nnx.filterlib.Any):
+    return any(
+        _is_certainly_subset_predicate(p1, sub_p) for sub_p in p2.predicates
+    )
+
+  if isinstance(p1, nnx.filterlib.All):
+    return any(
+        _is_certainly_subset_predicate(sub_p, p2) for sub_p in p1.predicates
+    )
+
+  if isinstance(p2, nnx.filterlib.All):
+    return all(
+        _is_certainly_subset_predicate(p1, sub_p) for sub_p in p2.predicates
+    )
+
+  if isinstance(p1, nnx.filterlib.Not) and isinstance(p2, nnx.filterlib.Not):
+    return _is_certainly_subset_predicate(p2.predicate, p1.predicate)
+
+  return False
+
+
+def _are_certainly_disjoint_filters(
+    filter_a: nnx.filterlib.Filter, filter_b: nnx.filterlib.Filter
+) -> bool:
+  """Returns True if two filters can be guaranteed to be disjoint.
+
+  Two filters are disjoint if there is no variable that can be matched by both.
+  This function provides a best-effort check based on the filter types.
+  It cannot prove disjointness for arbitrary callable filters.
+
+  Args:
+    filter_a: The first filter.
+    filter_b: The second filter.
+
+  Returns:
+    True if the check determines that the filters are disjoint, False otherwise.
+  """
+  p1 = nnx.filterlib.to_predicate(filter_a)
+  p2 = nnx.filterlib.to_predicate(filter_b)
+  ab_direction_disjoint = _are_certainly_disjoint_predicates(p1, p2)
+  ba_direction_disjoint = _are_certainly_disjoint_predicates(p2, p1)
+  return ab_direction_disjoint or ba_direction_disjoint
+
+
+def is_filter_subset(
+    f: nnx.filterlib.Filter, filter_group: nnx.filterlib.Filter
+) -> bool:
+  """Returns True if `f` can be guaranteed to be a subset of `filter_group`."""
+  p1 = nnx.filterlib.to_predicate(f)
+  p2 = nnx.filterlib.to_predicate(filter_group)
+  return _is_certainly_subset_predicate(p1, p2)
+
+
+def merge_vectorized_axes(
+    vectorized_axes_head: dict[nnx.filterlib.Filter, cx.Coordinate],
+    vectorized_axes_tail: dict[nnx.filterlib.Filter, cx.Coordinate],
+) -> dict[nnx.filterlib.Filter, cx.Coordinate]:
+  """Returns merged vectorized axes with head specifying leading dimensions."""
+  head = vectorized_axes_head.copy()
+  tail = vectorized_axes_tail.copy()
+  head_ellipsis_axes = head.pop(..., cx.Scalar())
+  tail_ellipsis_axes = tail.pop(..., cx.Scalar())
+  # Split keys into common and differences
+  head_keys = set(head.keys())
+  tail_keys = set(tail.keys())
+  common_keys = head_keys.intersection(tail_keys)
+  diff_head_keys = head_keys.difference(tail_keys)
+  diff_tail_keys = tail_keys.difference(head_keys)
+  merged = {k: cx.compose_coordinates(head[k], tail[k]) for k in common_keys}
+  diff_head = {
+      k: cx.compose_coordinates(head[k], tail_ellipsis_axes)
+      for k in diff_head_keys
+  }
+  diff_tail = {
+      k: cx.compose_coordinates(head_ellipsis_axes, tail[k])
+      for k in diff_tail_keys
+  }
+  if not all(
+      _are_certainly_disjoint_filters(k1, k2)
+      for k1, k2 in itertools.product(diff_head_keys, diff_tail_keys)
+  ):
+    potentially_overlapping = next(
+        (k1, k2)
+        for k1, k2 in itertools.product(diff_head_keys, diff_tail_keys)
+        if not _are_certainly_disjoint_filters(k1, k2)
+    )
+    raise ValueError(
+        'Cannot merge vectorized axes with potentially overlapping filters: '
+        f'{potentially_overlapping[0]!r} and {potentially_overlapping[1]!r}.'
+    )
+  merged.update(diff_head)
+  merged.update(diff_tail)
+  combined_ellipsis = cx.compose_coordinates(
+      head_ellipsis_axes, tail_ellipsis_axes
+  )
+  # Add ellipsis back if we had it in either set of filters.
+  if ... in vectorized_axes_head or ... in vectorized_axes_tail:
+    merged[...] = combined_ellipsis
+
+  return merged
 
 
 class ModuleAndMethod(NamedTuple):

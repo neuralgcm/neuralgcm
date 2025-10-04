@@ -17,6 +17,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import coordax as cx
 from flax import nnx
+import jax
 from jax import config  # pylint: disable=g-importing-member
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
@@ -222,6 +223,114 @@ class ModuleUtilsTest(parameterized.TestCase):
       module_utils.untag_module_state(module, b, vectorization_specs)
       with self.assertRaisesRegex(ValueError, 'not present anywhere in'):
         module_utils.tag_module_state(module, new_b, vectorization_specs)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='disjoint_filters',
+          specs_list=[
+              {typing.Prognostic: cx.SizedAxis('batch', 3)},
+              {typing.Diagnostic: cx.SizedAxis('ensemble', 2)},
+          ],
+      ),
+      dict(
+          testcase_name='overlapping_filters',
+          specs_list=[
+              {typing.Prognostic: cx.SizedAxis('batch', 3)},
+              {typing.Prognostic: cx.SizedAxis('ensemble', 2)},
+          ],
+      ),
+      dict(
+          testcase_name='overlapping_filters_with_addition',
+          specs_list=[
+              {typing.Prognostic: cx.SizedAxis('batch', 3)},
+              {
+                  typing.Prognostic: cx.SizedAxis('ensemble', 2),
+                  typing.Diagnostic: cx.SizedAxis('ensemble', 2),
+              },
+          ],
+      ),
+      dict(
+          testcase_name='filters_with_mixed_vectorization',
+          specs_list=[
+              {
+                  typing.Prognostic: cx.compose_coordinates(
+                      cx.SizedAxis('batch', 3), cx.SizedAxis('forcing', 4)
+                  ),
+                  typing.DynamicInput: cx.SizedAxis('forcing', 4),
+              },
+              {
+                  typing.Prognostic: cx.SizedAxis('ensemble', 2),
+                  typing.DynamicInput: cx.SizedAxis('ensemble', 2),
+              },
+          ],
+      ),
+      dict(
+          testcase_name='with_ellipsis',
+          specs_list=[
+              {typing.Prognostic: cx.SizedAxis('batch', 3)},
+              {...: cx.SizedAxis('ensemble', 2)},
+          ],
+      ),
+  )
+  def test_merge_vectorized_axes_tracks_vectorization(self, specs_list):
+    module = MockModule()
+    orig_module = MockModule()
+    vector_axes = {}
+    for spec in specs_list:
+      module_utils.vectorize_module(module, spec)
+      vector_axes = module_utils.merge_vectorized_axes(spec, vector_axes)
+      self._check_vectorized_axes_align(vector_axes, module, orig_module)
+
+  def _check_vectorized_axes_align(
+      self, vector_axes, vectorized_module, original_module
+  ):
+    original_states = nnx.state(original_module, *vector_axes.keys())
+    vector_states = nnx.state(vectorized_module, *vector_axes.keys())
+    if len(vector_axes) == 1:
+      vector_states = [vector_states]
+      original_states = [original_states]
+    state_and_axes = zip(original_states, vector_states, vector_axes.values())
+    for original_state, vector_state, axes in state_and_axes:
+      original_leaves = jax.tree.leaves(original_state, is_leaf=cx.is_field)
+      vector_leaves = jax.tree.leaves(vector_state, is_leaf=cx.is_field)
+      for v_field, field in zip(vector_leaves, original_leaves):
+        self.assertEqual(
+            cx.compose_coordinates(axes, field.coordinate),
+            v_field.coordinate,
+        )
+
+  def test_merge_vectorized_axes_with_overlap_and_difference(self):
+    b = cx.SizedAxis('batch', 3)
+    e = cx.SizedAxis('ensemble', 2)
+    spec1 = {typing.Prognostic: b, typing.DynamicInput: b}
+    spec2 = {typing.Prognostic: e}
+    actual = module_utils.merge_vectorized_axes(spec1, spec2)
+    expected = {
+        typing.Prognostic: cx.compose_coordinates(b, e),
+        typing.DynamicInput: b,
+    }
+    self.assertEqual(actual, expected)
+
+  def test_merge_vectorized_axes_with_ellipsis(self):
+    b = cx.SizedAxis('batch', 3)
+    e = cx.SizedAxis('ensemble', 2)
+    spec1 = {typing.Prognostic: b, typing.DynamicInput: b}
+    spec2 = {typing.DynamicInput: cx.Scalar(), ...: e}
+    actual = module_utils.merge_vectorized_axes(spec1, spec2)
+    expected = {
+        typing.Prognostic: cx.compose_coordinates(b, e),
+        typing.DynamicInput: b,
+        ...: e,
+    }
+    self.assertEqual(actual, expected)
+
+  def test_merge_vectorized_axes_raises_error(self):
+    b = cx.SizedAxis('batch', 3)
+    e = cx.SizedAxis('ensemble', 2)
+    spec1 = {typing.Prognostic: b}
+    spec2 = {(typing.Prognostic, typing.Diagnostic): e}
+    with self.assertRaisesRegex(ValueError, 'potentially overlapping filters'):
+      module_utils.merge_vectorized_axes(spec1, spec2)
 
 
 if __name__ == '__main__':

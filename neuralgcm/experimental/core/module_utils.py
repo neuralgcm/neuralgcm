@@ -15,15 +15,18 @@
 """Utilities for manipulating and transforming modules."""
 
 from __future__ import annotations
+
 import dataclasses
 import functools
 import itertools
 import operator
-from typing import Iterable, NamedTuple, Sequence
+from typing import Any, Callable, Iterable, NamedTuple, Sequence, overload
+
 import chex
 import coordax as cx
 from flax import nnx
 import jax
+from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
 
@@ -329,6 +332,140 @@ def merge_vectorized_axes(
     merged[...] = combined_ellipsis
 
   return merged
+
+
+@overload
+def state_in_axes_for_coord(
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    coord: cx.Coordinate,
+) -> nnx.StateAxes:
+  ...
+
+
+@overload
+def state_in_axes_for_coord(
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    coord: Sequence[cx.Coordinate],
+) -> Sequence[nnx.StateAxes]:
+  ...
+
+
+def state_in_axes_for_coord(
+    vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    coord: cx.Coordinate | Sequence[cx.Coordinate],
+) -> nnx.StateAxes | Sequence[nnx.StateAxes]:
+  if isinstance(coord, Sequence):
+    return nest_state_in_axes(
+        *(state_in_axes_for_coord(vectorized_axes, c) for c in coord)
+    )
+  dummy = {k: cx.shape_struct_field(v) for k, v in vectorized_axes.items()}
+  axes = {k: field_utils.in_axes_for_coord(v, coord) for k, v in dummy.items()}
+  return nnx.StateAxes(axes)
+
+
+def nest_state_in_axes(
+    *state_axes_to_nest: nnx.StateAxes,
+) -> tuple[nnx.StateAxes, ...]:
+  """Returns `state_axes_to_nest` adjusted for vmap nesting from outer to inner.
+
+  Args:
+    *state_axes_to_nest: A sequence of `nnx.StateAxes` with equal keys
+      representing `vmap` indices from outermost to innermost.
+
+  Returns:
+    A tuple of adjusted `nnx.StateAxes` for each level of `vmap`.
+  """
+  if not state_axes_to_nest:
+    return ()
+
+  state_filters = {tuple(x.keys()) for x in state_axes_to_nest}
+  if len(state_filters) != 1:
+    raise ValueError(
+        f'nesting state_in_axes requires same keys, got {state_filters}'
+    )
+  [state_filters] = list(state_filters)
+  axes_by_filter = {
+      f: tuple(s[f] for s in state_axes_to_nest) for f in state_filters
+  }
+  nested_axes_by_filter = {
+      f: field_utils.nest_in_axes(*trees) for f, trees in axes_by_filter.items()
+  }
+  return tuple(
+      nnx.StateAxes({f: nested_axes_by_filter[f][i] for f in state_filters})
+      for i in range(len(state_axes_to_nest))
+  )
+
+
+def vectorize_module_fn(
+    fn: Callable[..., Any],
+    vector_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    axes_to_vectorize: cx.Coordinate | Sequence[cx.Coordinate],
+) -> Callable[..., Any]:
+  """Returns a wrapped `fn` that vectorizes `fn` over `axes_to_vectorize`.
+
+  This helper generalizes the process of applying `nnx.vmap` over a function
+  that accepts a module and a variable number of arguments. It correctly
+  constructs the `in_axes` for the module and each argument, nests the `vmap`
+  transformations, and handles the necessary tagging and untagging of inputs
+  and outputs.
+
+  Args:
+      fn: The function to vectorize, must have signature `fn(module, *args)`.
+      vector_axes: A dictionary describing how module state is vectorized.
+      axes_to_vectorize: A single coordinate or a sequence of coordinates
+        representing the axes to vectorize `fn` over.
+
+  Returns:
+      A wrapped function that applies vectorization.
+  """
+
+  @functools.wraps(fn)
+  def wrapped_fn(module: nnx.Module, *args: Any) -> Any:
+    """Wrapped function that applies vectorization."""
+    if not axes_to_vectorize:
+      return fn(module, *args)
+
+    if isinstance(axes_to_vectorize, Sequence):
+      axes_seq = axes_to_vectorize
+    elif isinstance(axes_to_vectorize, cx.Coordinate):
+      axes_seq = axes_to_vectorize.axes
+    else:
+      raise ValueError(
+          f'Unsupported type for `axes_to_vectorize`: {type(axes_to_vectorize)}'
+      )
+
+    # Calculate nested axes for the module state and args.
+    map_vector_axes = vector_axes.copy()
+    if ... not in map_vector_axes:
+      map_vector_axes[...] = cx.Scalar()  # Replicate non-vectorized state.
+    nested_model_axes = state_in_axes_for_coord(map_vector_axes, axes_seq)
+    nested_args_axes_list = [
+        field_utils.in_axes_for_coord(arg, axes_seq)
+        for arg in args
+    ]
+    vmap_levels_axes = zip(
+        reversed(nested_model_axes),
+        *(reversed(arg_axes) for arg_axes in nested_args_axes_list),
+    )
+
+    vmapped_fn = fn
+    for state_axes, *current_args_axes in vmap_levels_axes:
+      # `in_axes` is a tuple where the first element corresponds to the module's
+      # state and the rest correspond to the `*args`.
+      in_axes = (state_axes, *current_args_axes)
+      vmapped_fn = nnx.vmap(vmapped_fn, in_axes=in_axes)
+
+    coord = cx.compose_coordinates(*axes_seq)
+    untagged_args = [cx.untag(arg, coord) for arg in args]
+    untag_module_state(module, coord, vector_axes)
+    result = vmapped_fn(module, *untagged_args)
+    tag_module_state(module, coord, vector_axes)
+    if result is not None:
+      result = cx.tag(result, coord)
+
+    return result
+
+  return wrapped_fn
 
 
 class ModuleAndMethod(NamedTuple):

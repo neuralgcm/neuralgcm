@@ -23,17 +23,16 @@ from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 
 
-class DiagnosticValue(nnx.Intermediate):
-  """Variable type in which diagnostic values are stored."""
+Diagnostic = typing.Diagnostic
 
 
 @nnx_compat.dataclass
 class DiagnosticModule(nnx.Module):
   """Base API for diagnostic modules."""
 
-  def format_diagnostics(self) -> typing.Pytree:
+  def diagnostic_values(self) -> typing.Pytree:
     """Returns formatted diagnostics computed from the internal module state."""
-    raise NotImplementedError(f'`format_diagnostics` on {self.__name__=}.')
+    raise NotImplementedError(f'`diagnostic_values` on {self.__name__=}.')
 
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
@@ -68,27 +67,23 @@ class CumulativeDiagnostic(DiagnosticModule):
 
   def __post_init__(self):
     self.cumulatives = {
-        k: DiagnosticValue(jnp.zeros(v.shape))
-        for k, v in self.extract_coords.items()
+        k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+        for k, c in self.extract_coords.items()
     }
 
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
     for k, v in self.cumulatives.items():
-      self.cumulatives[k].value = jnp.zeros_like(v)
+      v = v.value  # get the underlying Field.
+      self.cumulatives[k].value = cx.wrap_like(jnp.zeros(v.shape), v)
 
-  def format_diagnostics(self) -> typing.Pytree:
-    # TODO(dkochkov): remove time arg, it is no longer used.
-    return {
-        k: cx.wrap(v.value, self.extract_coords[k])
-        for k, v in self.cumulatives.items()
-    }
+  def diagnostic_values(self) -> typing.Pytree:
+    return {k: v.value for k, v in self.cumulatives.items()}
 
   def __call__(self, inputs, *args, **kwargs):
-    diagnostic_values = self.extract(inputs, *args, **kwargs)
-    for k, v in diagnostic_values.items():
-      # TODO(dkochkov): consider storing values as Field type.
-      self.cumulatives[k].value += v.data
+    diagnostics = self.extract(inputs, *args, **kwargs)
+    for k, v in diagnostics.items():
+      self.cumulatives[k].value += v
 
 
 @nnx_compat.dataclass
@@ -100,27 +95,23 @@ class InstantDiagnostic(DiagnosticModule):
 
   def __post_init__(self):
     self.instants = {
-        k: DiagnosticValue(jnp.zeros(v.shape))
-        for k, v in self.extract_coords.items()
+        k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+        for k, c in self.extract_coords.items()
     }
 
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
     for k, v in self.instants.items():
-      self.instants[k].value = jnp.zeros_like(v)
+      v = v.value  # get the underlying Field.
+      self.instants[k].value = cx.wrap_like(jnp.zeros(v.shape), v)
 
-  def format_diagnostics(self) -> typing.Pytree:
-    # TODO(dkochkov): remove time arg, it is no longer used.
-    return {
-        k: cx.wrap(v.value, self.extract_coords[k])
-        for k, v in self.instants.items()
-    }
+  def diagnostic_values(self) -> typing.Pytree:
+    return {k: v.value for k, v in self.instants.items()}
 
   def __call__(self, inputs, *args, **kwargs):
-    diagnostic_values = self.extract(inputs, *args, **kwargs)
-    for k, v in diagnostic_values.items():
-      # TODO(dkochkov): consider storing values as Field type.
-      self.instants[k].value = v.data
+    diagnostics = self.extract(inputs, *args, **kwargs)
+    for k, v in diagnostics.items():
+      self.instants[k].value = v
 
 
 @nnx_compat.dataclass
@@ -128,7 +119,7 @@ class IntervalDiagnostic(DiagnosticModule):
   """Diagnostic that tracks interval value of a dictionary of fields.
 
   This diagnostic keeps track of several lagged cumulative values to output
-  values accumulated over intervals of length `interval_length`. It requires
+  values accumulated over intervals specified by `interval_axis`. It requires
   an explicit call to `next_interval` to increment the interval index, allowing
   it to be called at a user-defined frequency. This implementation does not
   avoid potential loss of numerical precision due to cumulative sum.
@@ -136,72 +127,76 @@ class IntervalDiagnostic(DiagnosticModule):
   Attributes:
     extract: callable that computes diagnostic values.
     extract_coords: coordinates for each of the diagnostic fields.
-    interval_length: length of the interval to track.
+    interval_axis: coordinate axis for the interval dimension.
     include_instant: whether to include the instant value of the diagnostic
       fields.
   """
 
   extract: Extract
   extract_coords: dict[str, cx.Coordinate]
-  interval_length: int
+  interval_axis: cx.Coordinate
   include_instant: bool = False
   # TODO(jianingfang): see if there a better way to handle include_instant.
 
   def __post_init__(self):
-    self.interval_values = {
-        k: DiagnosticValue(jnp.zeros(((self.interval_length,) + v.shape)))
-        for k, v in self.extract_coords.items()
+    if self.interval_axis.ndim != 1:
+      raise ValueError(
+          f'interval_axis must be a 1D coordinate, but got {self.interval_axis}'
+      )
+    i_ax = self.interval_axis
+    self.lagged_cumulatives = {
+        k: Diagnostic(cx.wrap(jnp.zeros(i_ax.shape + c.shape), i_ax, c))
+        for k, c in self.extract_coords.items()
     }
     self.cumulative = {
-        k: DiagnosticValue(jnp.zeros(v.shape))
-        for k, v in self.extract_coords.items()
+        k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+        for k, c in self.extract_coords.items()
     }
     if self.include_instant:
       self.instants = {
-          k: DiagnosticValue(jnp.zeros(v.shape))
-          for k, v in self.extract_coords.items()
+          k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+          for k, c in self.extract_coords.items()
       }
 
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
+    zeros_like = lambda v: cx.wrap_like(jnp.zeros(v.value.shape), v.value)
     for k in self.extract_coords:
-      self.interval_values[k].value = jnp.zeros_like(self.interval_values[k])
-      self.cumulative[k].value = jnp.zeros_like(self.cumulative[k])
+      self.lagged_cumulatives[k].value = zeros_like(self.lagged_cumulatives[k])
+      self.cumulative[k].value = zeros_like(self.cumulative[k])
       if self.include_instant:
-        self.instants[k].value = jnp.zeros_like(self.instants[k])
+        self.instants[k].value = zeros_like(self.instants[k])
 
   def next_interval(self, inputs, *args, **kwargs):
-    del inputs, args, kwargs
-    for k, v in self.interval_values.items():
-      self.interval_values[k].value = jnp.concat([
-          jnp.roll(v.value, -1, axis=0)[:-1],
-          self.cumulative[k].value[jnp.newaxis],
-      ])
+    del inputs, args, kwargs  # unused.
+    update_lagged = lambda intervals, cumulative: jnp.concat([
+        jnp.roll(intervals, -1, axis=0)[:-1],
+        cumulative[jnp.newaxis],
+    ])
+    for k, v in self.lagged_cumulatives.items():
+      state_coord, i_ax = self.extract_coords[k], self.interval_axis
+      current = v.value.untag(i_ax, state_coord)
+      cumulative = self.cumulative[k].value.untag(state_coord)
+      updated = cx.cmap(update_lagged, out_axes=current.named_axes)(
+          current, cumulative
+      )
+      self.lagged_cumulatives[k].value = updated.tag(i_ax, state_coord)
 
-  def format_diagnostics(self) -> typing.Pytree:
-    # TODO(dkochkov): remove time arg, it is no longer used.
+  def diagnostic_values(self) -> typing.Pytree:
+    values = {}
+    for k, v in self.lagged_cumulatives.items():
+      cumulative = self.cumulative[k].value
+      lagged = v.value.untag(self.interval_axis)
+      oldest_lagged = cx.cmap(lambda x: x[0], cumulative.named_axes)(lagged)
+      values[k] = cumulative - oldest_lagged
     if self.include_instant:
-      return {
-          k: cx.wrap(
-              self.cumulative[k].value - v.value[0], self.extract_coords[k]
-          )
-          for k, v in self.interval_values.items()
-      } | {
-          k + '_instant': cx.wrap(v.value, self.extract_coords[k])
-          for k, v in self.instants.items()
-      }
-    else:
-      return {
-          k: cx.wrap(
-              self.cumulative[k].value - v.value[0], self.extract_coords[k]
-          )
-          for k, v in self.interval_values.items()
-      }
+      for k, v in self.instants.items():
+        values[k + '_instant'] = v.value
+    return values
 
   def __call__(self, inputs, *args, **kwargs):
-    diagnostic_values = self.extract(inputs, *args, **kwargs)
-    for k, v in diagnostic_values.items():
-      # TODO(dkochkov): consider storing values as Field type.
-      self.cumulative[k].value += v.data
+    diagnostics = self.extract(inputs, *args, **kwargs)
+    for k, v in diagnostics.items():
+      self.cumulative[k].value += v
       if self.include_instant:
-        self.instants[k].value = v.data
+        self.instants[k].value = v

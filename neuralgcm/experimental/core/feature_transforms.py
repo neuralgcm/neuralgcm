@@ -85,9 +85,10 @@ class DiagnosticValueTransform(transforms.TransformABC):
   """Returns diagnostic values to be used as features."""
 
   diagnostic_module: diagnostics.DiagnosticModule
+
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused
-    return self.diagnostic_module.format_diagnostics()
+    return self.diagnostic_module.diagnostic_values()
 
 
 @nnx_compat.dataclass

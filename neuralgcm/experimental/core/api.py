@@ -128,7 +128,7 @@ class ForecastSystem(nnx.Module, abc.ABC):
     self.initialize_random_processes(rng)
     self.reset_diagnostic_state()
     prognostics = self.assimilate_prognostics(observations, initial_state)
-    diagnostic = nnx.clone(nnx.state(self, diagnostics.DiagnosticValue))
+    diagnostic = nnx.clone(nnx.state(self, typing.Diagnostic))
     randomness = nnx.clone(nnx.state(self, random_processes.RandomnessValue))
     return typing.ModelState(prognostics, diagnostic, randomness)
 
@@ -141,7 +141,7 @@ class ForecastSystem(nnx.Module, abc.ABC):
     nnx.update(self, state.diagnostics)
     nnx.update(self, state.randomness)
     prognostics = self.advance_prognostics(state.prognostics)
-    diagnostic = nnx.clone(nnx.state(self, diagnostics.DiagnosticValue))
+    diagnostic = nnx.clone(nnx.state(self, typing.Diagnostic))
     randomness = nnx.clone(nnx.state(self, random_processes.RandomnessValue))
     return typing.ModelState(prognostics, diagnostic, randomness)
 
@@ -189,7 +189,7 @@ class ForecastSystem(nnx.Module, abc.ABC):
     for diagnostic_module in module_utils.retrieve_subclass_modules(
         self, diagnostics.DiagnosticModule
     ):
-      outputs |= diagnostic_module.format_diagnostics()
+      outputs |= diagnostic_module.diagnostic_values()
     return outputs
 
   def unroll(
@@ -231,7 +231,7 @@ class ForecastSystem(nnx.Module, abc.ABC):
     def _to_model_state(prognostics, model):
       return typing.ModelState(
           prognostics,
-          nnx.clone(nnx.state(model, diagnostics.DiagnosticValue)),
+          nnx.clone(nnx.state(model, typing.Diagnostic)),
           nnx.clone(nnx.state(model, random_processes.RandomnessValue)),
       )
 
@@ -431,9 +431,7 @@ class Model(nnx.Module, abc.ABC):
     for diagnostic_module in module_utils.retrieve_subclass_modules(
         self, diagnostics.DiagnosticModule
     ):
-      # TODO(dkochkov): rename `format_diagnostics` to `diagnostic_values`.
-      # TODO(dkochkov): remove time argument the call below.
-      outputs |= diagnostic_module.format_diagnostics(time=None)
+      outputs |= diagnostic_module.diagnostic_values()
     return outputs
 
   @property

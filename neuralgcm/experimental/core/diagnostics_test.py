@@ -72,7 +72,7 @@ class DiagnosticsTest(parameterized.TestCase):
           'x': cx.wrap(x_sum, self.x_coord),
           'y': cx.wrap(y_sum, self.y_coord),
       }
-      actual_cumulatives = diagnostic.format_diagnostics()
+      actual_cumulatives = diagnostic.diagnostic_values()
       chex.assert_trees_all_close(actual_cumulatives, expected_cumulatives)
 
   def test_cumulative_on_custom_method(self):
@@ -93,7 +93,7 @@ class DiagnosticsTest(parameterized.TestCase):
         'x': cx.wrap(x_sum, self.x_coord),
         'y': cx.wrap(y_sum, self.y_coord),
     }
-    actual_cumulatives = diagnostic.format_diagnostics()
+    actual_cumulatives = diagnostic.diagnostic_values()
     chex.assert_trees_all_close(actual_cumulatives, expected_cumulatives)
 
   def test_instant(self):
@@ -117,14 +117,14 @@ class DiagnosticsTest(parameterized.TestCase):
           'x': cx.wrap(x_final, self.x_coord),
           'y': cx.wrap(y_final, self.y_coord),
       }
-      actual_final = diagnostic.format_diagnostics()
+      actual_final = diagnostic.diagnostic_values()
       chex.assert_trees_all_close(expected_final, actual_final)
 
   def test_interval(self):
     extract = lambda x, *args, **kwargs: x  # examine all outputs;
     extract_coords = {'x': self.x_coord, 'y': self.y_coord}
     diagnostic = diagnostics.IntervalDiagnostic(
-        extract, extract_coords, interval_length=3
+        extract, extract_coords, interval_axis=cx.SizedAxis('i', 3),
     )
     module = MockMethod()
     no_diagnostic_output = module(self.inputs)
@@ -146,7 +146,7 @@ class DiagnosticsTest(parameterized.TestCase):
           'x': cx.wrap(x_sum_last_2, self.x_coord),
           'y': cx.wrap(y_sum_last_2, self.y_coord),
       }
-      actual_final = diagnostic.format_diagnostics()
+      actual_final = diagnostic.diagnostic_values()
       chex.assert_trees_all_close(expected_final, actual_final)
 
 

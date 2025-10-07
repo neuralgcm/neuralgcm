@@ -32,25 +32,17 @@ Quantity = typing.Quantity
 _ADVANCE_SALT = zlib.crc32(b'advance')  # arbitrary uint32 value
 
 
-class RandomnessValue(nnx.Intermediate):
-  """Variable type in which randomness values are stored."""
+Randomness = typing.Randomness
 
 
 class RandomnessParam(nnx.Variable):
-  """Variable type for parameters of the random processes."""
+  """Variable type for parameters of random processes."""
 
 
 def _advance_prng_key(prng_key: jax.Array, prng_step: int):
   """Get a PRNG Key suitable for advancing randomness from key and step."""
   salt = jnp.uint32(_ADVANCE_SALT) + jnp.uint32(prng_step)
   return jax.random.fold_in(prng_key, salt)
-
-
-def _get_advance_prng_key(
-    randomness: typing.RandomnessTuple,
-) -> jax.Array | None:
-  """Extracts advance_prng_key from Randomness."""
-  return _advance_prng_key(randomness.prng_key, randomness.prng_step)
 
 
 class RandomProcessModule(nnx.Module, abc.ABC):
@@ -60,23 +52,21 @@ class RandomProcessModule(nnx.Module, abc.ABC):
   def unconditional_sample(
       self,
       rng: jax.Array,
-  ) -> typing.RandomnessTuple:
-    """Samples the random field unconditionally."""
+  ) -> None:
+    """Updates the state with an unconditional sample from the process."""
 
   @abc.abstractmethod
   def advance(
       self,
-      state: typing.RandomnessTuple | None = None,
-  ) -> typing.RandomnessTuple:
+  ) -> None:
     """Updates the state of a random field."""
 
   @abc.abstractmethod
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
-    ...
+    """Returns the values of the current random state evaluated on `coords`."""
 
   @property
   def event_shape(self) -> tuple[int, ...]:
@@ -97,53 +87,44 @@ class UniformUncorrelated(RandomProcessModule):
     self.coords = coords
     self.minval = minval
     self.maxval = maxval
-    key, state_rng = jax.random.split(rngs.params())
-    self.randomness_state = RandomnessValue(
-        typing.RandomnessTuple(state_rng, 0, self._sample_core(key))
-    )
+    k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
+    self.state_rng = Randomness(rng)
+    self.rng_step = Randomness(cx.wrap(0))
+    self.core = Randomness(self._sample_core(k))
 
-  def _sample_core(self, rng: jax.Array) -> jax.Array:
+  def _sample_core(self, rng: cx.Field) -> cx.Field:
     """Samples the core of the uniform random field."""
-    return jax.random.uniform(
+    sample_fn = lambda rng: jax.random.uniform(
         rng,
         minval=self.minval,
         maxval=self.maxval,
         shape=self.coords.shape,
     )
+    out_axes = {c: i for i, c in enumerate(rng.axes)}
+    return cx.cmap(sample_fn, out_axes)(rng).tag(self.coords)
 
-  def unconditional_sample(self, rng: jax.Array) -> typing.RandomnessTuple:
-    key, state_rng = jax.random.split(rng)
-    self.randomness_state.value = typing.RandomnessTuple(
-        state_rng, 0, self._sample_core(key)
-    )
-    return self.randomness_state.value
+  def unconditional_sample(self, rng: cx.Field) -> None:
+    k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
+    self.state_rng.value = rng
+    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
+    self.core.value = self._sample_core(k)
 
-  def advance(
-      self,
-      state: typing.RandomnessTuple | None = None,
-  ) -> typing.RandomnessTuple:
-    if state is None:
-      state = self.randomness_state.value
-    key = _get_advance_prng_key(state)
-    self.randomness_state.value = typing.RandomnessTuple(
-        state.prng_key, state.prng_step + 1, self._sample_core(key)
-    )
-    return self.randomness_state.value
+  def advance(self) -> None:
+    k = cx.cmap(_advance_prng_key)(self.state_rng.value, self.rng_step.value)
+    self.rng_step.value += 1
+    self.core.value = self._sample_core(k)
 
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
-    if state is None:
-      state = self.randomness_state.value
     if coords is None:
       coords = self.coords
     if coords != self.coords:
       raise ValueError(
           f'Interpolation is not supported yet: {coords=} {self.coords=}'
       )
-    return cx.wrap(state.core, coords)
+    return self.core.value
 
 
 class NormalUncorrelated(RandomProcessModule):
@@ -159,52 +140,41 @@ class NormalUncorrelated(RandomProcessModule):
     self.coords = coords
     self.mean = mean
     self.std = std
-    key, state_rng = jax.random.split(rngs.params())
-    self.randomness_state = RandomnessValue(
-        typing.RandomnessTuple(state_rng, 0, self._sample_core(key))
-    )
+    k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
+    self.state_rng = Randomness(rng)
+    self.rng_step = Randomness(cx.wrap(0))
+    self.core = Randomness(self._sample_core(k))
 
-  def _sample_core(self, rng: jax.Array) -> jax.Array:
+  def _sample_core(self, rng: cx.Field) -> cx.Field:
     """Samples the core of the normal random field."""
-    return self.mean + self.std * jax.random.normal(
+    sample_fn = lambda rng: self.mean + self.std * jax.random.normal(
         rng, shape=self.coords.shape
     )
+    out_axes = {c: i for i, c in enumerate(rng.axes)}
+    return cx.cmap(sample_fn, out_axes)(rng).tag(self.coords)
 
-  def unconditional_sample(
-      self, rng: typing.PRNGKeyArray
-  ) -> typing.RandomnessTuple:
-    key, state_rng = jax.random.split(rng)
-    self.randomness_state.value = typing.RandomnessTuple(
-        state_rng, 0, self._sample_core(key)
-    )
-    return self.randomness_state.value
+  def unconditional_sample(self, rng: cx.Field):
+    k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
+    self.state_rng.value = rng
+    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
+    self.core.value = self._sample_core(k)
 
-  def advance(
-      self,
-      state: typing.RandomnessTuple | None = None,
-  ) -> typing.RandomnessTuple:
-    if state is None:
-      state = self.randomness_state.value
-    key = _get_advance_prng_key(state)
-    self.randomness_state.value = typing.RandomnessTuple(
-        state.prng_key, state.prng_step + 1, self._sample_core(key)
-    )
-    return self.randomness_state.value
+  def advance(self):
+    k = cx.cmap(_advance_prng_key)(self.state_rng.value, self.rng_step.value)
+    self.rng_step.value += 1
+    self.core.value = self._sample_core(k)
 
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
-    if state is None:
-      state = self.randomness_state.value
     if coords is None:
       coords = self.coords
     if coords != self.coords:
       raise ValueError(
           f'Interpolation is not supported yet: {coords=} {self.coords=}'
       )
-    return cx.wrap(state.core, coords)
+    return self.core.value
 
 
 class GaussianRandomFieldCore(nnx.Module):
@@ -380,6 +350,10 @@ class GaussianRandomFieldCore(nnx.Module):
         dinosaur_grid.mask, eta, jnp.zeros(modal_shape)
     )
 
+  @property
+  def core_grid(self) -> coordinates.SphericalHarmonicGrid:
+    return self.ylm_transform.modal_grid
+
 
 class GaussianRandomField(RandomProcessModule):
   """Spatially and temporally correlated gaussian process on the sphere."""
@@ -412,66 +386,53 @@ class GaussianRandomField(RandomProcessModule):
         variance_type=variance_type,
         clip=clip,
     )
-    # rngs are used to create an initial state. This ensures that the structure
-    # of the module is not changed by sampling or advancing the state.
     self.ylm_transform = ylm_transform
-    prng_key = rngs.params()
-    core_rngs = rngs.params()
-    self.randomness_state = RandomnessValue(
-        typing.RandomnessTuple(
-            prng_key=prng_key,
-            prng_step=0,
-            core=self.grf.sample_core(core_rngs),
-        )
+    k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
+    self.state_rng = Randomness(rng)
+    self.rng_step = Randomness(cx.wrap(0))
+    self.core = Randomness(
+        cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid)
     )
 
-  def unconditional_sample(
-      self, rng: typing.PRNGKeyArray
-  ) -> typing.RandomnessTuple:
+  def unconditional_sample(self, rng: cx.Field) -> None:
     """Returns a randomly initialized state for the autoregressive process."""
-    rng, next_rng = jax.random.split(rng)
-    self.randomness_state.value = typing.RandomnessTuple(
-        prng_key=next_rng,
-        prng_step=0,
-        core=self.grf.sample_core(rng),
-    )
-    return self.randomness_state.value
+    k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
+    self.state_rng.value = rng
+    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
+    self.core.value = cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid)
 
-  def advance(
-      self, state: typing.RandomnessTuple | None = None
-  ) -> typing.RandomnessTuple:
+  def advance(self) -> None:
     """Updates the CoreRandomState of a random gaussian field."""
-    if state is None:
-      state = self.randomness_state.value
-    self.randomness_state.value = typing.RandomnessTuple(
-        core=self.grf.advance_core(state.core, state.prng_key, state.prng_step),
-        prng_key=state.prng_key,
-        prng_step=state.prng_step + 1,
-    )
-    return self.randomness_state.value
+    self.core.value = cx.cmap(self.grf.advance_core)(
+        self.core.value.untag(self.grf.core_grid),
+        self.state_rng.value,
+        self.rng_step.value,
+    ).tag(self.grf.core_grid)
+    self.rng_step.value += 1
 
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
     if coords is None:
       coords = self.ylm_transform.nodal_grid
-    if not isinstance(coords, coordinates.LonLatGrid):
-      raise ValueError('Interpolation of randomness is not supported yet')
-    if state is None:
-      state = self.randomness_state.value
-    return cx.wrap(self.ylm_transform.to_nodal_array(state.core), coords)
+    if coords != self.ylm_transform.nodal_grid:
+      raise ValueError(
+          f'Interpolation is not supported yet, requested {coords=} '
+          f'but the process is defined on {self.ylm_transform.nodal_grid=}'
+      )
+    return self.ylm_transform.to_nodal(self.core.value)
 
 
-class BatchGaussianRandomField(RandomProcessModule):
-  """Batched version of GaussianRandomField process."""
+class VectorizedGaussianRandomField(RandomProcessModule):
+  """Vectorized version of GaussianRandomField process."""
 
   def __init__(
       self,
       ylm_transform: spherical_transforms.FixedYlmMapping,
       dt: float,
       sim_units: units.SimUnits,
+      axis: cx.Coordinate,
       correlation_times: typing.Numeric | typing.Quantity,
       correlation_lengths: typing.Numeric | typing.Quantity,
       variances: Sequence[float],
@@ -482,14 +443,15 @@ class BatchGaussianRandomField(RandomProcessModule):
       *,
       rngs: nnx.Rngs,
   ):
-    lengths = [
-        len(correlation_times),
-        len(correlation_lengths),
-        len(variances),
-    ]
-    if len(set(lengths)) != 1:
-      raise ValueError(f'Argument lengths differed: {lengths=}')
-    (n_fields,) = set(lengths)
+    if axis.ndim != 1:
+      raise ValueError(f'collection_axis must be 1d, got {axis=}')
+    [n_fields] = axis.shape
+    init_specs = [correlation_times, correlation_lengths, variances]
+    if any(len(p) != n_fields for p in init_specs):
+      raise ValueError(
+          'Argument lengths must match collection_axis size, but got: '
+          f'{axis=} {init_specs=}'
+      )
 
     nondimensionalize = lambda x: units.maybe_nondimensionalize(x, sim_units)
     correlation_times = np.array(
@@ -514,66 +476,62 @@ class BatchGaussianRandomField(RandomProcessModule):
         clip=clip,
     )
     self.n_fields = n_fields
+    self.axis = axis
+    self.ylm_transform = ylm_transform
     self.batch_grf_core = nnx.vmap(make_grf, axis_size=self.n_fields)(
         correlation_lengths, correlation_times, variances
     )
-    prng_key = rngs.params()
-    core_rngs = jax.random.split(rngs.params(), num=self.n_fields)
-    sample_fn = lambda grf, rng: grf.sample_core(rng)
-    self.randomness_state = RandomnessValue(
-        typing.RandomnessTuple(
-            prng_key=prng_key,
-            prng_step=0,
-            core=nnx.vmap(sample_fn)(self.batch_grf_core, core_rngs),
-        )
-    )
-    self.ylm_transform = ylm_transform
+    # Initializing the state of the process.
+    k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
+    self.state_rng = Randomness(rng)
+    self.rng_step = Randomness(cx.wrap(0))
+    self.core = Randomness(self._sample_core(k))
 
   @property
   def event_shape(self) -> tuple[int, ...]:
     return tuple([self.n_fields])
 
-  def unconditional_sample(
-      self, rng: typing.PRNGKeyArray
-  ) -> typing.RandomnessTuple:
-    all_rngs = jax.random.split(rng, num=(self.n_fields + 1))
-    next_rng = all_rngs[-1]
-    rngs = all_rngs[:-1]
-    sample_fn = lambda grf, rng: grf.sample_core(rng)
-    self.randomness_state.value = typing.RandomnessTuple(
-        prng_key=next_rng,
-        prng_step=0,
-        core=nnx.vmap(sample_fn)(self.batch_grf_core, rngs),
-    )
-    return self.randomness_state.value
+  def _sample_core(self, rng: cx.Field) -> cx.Field:
+    """Samples the core state of a collection of gaussian random fields."""
+    split = lambda k: jax.random.split(k, self.n_fields)
+    rngs = cx.cmap(split)(rng).tag(self.axis)
+    sample_single = lambda grf, rng: grf.sample_core(rng)
+    sample_collection = nnx.vmap(sample_single)
+    return cx.cmap(sample_collection, vmap=nnx.vmap)(
+        self.batch_grf_core, rngs.untag(self.axis)
+    ).tag(self.axis, self.batch_grf_core.core_grid)
 
-  def advance(
-      self, state: typing.RandomnessTuple | None = None
-  ) -> typing.RandomnessTuple:
-    if state is None:
-      state = self.randomness_state.value
-    advance_fn = lambda grf, core, key, step: grf.advance_core(core, key, step)
-    in_axes = (0, 0, 0, None)
-    advance_fn = nnx.vmap(advance_fn, in_axes=in_axes)
-    rngs = jax.random.split(state.prng_key, num=self.n_fields)
-    self.randomness_state.value = typing.RandomnessTuple(
-        core=advance_fn(self.batch_grf_core, state.core, rngs, state.prng_step),
-        prng_key=state.prng_key,
-        prng_step=state.prng_step + 1,
-    )
-    return self.randomness_state.value
+  def unconditional_sample(self, rng: cx.Field) -> None:
+    k, next_rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rng)
+    self.state_rng.value = next_rng
+    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
+    self.core.value = self._sample_core(k)
+
+  def advance(self) -> None:
+    rng, step = self.state_rng.value, self.rng_step.value
+    split = lambda k: jax.random.split(k, self.n_fields)
+    rngs = cx.cmap(split)(rng).tag(self.axis)
+    advance_keys = cx.cmap(_advance_prng_key)(rngs, step)
+    advance_single = lambda grf, core, k, step: grf.advance_core(core, k, step)
+    advance_collection = nnx.vmap(advance_single, in_axes=(0, 0, 0, None))
+    next_core = cx.cmap(advance_collection, vmap=nnx.vmap)(
+        self.batch_grf_core,
+        self.core.value.untag(self.axis, self.batch_grf_core.core_grid),
+        advance_keys.untag(self.axis),
+        step,
+    ).tag(self.axis, self.batch_grf_core.core_grid)
+    self.rng_step.value += 1
+    self.core.value = next_core
 
   def state_values(
       self,
       coords: cx.Coordinate | None = None,
-      state: typing.RandomnessTuple | None = None,
   ) -> cx.Field:
     if coords is None:
       coords = self.ylm_transform.nodal_grid
-    if not isinstance(coords, coordinates.LonLatGrid):
-      raise ValueError('Interpolation of randomness is not supported yet')
-    if state is None:
-      state = self.randomness_state.value
-    # TODO(dkochkov): consider an option where we return a field with only
-    # trailing axes labeled, rather than assigning names to all dimensions.
-    return cx.wrap(self.ylm_transform.to_nodal_array(state.core), 'grf', coords)
+    if coords != self.ylm_transform.nodal_grid:
+      raise ValueError(
+          f'Interpolation is not supported yet, requested {coords=} '
+          f'but the process is defined on {self.ylm_transform.nodal_grid=}'
+      )
+    return self.ylm_transform.to_nodal(self.core.value)

@@ -23,7 +23,6 @@ from flax import nnx
 import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import typing
 import orbax.checkpoint as ocp
 
@@ -41,7 +40,7 @@ class _SplitState:
 UNSAVED_VARIABLE_TYPES = (
     typing.Diagnostic,
     typing.DynamicInput,
-    random_processes.RandomnessValue,
+    typing.Randomness,
 )
 
 

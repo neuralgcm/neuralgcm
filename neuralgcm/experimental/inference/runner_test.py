@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dataclasses
 import functools
 import operator
 import os
@@ -21,37 +20,50 @@ import pathlib
 from absl.testing import absltest
 from absl.testing import parameterized
 import coordax as cx
+from fiddle.experimental import auto_config
 from flax import nnx
 import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import dynamic_io
+from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import typing
-from neuralgcm.experimental.core import xarray_utils
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
 from neuralgcm.experimental.inference import runner as runnerlib
 import numpy as np
 import xarray
 
 
-@dataclasses.dataclass
-class MockForecastSystem(api.ForecastSystem):
-  required_input_specs: dict[str, dict[str, cx.Coordinate]]
-  required_dynamic_input_specs: dict[str, dict[str, cx.Coordinate]]
+@nnx_compat.dataclass
+class MockModel(api.Model):
+  """A mock Model for testing."""
+
+  input_specs: dict[str, dict[str, cx.Coordinate]]
+  dynamic_input_specs: dict[str, dict[str, cx.Coordinate]]
   dynamic_input_slice: dynamic_io.DynamicInputSlice
-  assimilation_noise: random_processes.RandomProcessModule | None = None
+  assimilation_noise: random_processes.RandomProcessModule | None
+
+  def __post_init__(self):
+    self.prognostics = typing.Prognostic({
+        k: cx.wrap(np.zeros(c.shape), c)
+        for k, c in self.required_input_specs['state'].items()
+    })
+
+  @property
+  def required_input_specs(self) -> dict[str, dict[str, cx.Coordinate]]:
+    return self.input_specs
+
+  @property
+  def required_dynamic_input_specs(
+      self,
+  ) -> dict[str, dict[str, cx.Coordinate]]:
+    return self.dynamic_input_specs
 
   @property
   def timestep(self) -> np.timedelta64:
     return np.timedelta64(1, 'h')
 
-  def assimilate_prognostics(
-      self,
-      observations: typing.Observation,
-      dynamic_inputs: typing.Observation | None = None,
-      rng: typing.PRNGKeyArray | None = None,
-      initial_state: typing.ModelState | None = None,
-  ) -> typing.PrognosticsDict:
+  def assimilate(self, observations: typing.Observation) -> None:
     state = jax.tree.map(
         # TODO(shoyer): create a .isel() method on Field?
         cx.cmap(lambda x: x[-1]),
@@ -61,53 +73,23 @@ class MockForecastSystem(api.ForecastSystem):
     if self.assimilation_noise is not None:
       noise = self.assimilation_noise.state_values()
       state['foo'] = state['foo'] + noise
-    return state
+    self.prognostics.value = state
 
-  def advance_prognostics(
-      self, prognostics: typing.PrognosticsDict
-  ) -> typing.PrognosticsDict:
-    prognostics = prognostics.copy()
+  def advance(self) -> None:
+    prognostics = self.prognostics.value
     time = prognostics.pop('time')
     sliced_inputs = self.dynamic_input_slice(time)
     next_prognostics = jax.tree.map(
         operator.add, prognostics, sliced_inputs, is_leaf=cx.is_field
     )
     next_prognostics['time'] = time + self.timestep
-    return next_prognostics
+    self.prognostics.value = next_prognostics
 
-  def observe_from_prognostics(
-      self, prognostics: typing.PrognosticsDict, query: typing.Query
-  ) -> typing.Observation:
+  def observe(self, query: typing.Query) -> typing.Observation:
+    prognostics = self.prognostics.value
     return {
         'state': {k: v for k, v in prognostics.items() if k in query['state']}
     }
-
-  # TODO(shoyer): Move these methods upstream onto the base api.ForecastSystem?
-
-  def inputs_from_xarray(
-      self,
-      nested_data: dict[str, xarray.Dataset],
-  ) -> dict[str, dict[str, cx.Field]]:
-    nested_data = xarray_utils.ensure_timedelta_axis(nested_data)
-    return xarray_utils.read_fields_from_xarray(
-        nested_data, self.required_input_specs
-    )
-
-  def dynamic_inputs_from_xarray(
-      self,
-      nested_data: dict[str, xarray.Dataset],
-  ) -> dict[str, dict[str, cx.Field]]:
-    if not self.required_dynamic_input_specs:
-      return {}
-    nested_data = xarray_utils.ensure_timedelta_axis(nested_data)
-    return xarray_utils.read_fields_from_xarray(
-        nested_data, self.required_dynamic_input_specs
-    )
-
-  def data_to_xarray(
-      self, data: dict[str, dict[str, cx.Field]]
-  ) -> dict[str, xarray.Dataset]:
-    return {k: xarray_utils.fields_to_xarray(v) for k, v in data.items()}
 
 
 class RunnerTest(parameterized.TestCase):
@@ -123,26 +105,34 @@ class RunnerTest(parameterized.TestCase):
       )
     else:
       assimilation_noise = None
-    model = MockForecastSystem(
-        required_input_specs={
-            'state': {
-                'foo': cx.Scalar(),
-                'bar': cx.LabeledAxis('x', np.array([0.1, 0.2, 0.3])),
-                'time': cx.Scalar(),
-            }
-        },
-        required_dynamic_input_specs={
-            'data': {
-                'foo': cx.Scalar(),
-                'bar': cx.Scalar(),
-                'time': cx.Scalar(),
-            }
-        },
-        dynamic_input_slice=dynamic_io.DynamicInputSlice(
-            keys_to_coords={'foo': cx.Scalar(), 'bar': cx.Scalar()},
-            observation_key='data',
-        ),
-        assimilation_noise=assimilation_noise,
+
+    @auto_config.auto_config
+    def construct_model() -> MockModel:
+      return MockModel(
+          input_specs={
+              'state': {
+                  'foo': cx.Scalar(),
+                  'bar': cx.LabeledAxis('x', np.array([0.1, 0.2, 0.3])),
+                  'time': cx.Scalar(),
+              }
+          },
+          dynamic_input_specs={
+              'data': {
+                  'foo': cx.Scalar(),
+                  'bar': cx.Scalar(),
+                  'time': cx.Scalar(),
+              }
+          },
+          dynamic_input_slice=dynamic_io.DynamicInputSlice(
+              keys_to_coords={'foo': cx.Scalar(), 'bar': cx.Scalar()},
+              observation_key='data',
+          ),
+          assimilation_noise=assimilation_noise,
+      )
+
+    module_model = construct_model()
+    model = api.InferenceModel.from_model_api(
+        module_model, construct_model.as_buildable()
     )
     init_times = np.array(
         [np.datetime64('2025-01-01'), np.datetime64('2025-01-02')]

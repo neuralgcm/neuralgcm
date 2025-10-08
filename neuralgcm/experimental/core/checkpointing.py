@@ -37,20 +37,10 @@ class _SplitState:
   non_params: nnx.GraphState
 
 
-UNSAVED_VARIABLE_TYPES = (
-    typing.Diagnostic,
-    typing.DynamicInput,
-    typing.Randomness,
-)
-
-
 def split_model_state_for_saving(model: nnx.Module) -> _SplitState:
   """Extracts model state to save from an nnx.Module."""
-  # TODO(shoyer): Consider adding a base-class for temporary variables in
-  # in neuralgcm.experimental. This would allow for collecting them together
-  # with nnx.state() and similar utilities.
-  params, *_, non_params = nnx.state(
-      model, nnx.Param, *UNSAVED_VARIABLE_TYPES, ...
+  params, _, non_params = nnx.state(
+      model, nnx.Param, (typing.SimulationVariable, typing.DynamicInput), ...
   )
   return _SplitState(params=params, non_params=non_params)
 
@@ -70,15 +60,15 @@ def load_model_checkpoint(
     field_partitions_updates: (
         dict[parallelism.TagOrMeshType, parallelism.FieldPartitions] | None
     ) = None,
-) -> api.ForecastSystem:
-  """Loades a ForecastSystem model from a checkpoint."""
+) -> api.Model:
+  """Loads a Model from a checkpoint."""
   checkpointer = ocp.Checkpointer(ocp.CompositeCheckpointHandler())
 
   # Create model from checkpoint metadata.
   config_args = ocp.args.Composite(**{_CONFIG_KEY: ocp.args.JsonRestore()})
   model_config_dict = checkpointer.restore(path, config_args)[_CONFIG_KEY]
   model_config = serialization.load_json(json.dumps(model_config_dict))
-  model = api.ForecastSystem.from_fiddle_config(
+  model = api.Model.from_fiddle_config(
       model_config,
       spmd_mesh_updates=spmd_mesh_updates,
       array_partitions_updates=array_partitions_updates,
@@ -95,9 +85,9 @@ def load_model_checkpoint(
 
 
 def save_checkpoint(
-    model: api.ForecastSystem,
+    model: api.Model,
     path: str | epath.PathLike,
-    fiddle_config: fdl.Config[api.ForecastSystem] | None = None,
+    fiddle_config: fdl.Config[api.Model] | None = None,
 ):
   """Saves model to a checkpoint."""
   if fiddle_config is None:

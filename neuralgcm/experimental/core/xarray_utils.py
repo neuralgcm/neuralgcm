@@ -22,6 +22,7 @@ from dinosaur import spherical_harmonic
 from dinosaur import xarray_utils as dino_xarray_utils
 import jax
 import jax_datetime as jdt
+from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import scales
@@ -254,3 +255,37 @@ def fields_to_xarray(
   """Converts a coordax.Field dictionary to an xarray dataset."""
   ds = xarray.Dataset({k: v.to_xarray() for k, v in fields.items()})
   return ds
+
+
+def nested_fields_to_xarray(
+    nested_fields: dict[str, dict[str, cx.Field]],
+) -> dict[str, xarray.Dataset]:
+  """Converts a two level nested coordax.Field dictionary to xarray."""
+  # TODO(dkochkov): Consider switching to xarray.DataTree.
+  return {k: fields_to_xarray(v) for k, v in nested_fields.items()}
+
+
+def model_inputs_from_xarray(
+    nested_data: dict[str, xarray.Dataset],
+    model: api.InferenceModel | api.Model,
+) -> dict[str, dict[str, cx.Field]]:
+  """Returns subset of `nested_data` supported by the model for assimilation."""
+  nested_data = ensure_timedelta_axis(nested_data)
+  return read_fields_from_xarray(
+      nested_data=nested_data,
+      input_specs=model.required_input_specs,
+      strict_matches=False,
+  )
+
+
+def model_dynamic_inputs_from_xarray(
+    nested_data: dict[str, xarray.Dataset],
+    model: api.InferenceModel | api.Model,
+) -> dict[str, dict[str, cx.Field]]:
+  """Returns subset of `nested_data` required by the model."""
+  nested_data = ensure_timedelta_axis(nested_data)
+  return read_fields_from_xarray(
+      nested_data=nested_data,
+      input_specs=model.required_dynamic_input_specs,
+      strict_matches=False,
+  )

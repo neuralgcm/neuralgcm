@@ -24,7 +24,6 @@ import coordax as cx
 import fiddle as fdl
 from flax import nnx
 import jax
-import jax_datetime as jdt
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import diagnostics
@@ -657,6 +656,62 @@ class VectorizedModel(Model):
     return self.vectorized_model.required_input_specs
 
 
+def _checked_jit(func=None, *, static_argnums=(), static_argnames=()):
+  """Wrapper around jax.jit that adds checks for ShapeDtypeStruct errors."""
+
+  def _find_sds_paths(tree, prefix=''):
+    paths = []
+    try:
+      leaves = jax.tree_util.tree_leaves_with_path(tree)
+    except Exception:  # pylint: disable=broad-except
+      leaves = []  # tree_leaves_with_path can fail on weird inputs.
+    for path, leaf in leaves:
+      if isinstance(leaf, jax.ShapeDtypeStruct):
+        paths.append(f'{prefix}{jax.tree_util.keystr(path)}')
+    return paths
+
+  def decorator(fn):
+    jitted_fn = jax.jit(
+        fn, static_argnums=static_argnums, static_argnames=static_argnames
+    )
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+      try:
+        return jitted_fn(*args, **kwargs)
+      except TypeError as e:
+        if 'ShapeDtypeStruct' in str(e) or 'abstract value' in str(e):
+          sds_paths = []
+          sds_paths.extend(_find_sds_paths(args, prefix='args'))
+          sds_paths.extend(_find_sds_paths(kwargs, prefix='kwargs'))
+          try:
+            result = fn(*args, **kwargs)
+            sds_paths.extend(_find_sds_paths(result, prefix='outputs'))
+          except Exception as e_unjitted:  # pylint: disable=broad-except
+            sds_paths.append(
+                f'Call to unjitted function failed with: {e_unjitted}'
+            )
+
+          error_message = (
+              f"JAX raised TypeError: '{e}'. This often indicates "
+              'uninitialized state (e.g., missing `rng` in assimilate, '
+              'or incomplete `simulation_state` in advance/observe).'
+          )
+          if sds_paths:
+            error_message += (
+                '\nFurther inspection found ShapeDtypeStruct in:\n  '
+                + '\n  '.join(sds_paths)
+            )
+          raise TypeError(error_message) from e
+        raise
+
+    return wrapper
+
+  if func is not None:
+    return decorator(func)
+  return decorator
+
+
 # TODO(dkochkov): Consider renaming InferenceModel to ForecastSystem.
 @dataclasses.dataclass(frozen=True)
 class InferenceModel:
@@ -692,11 +747,13 @@ class InferenceModel:
       model.update_dynamic_inputs(dynamic_inputs)
     if simulation_state is not None:
       model.set_simulation_state(simulation_state)
+    else:
+      model.reset_diagnostic_state()
     if rng is not None:
       model.initialize_random_processes(rng)
     return model
 
-  @jax.jit
+  @_checked_jit
   def assimilate(
       self,
       inputs: dict[str, dict[str, cx.Field]],
@@ -709,9 +766,10 @@ class InferenceModel:
       rng = cx.wrap(rng, cx.Scalar())
     model = self._prepare_model(previous_estimate, dynamic_inputs, rng)
     model.assimilate(inputs)
-    return model.simulation_state
+    sim_state = model.simulation_state
+    return sim_state
 
-  @jax.jit
+  @_checked_jit
   def advance(
       self,
       simulation_state: typing.SimulationState,
@@ -722,7 +780,7 @@ class InferenceModel:
     model.advance()
     return model.simulation_state
 
-  @jax.jit
+  @_checked_jit
   def observe(
       self,
       simulation_state: typing.SimulationState,
@@ -766,8 +824,8 @@ class InferenceModel:
 
 jax.tree_util.register_dataclass(
     InferenceModel,
-    data_fields=['model_state', 'dummy_simulation_state'],
-    meta_fields=['model_graph_def', 'fiddle_config'],
+    data_fields=['model_state'],
+    meta_fields=['model_graph_def', 'dummy_simulation_state', 'fiddle_config'],
 )
 
 
@@ -843,12 +901,12 @@ def forecast_steps(
     steps: int,
     query: typing.Query,
     dynamic_inputs: typing.Pytree | None = None,
-    rng: typing.PRNGKeyArray | None = None,
+    rng: cx.Field | typing.PRNGKeyArray | None = None,
     start_with_input: bool = True,
     process_observations_fn: Callable[[typing.Observation], Any] = lambda x: x,
 ) -> tuple[typing.ModelState, typing.Pytree]:
   """Runs a forecast from an inputs for a specified number of steps."""
-  if rng is not None:
+  if rng is not None and not isinstance(rng, cx.Field):
     rng = cx.wrap(rng, cx.Scalar())
   initial_state = forecast_system.assimilate(inputs, dynamic_inputs, rng)
   return unroll_from_advance(

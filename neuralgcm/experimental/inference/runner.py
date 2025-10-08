@@ -21,13 +21,14 @@ import pickle
 from typing import Any, TypeVar
 import uuid
 
+import coordax as cx
 import dask.array
 from etils import epath
-from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import typing
+from neuralgcm.experimental.core import xarray_utils
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
 from neuralgcm.experimental.inference import streaming
 from neuralgcm.experimental.inference import timing
@@ -94,31 +95,6 @@ def _coordinate_to_root(tree: xarray.DataTree, name: str) -> xarray.DataTree:
   return tree
 
 
-@nnx.jit
-def _assimilate(model, input_obs, dynamic_inputs, rng):
-  return model.assimilate(input_obs, dynamic_inputs=dynamic_inputs, rng=rng)
-
-
-@nnx.jit(static_argnames=['steps_per_unroll', 'output_freq'])
-def _unroll(
-    model, state, dynamic_inputs, output_query, steps_per_unroll, output_freq
-):
-  def observe(state, model):
-    return model.observe(
-        state,
-        output_query,
-        dynamic_inputs=dynamic_inputs,
-    )
-
-  return model.unroll(
-      state,
-      dynamic_inputs=dynamic_inputs,
-      outer_steps=steps_per_unroll,
-      timedelta=output_freq,
-      post_process_fn=observe,
-  )
-
-
 def device_put_to_cpu(x: typing.Pytree) -> typing.Pytree:
   """Non-blocking transfer of JAX arrays to CPU."""
   cpu_device = jax.devices('cpu')[0]
@@ -174,7 +150,7 @@ def _atomic_write(path):
 class InferenceRunner:
   """High performance inference runner for NeuralGCM models."""
 
-  model: api.ForecastSystem | None
+  model: api.InferenceModel | None
   inputs: NestedData
   dynamic_inputs: dynamic_inputs_lib.DynamicInputs
   init_times: npt.NDArray[np.datetime64] | pd.DatetimeIndex
@@ -341,10 +317,6 @@ class InferenceRunner:
     init_time = self.init_times[init_time_index].astype('datetime64[ns]')
     dynamic_inputs_forecast = self.dynamic_inputs.get_forecast(init_time)
 
-    # TODO(shoyer): Find a less hacky way to ensure that calling
-    # dynamic_inputs_from_xarray() is thread-safe.
-    model2 = nnx.clone(self.model)
-
     # Initialize state from checkpoint or from scratch.
     task_path = self._task_path(task_id)
     if task_path.exists():
@@ -355,7 +327,7 @@ class InferenceRunner:
       logging.info(f'no state checkpoint found for task {task_id=}')
       if self.ensemble_size is not None:
         base_key = jax.random.key(self.random_seed)
-        rng = jax.random.fold_in(base_key, task_id)
+        rng = cx.wrap(jax.random.fold_in(base_key, task_id))
       else:
         rng = None
 
@@ -365,14 +337,17 @@ class InferenceRunner:
       selected_inputs = {
           k: v.sel(time=[init_time]) for k, v in self.inputs.items()
       }
-      input_obs = model2.inputs_from_xarray(selected_inputs)
-      dynamic_inputs = model2.dynamic_inputs_from_xarray(
+      input_obs = xarray_utils.model_inputs_from_xarray(
+          selected_inputs, self.model
+      )
+      dynamic_inputs = xarray_utils.model_dynamic_inputs_from_xarray(
           dynamic_inputs_forecast.get_data(
               np.timedelta64(0), self.model.timestep
-          )
+          ),
+          model=self.model,
       )
       logging.info('assimilating initial state')
-      state = _assimilate(self.model, input_obs, dynamic_inputs, rng)
+      state = self.model.assimilate(input_obs, dynamic_inputs, rng)
       check_pytree_for_bad_state(state, f'initial state for {task_id=}')
       commited_steps = 0
 
@@ -384,7 +359,9 @@ class InferenceRunner:
       logging.info(f'getting dynamic inputs for {output_step=}')
       xarray_inputs = dynamic_inputs_forecast.get_data(lead_start, lead_stop)
       logging.info(f'xarray_inputs: {xarray_inputs}')
-      data = model2.dynamic_inputs_from_xarray(xarray_inputs)
+      data = xarray_utils.model_dynamic_inputs_from_xarray(
+          xarray_inputs, self.model
+      )
       check_pytree_for_bad_state(data, f'dynamic inputs at {output_step=}')
       keys = {k: list(v) for k, v in data.items()}
       logging.info(f'dynamic inputs ready: {keys}')
@@ -392,13 +369,14 @@ class InferenceRunner:
 
     @timing.Timed
     def unroll(state, dynamic_inputs):
-      return _unroll(
-          self.model,
-          state,
-          dynamic_inputs,
-          output_query=self.output_query,
-          steps_per_unroll=self.steps_per_unroll,
-          output_freq=self.output_freq,
+      return api.unroll_from_advance(
+          forecast_system=self.model,
+          initial_state=state,
+          timedelta=self.output_freq,
+          steps=self.steps_per_unroll,
+          query=self.output_query,
+          dynamic_inputs=dynamic_inputs,
+          start_with_input=True,
       )
 
     dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)
@@ -482,7 +460,10 @@ class InferenceRunner:
     logging.info('preparing DataTree for writing to zarr')
     trees = []
     for trajectory_slice in output_buffer:
-      outputs = self.model.data_to_xarray(trajectory_slice)
+      outputs = {
+          k: xarray_utils.fields_to_xarray(ds)
+          for k, ds in trajectory_slice.items()
+      }
       outputs_tree = xarray.DataTree.from_dict(outputs)
       # TODO(shoyer): update the name of the TimeDelta coordinate?
       outputs_tree = _datatree_rename(outputs_tree, {'timedelta': 'lead_time'})

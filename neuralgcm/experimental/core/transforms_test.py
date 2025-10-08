@@ -455,6 +455,66 @@ class TransformsTest(parameterized.TestCase):
         out.data.var(ddof=1, axis=0), np.ones(x.shape), atol=1e-6
     )
 
+  def test_scale_to_match_coarse_fields(self):
+    hres_grid = coordinates.LonLatGrid.TL63()
+    coarse_grid = coordinates.LonLatGrid.T21()
+    keys = ['precip', 'temp']
+    hres_ones = cx.wrap(np.ones(hres_grid.shape, dtype=np.float32), hres_grid)
+    coarse_twos = cx.wrap(
+        np.ones(coarse_grid.shape, dtype=np.float32) * 2.0, coarse_grid
+    )
+    inputs = {
+        'hres_precip': hres_ones,
+        'hres_temp': hres_ones,
+        'coarse_precip': coarse_twos,
+        'coarse_temp': coarse_twos,
+    }
+    raw_hres_transform = transforms.Sequential([
+        transforms.Select('hres_.*'),
+        transforms.Rename({'hres_precip': 'precip', 'hres_temp': 'temp'}),
+    ])
+    ref_coarse_transform = transforms.Sequential([
+        transforms.Select('coarse_.*'),
+        transforms.Rename({'coarse_precip': 'precip', 'coarse_temp': 'temp'}),
+    ])
+
+    with self.subTest('conservation_applied'):
+      transform = transforms.ScaleToMatchCoarseFields(
+          raw_hres_transform=raw_hres_transform,
+          ref_coarse_transform=ref_coarse_transform,
+          coarse_grid=coarse_grid,
+          hres_grid=hres_grid,
+          keys=keys,
+          epsilon=1e-9,
+      )
+      outputs = transform(inputs)
+      regrid_to_coarse = transforms.Regrid(
+          regridder=interpolators.ConservativeRegridder(coarse_grid)
+      )
+      downscaled_conserved_hres = regrid_to_coarse(outputs)
+      expected_coarse = {key: coarse_twos for key in keys}
+      chex.assert_trees_all_close(
+          downscaled_conserved_hres, expected_coarse, atol=1e-5
+      )
+
+    with self.subTest('missing_key_raises'):
+      inputs_missing = {
+          'hres_precip': hres_ones,
+          'hres_temp': hres_ones,
+          'coarse_precip': coarse_twos,
+          # 'coarse_temp' is missing
+      }
+      transform = transforms.ScaleToMatchCoarseFields(
+          raw_hres_transform=raw_hres_transform,
+          ref_coarse_transform=ref_coarse_transform,
+          coarse_grid=coarse_grid,
+          hres_grid=hres_grid,
+          keys=['precip', 'temp'],
+          epsilon=1e-9,
+      )
+      with self.assertRaisesRegex(ValueError, 'Key temp not found'):
+        transform(inputs_missing)
+
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

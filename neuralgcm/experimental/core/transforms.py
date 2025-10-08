@@ -31,6 +31,7 @@ from typing import Callable, Literal, Protocol, Sequence
 
 import coordax as cx
 from flax import nnx
+import jax.nn
 import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental.core import coordinates
@@ -609,6 +610,22 @@ class RemovePrefix(TransformABC):
 
 
 @nnx_compat.dataclass
+class Rename(TransformABC):
+  """Renames keys in inputs based on rename_dict."""
+
+  rename_dict: dict[str, str]
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    outputs = {}
+    for k, v in inputs.items():
+      new_key = self.rename_dict.get(k, k)
+      if new_key in outputs:
+        raise ValueError(f'Duplicate key after renaming: {new_key}')
+      outputs[new_key] = v
+    return outputs
+
+
+@nnx_compat.dataclass
 class TanhClip(TransformABC):
   """Clips inputs to (-scale, scale) range via tanh function.
 
@@ -625,6 +642,24 @@ class TanhClip(TransformABC):
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     clip_fn = cx.cmap(lambda x: self.scale * jnp.tanh(x / self.scale))
     return {k: clip_fn(v) for k, v in inputs.items()}
+
+
+@nnx_compat.dataclass
+class Relu(TransformABC):
+  """Applies relu to fields specified in keys_to_apply_relu, or to all."""
+
+  keys_to_apply_relu: Sequence[str] | None = None
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    if self.keys_to_apply_relu is None:
+      return {k: cx.cmap(jax.nn.relu)(v) for k, v in inputs.items()}
+    outputs = {}
+    for k, v in inputs.items():
+      if k in self.keys_to_apply_relu:
+        outputs[k] = cx.cmap(jax.nn.relu)(v)
+      else:
+        outputs[k] = v
+    return outputs
 
 
 class StreamingStatsNormalization(TransformABC):
@@ -791,6 +826,66 @@ class ToModalWithFilteredGradients:
       self, input_shapes: dict[typing.KeyWithCosLatFactor, cx.Field]
   ) -> dict[typing.KeyWithCosLatFactor, cx.Field]:
     return nnx.eval_shape(self.__call__, input_shapes)
+
+
+@nnx_compat.dataclass
+class ScaleToMatchCoarseFields(TransformABC):
+  """Scales hres fields s.t. spatially-averaged values match coarse ones.
+
+  This transform applies scaling to high-resolution fields such that their
+  spatial average, when regridded to a coarse grid, matches the average of
+  corresponding coarse-resolution fields. This is useful for enforcing
+  conservation laws across different resolutions.
+
+  Note: due to regridding, conservation is not exact.
+
+  Attributes:
+    raw_hres_transform: Transform that generates high-resolution fields.
+    ref_coarse_transform: Transform that generates coarse-resolution fields.
+    coarse_grid: The coarse grid to which high-resolution fields are
+      downsampled for comparison.
+    hres_grid: The high-resolution grid.
+    keys: A sequence of keys for which to apply conservation.
+    epsilon: A small value to avoid division by zero.
+  """
+  raw_hres_transform: TransformABC
+  ref_coarse_transform: TransformABC
+  coarse_grid: coordinates.LonLatGrid
+  hres_grid: coordinates.LonLatGrid
+  keys: Sequence[str]
+  epsilon: float = 1e-6
+
+  def __post_init__(self):
+    self.regrid_to_coarse = Regrid(
+        regridder=interpolators.ConservativeRegridder(self.coarse_grid)
+    )
+    self.regrid_to_hres = Regrid(
+        regridder=interpolators.ConservativeRegridder(self.hres_grid)
+    )
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    hres_outputs = self.raw_hres_transform(inputs)
+    coarse_outputs = self.ref_coarse_transform(inputs)
+
+    for key in self.keys:
+      if key not in hres_outputs or key not in coarse_outputs:
+        raise ValueError(
+            f'Key {key} not found in {hres_outputs.keys()} or in'
+            f' {coarse_outputs.keys()}'
+        )
+
+      coarse_field = coarse_outputs[key]
+      hres_field = hres_outputs[key]
+      downsampled_hres = self.regrid_to_coarse({key: hres_field})[key]
+      ratio = coarse_field / (
+          downsampled_hres
+          + self.epsilon
+          * cx.cmap(lambda x: jnp.where(x >= 0, 1.0, -1.0))(downsampled_hres)
+      )
+      upsampled_ratio = self.regrid_to_hres({key: ratio})[key]
+      conserved_hres_field = hres_field * upsampled_ratio
+      hres_outputs[key] = conserved_hres_field
+    return hres_outputs
 
 
 @nnx_compat.dataclass

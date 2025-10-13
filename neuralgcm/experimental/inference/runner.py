@@ -201,6 +201,13 @@ class InferenceRunner:
       raise ValueError(f'Unknown bad_state_strategy: {self.bad_state_strategy}')
     if isinstance(self.init_times, pd.DatetimeIndex):
       self.init_times = self.init_times.to_numpy()
+    for key, dataset in self.inputs.items():
+      time_index: pd.Index = dataset.indexes['time']
+      if (time_index.get_indexer(self.init_times) == -1).any():
+        raise ValueError(
+            f'inputs {key!r} does not contain all init_times:\n'
+            f'inputs={self.inputs}\ninit_times={self.init_times}'
+        )
 
   @property
   def total_steps(self) -> int:

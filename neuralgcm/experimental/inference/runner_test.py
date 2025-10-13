@@ -247,6 +247,23 @@ class RunnerTest(parameterized.TestCase):
           msg=f'{first_realization=}, {second_init=}',
       )
 
+    with self.assertRaisesRegex(ValueError, 'does not contain all init_times'):
+      runnerlib.InferenceRunner(
+          model=model,
+          inputs=inputs,
+          dynamic_inputs=dynamic_inputs,
+          init_times=np.append(init_times, [np.datetime64('2025-01-03')]),
+          ensemble_size=ensemble_size,
+          output_path=output_path,
+          output_query=output_query,
+          output_freq=np.timedelta64(6, 'h'),
+          output_duration=np.timedelta64(48, 'h'),
+          zarr_chunks=zarr_chunks,
+          write_duration=np.timedelta64(24, 'h'),
+          unroll_duration=np.timedelta64(12, 'h'),
+          checkpoint_duration=np.timedelta64(24, 'h'),
+      )
+
 
 class AtomicWriteTest(absltest.TestCase):
 

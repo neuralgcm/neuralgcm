@@ -24,6 +24,7 @@ import jax
 import jax_datetime as jdt
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import scales
 from neuralgcm.experimental.core import typing
@@ -271,11 +272,22 @@ def model_inputs_from_xarray(
 ) -> dict[str, dict[str, cx.Field]]:
   """Returns subset of `nested_data` supported by the model for assimilation."""
   nested_data = ensure_timedelta_axis(nested_data)
-  return read_fields_from_xarray(
+  inputs_specs = jax.tree.map(
+      lambda spec: spec.exact_match_coord,
+      model.required_input_specs,
+      is_leaf=lambda x: isinstance(x, data_specs.InputDataSpec),
+  )
+  inputs = read_fields_from_xarray(
       nested_data=nested_data,
-      input_specs=model.required_input_specs,
+      input_specs=inputs_specs,
       strict_matches=False,
   )
+  if not data_specs.are_valid_inputs(inputs, model.required_input_specs):
+    raise ValueError(
+        f'Reading inputs from xarray results in {inputs} that are do not'
+        f' satisfy the required input specs {model.required_input_specs}'
+    )
+  return inputs
 
 
 def model_dynamic_inputs_from_xarray(
@@ -284,8 +296,22 @@ def model_dynamic_inputs_from_xarray(
 ) -> dict[str, dict[str, cx.Field]]:
   """Returns subset of `nested_data` required by the model."""
   nested_data = ensure_timedelta_axis(nested_data)
-  return read_fields_from_xarray(
+  dynamic_inputs_specs = jax.tree.map(
+      lambda spec: spec.exact_match_coord,
+      model.required_dynamic_input_specs,
+      is_leaf=lambda x: isinstance(x, data_specs.InputDataSpec),
+  )
+  dynamic_inputs = read_fields_from_xarray(
       nested_data=nested_data,
-      input_specs=model.required_dynamic_input_specs,
+      input_specs=dynamic_inputs_specs,
       strict_matches=False,
   )
+  if not data_specs.are_valid_inputs(
+      dynamic_inputs, model.required_dynamic_input_specs
+  ):
+    raise ValueError(
+        f'Reading dynamic inputs from xarray results in {dynamic_inputs} that'
+        ' are do not satisfy the required dynamic input specs'
+        f' {model.required_dynamic_input_specs}'
+    )
+  return dynamic_inputs

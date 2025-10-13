@@ -177,12 +177,14 @@ class Model(nnx.Module, abc.ABC):
   @property
   def required_dynamic_input_specs(
       self,
-  ) -> dict[str, dict[str, data_specs.DataSpec]]:
+  ) -> dict[str, dict[str, data_specs.InputDataSpec]]:
     """Returns the required dynamic inputs for the given query."""
     raise NotImplementedError()
 
   @property
-  def required_input_specs(self) -> dict[str, dict[str, data_specs.DataSpec]]:
+  def required_input_specs(
+      self,
+  ) -> dict[str, dict[str, data_specs.InputDataSpec]]:
     """Returns the required inputs for the given query."""
     raise NotImplementedError()
 
@@ -385,13 +387,15 @@ class VectorizedModel(Model):
   @property
   def required_dynamic_input_specs(
       self,
-  ) -> dict[str, dict[str, data_specs.DataSpec]]:
+  ) -> dict[str, dict[str, data_specs.InputDataSpec]]:
     """Returns the required dynamic inputs for the given query."""
     # TODO(dkochkov): Consider returning vectorized specs.
     return self.vectorized_model.required_dynamic_input_specs
 
   @property
-  def required_input_specs(self) -> dict[str, dict[str, data_specs.DataSpec]]:
+  def required_input_specs(
+      self,
+  ) -> dict[str, dict[str, data_specs.InputDataSpec]]:
     """Returns the required inputs for the given query."""
     # TODO(dkochkov): Consider returning vectorized specs.
     return self.vectorized_model.required_input_specs
@@ -553,12 +557,14 @@ class InferenceModel:
   @functools.cached_property
   def required_dynamic_input_specs(
       self,
-  ) -> dict[str, dict[str, data_specs.DataSpec]]:
+  ) -> dict[str, dict[str, data_specs.InputDataSpec]]:
     """Returns the required dynamic inputs for the given query."""
     return self._dummy_model().required_dynamic_input_specs
 
   @functools.cached_property
-  def required_input_specs(self) -> dict[str, dict[str, data_specs.DataSpec]]:
+  def required_input_specs(
+      self,
+  ) -> dict[str, dict[str, data_specs.InputDataSpec]]:
     """Returns the required inputs for the given query."""
     return self._dummy_model().required_input_specs
 

@@ -18,7 +18,6 @@ import collections
 from typing import TypeVar, cast
 
 import coordax as cx
-from dinosaur import spherical_harmonic
 from dinosaur import xarray_utils as dino_xarray_utils
 import jax
 import jax_datetime as jdt
@@ -39,22 +38,6 @@ def xarray_nondimensionalize(
     sim_units: units.SimUnits,
 ) -> xarray.Dataset | xarray.DataArray:
   return xarray.apply_ufunc(sim_units.nondimensionalize, ds)
-
-
-# TODO(shoyer): drop this in favor of coordax.Field.from_xarray
-def coordinates_from_dataset(
-    ds: xarray.Dataset,
-    spherical_harmonics_impl=spherical_harmonic.FastSphericalHarmonics,
-) -> coordinates.DinosaurCoordinates:
-  """Infers coordinates from `ds`."""
-  # TODO(dkochkov): Generalize this to take a role of composing coordinates
-  # from a collection of candidate coordax.Coordinate instances.
-  dino_coords = dino_xarray_utils.coordinate_system_from_dataset(
-      ds,
-      truncation=dino_xarray_utils.LINEAR,
-      spherical_harmonics_impl=spherical_harmonics_impl,
-  )
-  return coordinates.DinosaurCoordinates.from_dinosaur_coords(dino_coords)
 
 
 def get_longitude_latitude_names(ds: xarray.Dataset) -> tuple[str, str]:

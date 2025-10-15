@@ -103,7 +103,18 @@ def ensure_timedelta_axis(ds: DatasetOrNestedDataset) -> DatasetOrNestedDataset:
   return ds
 
 
-def xarray_to_fields_with_time(
+def time_field_from_xarray_coords(
+    coords: xarray.Coordinates,
+) -> cx.Field:
+  """Returns a coordax.Field object for the time coordinate in `coords`."""
+  if 'time' not in coords:
+    raise ValueError(f'No `time` in {coords.keys()=}')
+  timedelta = coordinates.TimeDelta.from_xarray(('timedelta',), coords)
+  time = coords['time']
+  return cx.wrap(jdt.to_datetime(time.data), timedelta)
+
+
+def xarray_to_fields(
     ds: xarray.Dataset,
     additional_coord_types: tuple[cx.Coordinate, ...] = (),
 ) -> dict[str, cx.Field]:
@@ -118,17 +129,21 @@ def xarray_to_fields_with_time(
     A dictionary mapping variable names to coordax fields.
   """
   variables = cast(dict[str, xarray.DataArray], dict(ds))
-  fields = {
+  return {
       k: coordinates.field_from_xarray(v, additional_coord_types)
       for k, v in variables.items()
   }
-  time = variables.pop('time', None)
-  # TODO(dkochkov): consider breaking this into a separate function.
-  if time is None:
-    # Fall back to getting 'time' from coordinates
-    time = ds.coords['time']
-    timedelta = coordinates.TimeDelta.from_xarray(('timedelta',), ds.coords)
-    fields['time'] = cx.wrap(jdt.to_datetime(time.data), timedelta)
+
+
+def xarray_to_fields_with_time(
+    ds: xarray.Dataset,
+    additional_coord_types: tuple[cx.Coordinate, ...] = (),
+) -> dict[str, cx.Field]:
+  """Same as xarray_to_fields, but with required time in `ds` or `ds.coords`."""
+  fields = xarray_to_fields(ds, additional_coord_types)
+  if 'time' not in fields:
+    time = time_field_from_xarray_coords(ds.coords)
+    fields['time'] = time
   return fields
 
 

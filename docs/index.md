@@ -40,6 +40,11 @@ The best place to ask for help using NeuralGCM models or datasets is
 You can also reach the NeuralGCM team directly at
 [neuralgcm@google.com](mailto:neuralgcm@google.com).
 
+## Experimental Features
+
+Documentation for experimental features that are subject to change and may be
+removed in future releases can be found on the [Experimental API page](experimental.md).
+
 ## Contents
 
 ```{toctree}

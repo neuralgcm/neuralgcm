@@ -72,6 +72,23 @@ def forward_euler(equation: ExplicitODE, time_step: float) -> typing.StepFn:
   return step_fn
 
 
+def rk4(equation: ExplicitODE, time_step: float) -> typing.StepFn:
+  """Time stepping for an explicit ODE via RK4 method."""
+  # pylint: disable=invalid-name
+  dt = time_step
+  F = tree_math.unwrap(equation.explicit_terms)
+
+  @tree_math.wrap
+  def step_fn(u0):
+    k1 = F(u0)
+    k2 = F(u0 + dt / 2 * k1)
+    k3 = F(u0 + dt / 2 * k2)
+    k4 = F(u0 + dt * k3)
+    return u0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+
+  return step_fn
+
+
 @nnx_compat.dataclass
 class DinosaurIntegrator(nnx.Module, pytree=False):
   """Module that wraps time integrators from dinosaur package."""
@@ -116,4 +133,18 @@ class ExplicitEuler(DinosaurIntegrator):
         equation=equation,
         time_step=time_step,
         integrator=forward_euler,
+    )
+
+
+class RungeKutta4(DinosaurIntegrator):
+
+  def __init__(
+      self,
+      equation: ExplicitODE,
+      time_step: float,
+  ):
+    super().__init__(
+        equation=equation,
+        time_step=time_step,
+        integrator=rk4,
     )

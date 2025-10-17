@@ -515,6 +515,50 @@ class TransformsTest(parameterized.TestCase):
       with self.assertRaisesRegex(ValueError, 'Key temp not found'):
         transform(inputs_missing)
 
+  def test_velocity_div_curl_roundtrip(self):
+    mesh = parallelism.Mesh()
+    ylm_map = spherical_transforms.YlmMapper(
+        truncation_rule='cubic', mesh=mesh, partition_schema_key=None
+    )
+    modal_grid = coordinates.SphericalHarmonicGrid.T21()
+    nodal_grid = coordinates.LonLatGrid.T21()
+    rng = jax.random.PRNGKey(42)
+    u_data = jax.random.normal(rng, nodal_grid.shape)
+    v_data = jax.random.normal(rng, nodal_grid.shape)
+    u = cx.wrap(u_data, nodal_grid)
+    v = cx.wrap(v_data, nodal_grid)
+    nodal_inputs = {'u_component_of_wind': u, 'v_component_of_wind': v}
+    to_modal = transforms.ToModal(ylm_map)
+    l_ax = modal_grid.axes[1]
+    scales = np.exp(-0.5 * np.arange(l_ax.sizes['total_wavenumber']))
+    scales = cx.wrap(scales, l_ax)
+    filter_fn = lambda in_dict: {k: v * scales for k, v in in_dict.items()}
+    to_nodal = transforms.ToNodal(ylm_map)
+    nodal_inputs = to_nodal(filter_fn(to_modal(nodal_inputs)))
+
+    div_curl_to_uv = transforms.VelocityFromModalDivCurl(ylm_map)
+    uv_to_div_curl = transforms.DivCurlFromNodalVelocity(ylm_map)
+
+    # test nodal -> modal -> nodal roundtrip
+    div_curl_outputs = uv_to_div_curl(nodal_inputs)
+    self.assertEqual(
+        cx.get_coordinate(div_curl_outputs['divergence']), modal_grid
+    )
+    self.assertEqual(
+        cx.get_coordinate(div_curl_outputs['vorticity']), modal_grid
+    )
+    uv_recon = div_curl_to_uv(div_curl_outputs)
+    chex.assert_trees_all_close(
+        uv_recon['u_component_of_wind'],
+        nodal_inputs['u_component_of_wind'],
+        atol=7.5e-3,
+    )
+    chex.assert_trees_all_close(
+        uv_recon['v_component_of_wind'],
+        nodal_inputs['v_component_of_wind'],
+        atol=7.5e-3,
+    )
+
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

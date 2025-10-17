@@ -906,3 +906,22 @@ class VelocityFromModalDivCurl(TransformABC):
         vorticity, divergence, self.ylm_map, clip=self.clip
     )
     return {self.u_key: u, self.v_key: v}
+
+
+@nnx_compat.dataclass
+class DivCurlFromNodalVelocity(TransformABC):
+  """Transform 2D velocity components to divergence and vorticity."""
+
+  ylm_map: spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  divergence_key: str = 'divergence'
+  vorticity_key: str = 'vorticity'
+  u_key: str = 'u_component_of_wind'
+  v_key: str = 'v_component_of_wind'
+  clip: bool = True
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    u, v = inputs[self.u_key], inputs[self.v_key]
+    vorticity, div = spherical_transforms.uv_nodal_to_vor_div_modal(
+        u, v, self.ylm_map, clip=self.clip
+    )
+    return {self.divergence_key: div, self.vorticity_key: vorticity}

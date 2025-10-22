@@ -241,8 +241,10 @@ class VectorizedModel(Model):
     if isinstance(model, VectorizedModel):
       v_axes = model.vector_axes
       v_axes = module_utils.merge_vectorized_axes(vectorization_specs, v_axes)
+      model_to_vectorize = model.vectorized_model
     elif isinstance(model, Model):
       v_axes = vectorization_specs
+      model_to_vectorize = model
     else:
       raise ValueError(
           f'Model type must be Model or VectorizedModel, got: {type(model)}'
@@ -250,7 +252,7 @@ class VectorizedModel(Model):
 
     vectorized_filters = tuple(k for k, v in v_axes.items() if v.ndim)
     graph_def, state_to_clone, state_to_merge = nnx.split(
-        model, vectorized_filters, ...
+        model_to_vectorize, vectorized_filters, ...
     )
     state_to_clone = nnx.clone(state_to_clone)
     vectorized_model = nnx.merge(graph_def, state_to_clone, state_to_merge)

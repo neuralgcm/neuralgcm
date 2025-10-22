@@ -29,6 +29,18 @@ def create_climatology(dayofyear=None, data=None):
   )
 
 
+class EmptyDynamicInputsTest(absltest.TestCase):
+
+  def test_forecast(self):
+    t0 = np.datetime64('2025-01-01T00')
+    forecast = dynamic_inputs_lib.EmptyDynamicInputs().get_forecast(t0)
+    actual = forecast.get_data(
+        lead_start=np.timedelta64(0, 'h'), lead_stop=np.timedelta64(60, 'h')
+    )
+    expected = {}
+    self.assertEqual(expected, actual)
+
+
 class PersistenceTest(absltest.TestCase):
 
   def test_forecast(self):

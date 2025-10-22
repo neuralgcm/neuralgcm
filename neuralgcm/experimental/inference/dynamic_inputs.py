@@ -220,6 +220,26 @@ class _PersistenceForecast(_Forecast[XarrayData]):  # pylint: disable=missing-cl
 
 
 @dataclasses.dataclass(frozen=True)
+class _EmptyForecast(_Forecast[XarrayData]):  # pylint: disable=missing-class-docstring
+
+  def get_data(
+      self, lead_start: np.timedelta64, lead_stop: np.timedelta64
+  ) -> XarrayData:
+    return {}
+
+
+@dataclasses.dataclass(frozen=True)
+class EmptyDynamicInputs(DynamicInputs[XarrayData]):
+  """Empty data for dynamic inputs."""
+
+  def __init__(self):
+    super().__init__(full_data=None, climatology=None, update_freq=None)
+
+  def get_forecast(self, init_time: np.datetime64) -> _Forecast[XarrayData]:
+    return _get_forecast(_EmptyForecast, self, init_time)
+
+
+@dataclasses.dataclass(frozen=True)
 class Persistence(DynamicInputs[XarrayData]):
   """Persistent the initial state for dynamic inputs."""
 

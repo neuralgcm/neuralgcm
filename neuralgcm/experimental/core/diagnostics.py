@@ -177,9 +177,7 @@ class IntervalDiagnostic(DiagnosticModule):
       state_coord, i_ax = self.extract_coords[k], self.interval_axis
       current = v.value.untag(i_ax, state_coord)
       cumulative = self.cumulative[k].value.untag(state_coord)
-      updated = cx.cmap(update_lagged, out_axes=current.named_axes)(
-          current, cumulative
-      )
+      updated = cx.cpmap(update_lagged)(current, cumulative)
       self.lagged_cumulatives[k].value = updated.tag(i_ax, state_coord)
 
   def diagnostic_values(self) -> typing.Pytree:

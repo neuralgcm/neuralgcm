@@ -101,9 +101,7 @@ def _masked_nan_to_num(
 
   mask_coord = cx.get_coordinate(mask)
   masked_nan_to_num = lambda x, m: jnp.where(m, jnp.nan_to_num(x, nan=num), x)
-  [x, mask] = cx.untag([x, mask], mask_coord)
-  masked_nan_to_num = cx.cmap(masked_nan_to_num, out_axes=x.named_axes)
-  result = masked_nan_to_num(x, mask)
+  result = cx.cpmap(masked_nan_to_num)(*cx.untag([x, mask], mask_coord))
   return result.tag(mask_coord)
 
 

@@ -13,13 +13,26 @@
 # limitations under the License.
 """Tests that normalization modules work as expected."""
 
+import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
+from flax import nnx
 import jax
 from jax import config  # pylint: disable=g-importing-member
 import jax.numpy as jnp
 from neuralgcm.experimental.core import normalizations
 import numpy as np
+
+
+@functools.partial(nnx.jit, static_argnames=('update_stats',))
+def _stream_norm_apply(
+    norm: normalizations.StreamNorm,
+    inputs: np.ndarray,
+    update_stats: bool = True,
+):
+  """Applies stream norm and updates state."""
+  return norm(inputs, update_stats=update_stats)
 
 
 class NormalizationsTest(parameterized.TestCase):
@@ -28,21 +41,21 @@ class NormalizationsTest(parameterized.TestCase):
     # we get exact identity if epsilon is zero.
     norm = normalizations.StreamNorm((2,), feature_axes=(-2,), epsilon=0.0)
     inputs = np.random.RandomState(0).normal(size=(10, 2, 2))
-    outputs = norm(inputs, update_stats=False)
+    outputs = _stream_norm_apply(norm, inputs, update_stats=False)
     np.testing.assert_allclose(outputs, inputs)
 
   def test_stream_norm_first_step_estimate(self):
     norm = normalizations.StreamNorm(epsilon=0.0)
     inputs = np.random.RandomState(0).normal(size=(10, 2, 2))
-    _ = norm(inputs)
+    _ = _stream_norm_apply(norm, inputs)
     mean, var = norm.stats()
-    np.testing.assert_allclose(mean, np.mean(inputs))
-    np.testing.assert_allclose(var, np.var(inputs, ddof=1))
+    np.testing.assert_allclose(mean, np.mean(inputs), rtol=1e-6)
+    np.testing.assert_allclose(var, np.var(inputs, ddof=1), rtol=1e-6)
 
   def test_stream_norm_normalizes_fixed_inputs(self):
     norm = normalizations.StreamNorm(epsilon=0.0)
     inputs = np.random.RandomState(0).normal(size=(10, 2, 2))
-    output = norm(inputs)
+    output = _stream_norm_apply(norm, inputs)
     np.testing.assert_allclose(np.mean(output), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.var(output, ddof=1), 1.0, atol=1e-6)
 
@@ -56,18 +69,18 @@ class NormalizationsTest(parameterized.TestCase):
     n_samples = 100
     n_levels = 4
     shape = (n_samples, n_levels, 32, 16)
-    rng = jax.random.PRNGKey(0)
+    rng = np.random.RandomState(0)
     stream_norm = normalizations.StreamNorm()
-    all_inputs = mean + np.sqrt(var) * jax.random.normal(rng, shape=shape)
+    all_inputs = mean + np.sqrt(var) * rng.normal(size=shape)
     for i in range(n_samples):
       inputs = all_inputs[i]
-      _ = stream_norm(inputs)
+      _ = _stream_norm_apply(stream_norm, inputs)
 
     expected_mean = all_inputs.mean()
     expected_variance = all_inputs.var(ddof=1)
     actual_mean, actual_variance = stream_norm.stats()
     np.testing.assert_allclose(actual_mean, expected_mean, rtol=1e-4)
-    np.testing.assert_allclose(actual_variance, expected_variance, rtol=5e-2)
+    np.testing.assert_allclose(actual_variance, expected_variance, rtol=1e-3)
 
   def test_stream_norm_estimates_stats_correctly_per_level(self):
     n_samples = 100
@@ -90,7 +103,7 @@ class NormalizationsTest(parameterized.TestCase):
     )
     for i in range(n_samples):
       inputs = all_inputs[i]
-      _ = stream_norm_per_level(inputs)
+      _ = _stream_norm_apply(stream_norm_per_level, inputs)
 
     expected_mean = all_inputs.mean(axis=(0, 2, 3))
     expected_variance = all_inputs.var(axis=(0, 2, 3), ddof=1)
@@ -102,7 +115,9 @@ class NormalizationsTest(parameterized.TestCase):
       expected_mean = all_inputs.mean(axis=(0, 2, 3), keepdims=True)[0, ...]
       expected_variance = all_inputs.var(axis=(0, 2, 3), keepdims=True)[0, ...]
       inputs = all_inputs[0, ...]  # pick one of the samples.
-      actual_output = stream_norm_per_level(inputs, update_stats=False)
+      actual_output = _stream_norm_apply(
+          stream_norm_per_level, inputs, update_stats=False
+      )
       expected_output = (inputs - expected_mean) / np.sqrt(expected_variance)
       np.testing.assert_allclose(actual_output, expected_output, atol=1e-4)
 

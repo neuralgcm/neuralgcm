@@ -62,13 +62,10 @@ class ModalFixedGlobalMeanFilter(StepFilter):
   ) -> dict[str, cx.Field]:
     ylm_grid = self.ylm_grid
     for key in self.keys:
-      in_field = state[key].untag(ylm_grid)
-      get_global_mean = cx.cmap(lambda x: x[:, 0], out_axes=in_field.named_axes)
-      set_mean = cx.cmap(
-          lambda x, mean: x.at[:, 0].set(mean), out_axes=in_field.named_axes
-      )
-      global_mean = get_global_mean(in_field)
-      next_in_field = next_state[key].untag(ylm_grid)
-      next_state[key] = set_mean(next_in_field, global_mean).tag(ylm_grid)
+      field = state[key]
+      global_mean = cx.cpmap(lambda x: x[:, 0])(field.untag(ylm_grid))
+      next_field = next_state[key].untag(ylm_grid)
+      set_mean_fn = cx.cpmap(lambda x, mean: x.at[:, 0].set(mean))
+      next_state[key] = set_mean_fn(next_field, global_mean).tag(ylm_grid)
 
     return next_state

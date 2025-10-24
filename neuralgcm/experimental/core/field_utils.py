@@ -93,12 +93,11 @@ def combine_fields(
   fields = [
       add_positional(f, concat_axes[k]) for k, f in sorted(fields.items())
   ]
-  named_axes_set = set(tuple(sorted(f.named_axes.items())) for f in fields)
-  if len(named_axes_set) == 1:
-    out_axes = dict(named_axes_set.pop())
-  else:
-    raise ValueError(f'No unique out_axes found in inputs: {named_axes_set=}')
-  return cx.cmap(jnp.concatenate, out_axes=out_axes)(fields).tag(out_axis_tag)
+  try:
+    result = cx.cpmap(jnp.concatenate)(fields).tag(out_axis_tag)
+  except ValueError as e:
+    raise ValueError(f'No unique out_axes found in inputs: {fields=}') from e
+  return result
 
 
 def split_to_fields(
@@ -158,7 +157,7 @@ def split_to_fields(
         f' field ({field.positional_shape[0]}).'
     )
   split_fn = functools.partial(jnp.split, indices_or_sections=splits[:-1])
-  splits = cx.cmap(split_fn, out_axes=field.named_axes)(field)
+  splits = cx.cpmap(split_fn)(field)
   maybe_tag = lambda x, c: cx.cmap(jnp.squeeze)(x) if c is None else x.tag(c)
   return {
       k: maybe_tag(splits[i], new_axes[i]).order_as(*c.dims)

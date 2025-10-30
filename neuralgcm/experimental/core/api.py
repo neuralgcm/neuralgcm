@@ -572,8 +572,7 @@ jax.tree_util.register_dataclass(
 )
 
 
-@functools.partial(
-    jax.jit,
+@_checked_jit(
     static_argnames=[
         'timedelta',
         'steps',
@@ -627,9 +626,7 @@ def unroll_from_advance(
   return final_state, observations
 
 
-# TODO(dkochkov): Figure out why having dummy state conflicts with the jit.
-@functools.partial(
-    jax.jit,
+@_checked_jit(
     static_argnames=[
         'timedelta',
         'steps',
@@ -647,7 +644,7 @@ def forecast_steps(
     rng: cx.Field | typing.PRNGKeyArray | None = None,
     start_with_input: bool = True,
     process_observations_fn: Callable[[typing.Observation], Any] = lambda x: x,
-) -> tuple[typing.ModelState, typing.Pytree]:
+) -> tuple[typing.SimulationState, typing.Pytree]:
   """Runs a forecast from an inputs for a specified number of steps."""
   if rng is not None and not isinstance(rng, cx.Field):
     rng = cx.wrap(rng, cx.Scalar())

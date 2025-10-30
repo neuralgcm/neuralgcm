@@ -15,6 +15,7 @@
 """API for providing dynamic inputs to NeuralGCM models."""
 
 import abc
+from typing import Protocol
 
 import coordax as cx
 from flax import nnx
@@ -29,6 +30,20 @@ import numpy as np
 DynamicInput = typing.DynamicInput
 
 
+class TimedInputProtocol(Protocol):
+  """Protocol for modules that provide inputs indexed by time.
+
+  This protocol covers two important module groups: (1) dynamic input modules,
+  which provide time-indexed data for use as conditioning inputs, and (2)
+  coupling modules, which assist in transferring information between different
+  model components.
+  """
+
+  def __call__(self, time: cx.Field) -> typing.Fields:
+    """Returns fields indexed by `time`."""
+    ...
+
+
 class DynamicInputModule(nnx.Module, abc.ABC):
   """Base class for modules that interface with dynamically supplied data."""
 
@@ -38,7 +53,7 @@ class DynamicInputModule(nnx.Module, abc.ABC):
     raise NotImplementedError()
 
   @abc.abstractmethod
-  def __call__(self, time: jdt.Datetime) -> typing.Pytree:
+  def __call__(self, time: cx.Field) -> typing.Fields:
     """Returns dynamic data at the specified time."""
     raise NotImplementedError()
 
@@ -119,7 +134,7 @@ class DynamicInputSlice(DynamicInputModule):
     index = jnp.round(approx_index).astype(int)
     return jax.lax.dynamic_index_in_dim(array, index, keepdims=False)
 
-  def __call__(self, time: cx.Field) -> dict[str, cx.Field]:
+  def __call__(self, time: cx.Field) -> typing.Fields:
     """Returns covariates at the specified time."""
     outputs = {}
     for k, v in self.data.value.items():

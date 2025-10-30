@@ -71,7 +71,7 @@ class ModalOrography(nnx.Module):
     nodal_orography = xarray_utils.xarray_nondimensionalize(
         nodal_orography, sim_units
     )
-    nodal_orography = coordinates.field_from_xarray(nodal_orography)
+    nodal_orography = xarray_utils.field_from_xarray(nodal_orography)
     nodal_orography = nodal_orography.unwrap(data_ylm_transform.nodal_grid)
     if not isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       nodal_orography = spatial_filter(nodal_orography)
@@ -155,7 +155,7 @@ class Orography(nnx.Module):
     nodal_orography = xarray_utils.xarray_nondimensionalize(
         nodal_orography, sim_units
     )
-    nodal_orography = coordinates.field_from_xarray(nodal_orography)
+    nodal_orography = xarray_utils.field_from_xarray(nodal_orography)
     data_grid = cx.get_coordinate(nodal_orography)
     nodal_orography = nodal_orography.data
     nodal_orography = spatial_filter(nodal_orography)

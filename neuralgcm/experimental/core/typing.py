@@ -28,7 +28,6 @@ import jax.numpy as jnp
 from neuralgcm.experimental.core import scales
 import numpy as np
 import pandas as pd
-import tree_math
 
 
 units = scales.units
@@ -48,7 +47,7 @@ Quantity = scales.Quantity
 #
 # Main structured API types.
 #
-PrognosticsDict = dict[str, cx.Field]
+Fields = dict[str, cx.Field]
 Observation = dict[str, dict[str, cx.Field]]
 Query = dict[str, dict[str, cx.Coordinate | cx.Field]]
 
@@ -117,42 +116,6 @@ jax.tree_util.register_dataclass(
 
 
 StepFn = Callable[[PyTreeState], PyTreeState]
-
-
-@tree_math.struct
-class ModelState(Generic[PyTreeState]):
-  """Simulation state decomposed into prognostic, diagnostic and randomness.
-
-  Attributes:
-    prognostics: Prognostic variables describing the simulation state.
-    diagnostics: Optional diagnostic values holding diagnostic information.
-    randomness: Optional randomness state describing stochasticity of the model.
-  """
-
-  prognostics: PyTreeState
-  diagnostics: Pytree = dataclasses.field(default_factory=dict)
-  randomness: Pytree = dataclasses.field(default_factory=dict)
-
-
-@jax.tree_util.register_pytree_node_class
-@dataclasses.dataclass
-class RandomnessTuple:
-  """State describing the random process."""
-
-  prng_key: jax.Array
-  prng_step: int = 0
-  core: Pytree = None
-
-  def tree_flatten(self):
-    """Flattens Randomness JAX pytree."""
-    leaves = (self.prng_key, self.prng_step, self.core)
-    aux_data = ()
-    return leaves, aux_data
-
-  @classmethod
-  def tree_unflatten(cls, aux_data, leaves):
-    """Unflattens Randomness from aux_data and leaves."""
-    return cls(*leaves, *aux_data)
 
 
 #

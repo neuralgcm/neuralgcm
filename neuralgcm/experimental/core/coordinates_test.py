@@ -21,6 +21,7 @@ from coordax import testing as coordax_testing
 import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import xarray_utils
 import numpy as np
 
 
@@ -144,7 +145,7 @@ class CoordinatesTest(parameterized.TestCase):
       with self.subTest('xarray_roundtrip'):
         field = cx.wrap(np.zeros(coords.shape), coords)
         data_array = field.to_xarray()
-        reconstructed = coordinates.field_from_xarray(data_array)
+        reconstructed = xarray_utils.field_from_xarray(data_array)
         expected = expected_field_transform(field)
         coordax_testing.assert_fields_equal(reconstructed, expected)
 

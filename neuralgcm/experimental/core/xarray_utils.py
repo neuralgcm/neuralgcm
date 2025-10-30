@@ -130,7 +130,7 @@ def xarray_to_fields(
   """
   variables = cast(dict[str, xarray.DataArray], dict(ds))
   return {
-      k: coordinates.field_from_xarray(v, additional_coord_types)
+      k: field_from_xarray(v, additional_coord_types)
       for k, v in variables.items()
   }
 
@@ -145,6 +145,23 @@ def xarray_to_fields_with_time(
     time = time_field_from_xarray_coords(ds.coords)
     fields['time'] = time
   return fields
+
+
+def field_from_xarray(
+    data_array: xarray.DataArray,
+    additional_coord_types: tuple[cx.Coordinate, ...] = (),
+) -> cx.Field:
+  """Converts an xarray.DataArray to a Field using NeuralGCM coordinates."""
+  coord_types = (
+      coordinates.TimeDelta,
+      coordinates.LonLatGrid,
+      coordinates.SphericalHarmonicGrid,
+      coordinates.PressureLevels,
+      coordinates.SigmaLevels,
+      coordinates.LayerLevels,
+      cx.DummyAxis,
+  )
+  return cx.Field.from_xarray(data_array, coord_types + additional_coord_types)
 
 
 def read_fields_from_xarray(
@@ -193,7 +210,7 @@ def read_fields_from_xarray(
       additional_coord_types += [cx.LabeledAxis]
 
     fields = {
-        k: coordinates.field_from_xarray(v, tuple(additional_coord_types))
+        k: field_from_xarray(v, tuple(additional_coord_types))
         for k, v in variables.items()
     }
 

@@ -31,6 +31,7 @@ from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
+from neuralgcm.experimental.core import xarray_utils
 import xarray
 
 
@@ -213,5 +214,5 @@ class CoordFeatures(transforms.TransformABC):
         da = dataset[key]
         data_units = units.parse_units(da.attrs['units'])
         da = da.copy(data=sim_units.nondimensionalize(da.values * data_units))
-        candidate = coordinates.field_from_xarray(da).order_as(self.coords[key])
-        feature.value = candidate.data
+        candidate = xarray_utils.field_from_xarray(da)
+        feature.value = candidate.order_as(self.coords[key]).data

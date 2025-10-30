@@ -351,6 +351,28 @@ class TransformsTest(parameterized.TestCase):
     }
     chex.assert_trees_all_close(actual, expected)
 
+  def test_apply_fn_to_keys(self):
+    x = cx.SizedAxis('x', 3)
+    inputs = {
+        'a': cx.wrap(np.array([1.0, 2.0, 3.0]), x),
+        'b': cx.wrap(np.array([4.0, 5.0, 6.0]), x),
+    }
+    double_fn = lambda x: x * 2.0
+    apply_to_a = transforms.ApplyFnToKeys(double_fn, ['a'])
+    actual = apply_to_a(inputs)
+    expected = {'a': cx.wrap(np.array([2.0, 4.0, 6.0]), x)}
+    chex.assert_trees_all_close(actual, expected)
+
+    apply_to_b_keep_a = transforms.ApplyFnToKeys(
+        double_fn, ['b'], include_remaining=True
+    )
+    actual = apply_to_b_keep_a(inputs)
+    expected = {
+        'a': cx.wrap(np.array([1.0, 2.0, 3.0]), x),
+        'b': cx.wrap(np.array([8.0, 10.0, 12.0]), x),
+    }
+    chex.assert_trees_all_close(actual, expected)
+
   def test_apply_over_axis_with_scan(self):
     nodal_grid = coordinates.LonLatGrid.T21()
     modal_grid = coordinates.SphericalHarmonicGrid.T21()

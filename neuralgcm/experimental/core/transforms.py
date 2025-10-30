@@ -322,6 +322,25 @@ class ApplyToKeys(TransformABC):
 
 
 @nnx_compat.dataclass
+class ApplyFnToKeys(TransformABC):
+  """Applies a Field -> Field function to a subset of keys.
+
+  This is a helper transform that applies `fn` to `keys`. If `include_remaining`
+  is set to True, outputs include the rest of the inptus unchanged.
+  """
+
+  fn: Callable[[cx.Field], cx.Field]
+  keys: Sequence[str]
+  include_remaining: bool = False
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    transformed = {k: self.fn(v) for k, v in inputs.items() if k in self.keys}
+    if self.include_remaining:
+      transformed |= {k: v for k, v in inputs.items() if k not in self.keys}
+    return transformed
+
+
+@nnx_compat.dataclass
 class ApplyOverAxisWithScan(TransformABC):
   """Wrapper transform that applies `transform` over `axis` using scan."""
 

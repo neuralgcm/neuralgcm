@@ -16,10 +16,14 @@
 
 import abc
 import dataclasses
-from typing import Any, Callable
+import enum
+from typing import Any, Callable, Generic, TypeAlias, TypeVar
 
 import coordax as cx
 import jax
+from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import typing
+import numpy as np
 
 
 @dataclasses.dataclass
@@ -95,6 +99,279 @@ class InputOnlySpec(DataSpec):
   """
 
   ...
+
+
+@enum.unique
+class DimMatchRules(enum.Enum):
+  """Rules for matching dimensions in CoordSpec.
+
+  Attributes:
+    EXACT: coordinates must match exactly.
+    PRESENT: dimension must be present, but no other checks are performed.
+    SUBSET: values in CoordSpec must be a subset of values in the data.
+  """
+
+  EXACT = 'exact'
+  PRESENT = 'present'
+  SUBSET = 'subset'
+
+
+@dataclasses.dataclass
+class CoordSpec:
+  """A partial specification of the coordinate to be completed from data.
+
+  Can be used to express flexible data expectations by specifying validation
+  rules for coordinate axes individually. By default sets EXACT matching rule
+  for all axes not included in `dim_match_rules`. If all `dim_match_rules` are
+  set to `DimMatchRules.EXACT`, the specification is equivalent to the
+  coordinate that it wraps.
+
+  Examples:
+    dummy_delta = coordinates.TimeDelta(np.timedelta64(0, 's')[None])
+    levels = coordinates.PressureLevels.with_13_era5_levels()
+    x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=50))
+    c_spec = CoordSpec(
+        cx.compose_coordinates(dummy_delta, levels, x),
+        {'timedelta': DimMatchRules.PRESENT, 'pressure': DimMatchRules.SUBSET},
+    )
+    delta_a = coordinates.TimeDelta(np.timedelta64(1, 's')[None])
+    delta_b = coordinates.TimeDelta(np.arange(10) * np.timedelta64(1, 's'))
+    good_levels = coordinates.PressureLevels.with_era5_levels()
+    bad_levels = coordinates.PressureLevels([400, 1000])
+    xp = cx.LabeledAxis('x', np.linspace(0, np.pi, num=100))
+    # Pass:
+    c_spec.validate_compatible(cx.compose_coordinates(delta_a, good_levels, x))
+    c_spec.validate_compatible(cx.compose_coordinates(delta_b, good_levels, x))
+    # Raise:
+    c_spec.validate_compatible(cx.compose_coordinates(delta_a, bad_levels, x))
+    c_spec.validate_compatible(cx.compose_coordinates(delta_a, good_levels, xp))
+    c_spec.validate_compatible(cx.compose_coordinates(good_levels, x))
+
+  Attributes:
+    coord: Coordinate that describes the supported data.
+    dim_match_rules: Dictionary mapping dimension name to matching rule.
+      Dimensions without set values default to `DimMatchRules.EXACT`.
+  """
+
+  coord: cx.Coordinate
+  dim_match_rules: dict[str, DimMatchRules] = dataclasses.field(
+      default_factory=dict
+  )
+
+  def __post_init__(self):
+    for dim in self.coord.dims:
+      if dim not in self.dim_match_rules:
+        self.dim_match_rules[dim] = DimMatchRules.EXACT
+    if set(self.coord.dims) != set(self.dim_match_rules.keys()):
+      raise ValueError(
+          f'{self.dim_match_rules=} and {self.coord=} have incompatible sets of'
+          ' dimensions.'
+      )
+
+  def validate_compatible(self, coord: cx.Coordinate):
+    """Raises an informative error if not compatible with `coord`."""
+    if coord.dims != self.coord.dims:
+      raise ValueError(
+          f'Coordinates {self.coord} and {coord} have different dimensions'
+      )
+
+    for ax, expected_ax in zip(coord.axes, self.coord.axes):
+      dim = expected_ax.dims[0]
+      match_schema = self.dim_match_rules[dim]
+      if match_schema == DimMatchRules.EXACT:
+        if expected_ax != ax:
+          raise ValueError(
+              f'Coordinate axis {ax} for dimension {dim} does not'
+              f' match expected axis {expected_ax}.'
+          )
+      elif match_schema == DimMatchRules.PRESENT:
+        if not isinstance(ax, type(expected_ax)) or dim not in ax.dims:
+          raise ValueError(
+              f'Coordinate axis {ax} for dimension {dim} is not'
+              ' present or not of the expected type'
+              f' {type(expected_ax)}.'
+          )
+      elif match_schema == DimMatchRules.SUBSET:
+        if not isinstance(ax, type(expected_ax)):
+          raise ValueError(
+              f'Coordinate axis {ax} for dimension {dim} is not'
+              f' of the expected type {type(expected_ax)}.'
+          )
+        required_ticks = expected_ax.fields.get(dim)
+        present_ticks = ax.fields.get(dim)
+        if required_ticks is not None:
+          if present_ticks is None or not np.all(
+              np.isin(required_ticks.data, present_ticks.data)
+          ):
+            raise ValueError(
+                f'Coordinate axis {ax} for dimension {dim} does'
+                ' not contain all required ticks from'
+                f' {expected_ax}.'
+            )
+        else:  # no ticks, fall back to checking the size.
+          if ax.shape < expected_ax.shape:
+            raise ValueError(
+                f'Coordinate axis {ax} for dimension {dim} has'
+                f' shape {ax.shape} which is smaller than the'
+                f' expected shape {expected_ax.shape}.'
+            )
+      else:
+        raise NotImplementedError(f'Unknown match schema: {match_schema}')
+
+  def to_coordinate(self, candidate: cx.Coordinate | None) -> cx.Coordinate:
+    """Returns a verified, concrete coordinate compatible with this spec.
+
+    If `candidate` is provided, verifies that it is is compatible with this spec
+    and returns it. If no candidate is provided, returns self.coord if all
+    dimensions are labeled as `DimMatchRules.EXACT`, otherwise raises an error.
+
+    Args:
+      candidate: A coordinate to use as the concrete coordinate.
+
+    Returns:
+      A concrete coordinate compatible with this spec.
+
+    Raises:
+      ValueError: If `candidate` is not None and not compatible with this spec,
+        or if no candidate is provided and not all dimensions are labeled as
+        `DimMatchRules.EXACT`.
+    """
+    if candidate is None:
+      if set(self.dim_match_rules.values()) != {DimMatchRules.EXACT}:
+        raise ValueError(
+            'Cannot make concrete coordinate without reference data'
+        )
+      return self.coord
+    self.validate_compatible(candidate)
+    return candidate
+
+  @classmethod
+  def with_any_timedelta(cls, coord: cx.Coordinate):
+    """Constructs CoordSpec with added timedelta and presence match rule."""
+    dummy_timedelta = coordinates.TimeDelta(np.timedelta64(0, 's')[None])
+    return cls(  # pytype: disable=wrong-arg-types
+        coord=cx.compose_coordinates(dummy_timedelta, coord),
+        dim_match_rules={dummy_timedelta.dims[0]: DimMatchRules.PRESENT},
+    )
+
+  @classmethod
+  def with_given_timedelta(
+      cls,
+      coord: cx.Coordinate,
+      timedelta: np.ndarray = np.timedelta64(0, 's')[None],
+  ):
+    """Constructs CoordSpec with added timedelta and subset match rule."""
+    dummy_timedelta = coordinates.TimeDelta(timedelta)
+    return cls(  # pytype: disable=wrong-arg-types
+        coord=cx.compose_coordinates(dummy_timedelta, coord),
+        dim_match_rules={dummy_timedelta.dims[0]: DimMatchRules.SUBSET},
+    )
+
+
+T = TypeVar('T')
+
+
+@dataclasses.dataclass
+class OptionalSpec(Generic[T]):
+  """Wrapper that indicates that a spec is optional."""
+  spec: T
+
+
+@dataclasses.dataclass
+class FieldInQuerySpec(Generic[T]):
+  """Wrapper that indicates that the entry should be of type `cx.Field`."""
+  spec: T
+
+
+# Type alias for extended Spec objects that are used as InputsSpec.
+CoordLikeSpec: TypeAlias = CoordSpec | OptionalSpec[cx.Coordinate | CoordSpec]
+QuerySpec: TypeAlias = CoordSpec | FieldInQuerySpec[cx.Coordinate | CoordSpec]
+
+
+def get_coord_types(
+    coordinate: cx.Coordinate | CoordSpec,
+) -> tuple[type[cx.Coordinate], ...]:
+  """Returns tuple of coordinate types present in `coordinate`."""
+  if isinstance(coordinate, CoordSpec):
+    coordinate = coordinate.coord
+
+  is_cartesian_prod = lambda x: isinstance(x, cx.CartesianProduct)
+  if is_cartesian_prod(coordinate):
+    # using dict.fromkeys to preserve order of appearance.
+    types = list(dict.fromkeys(type(x) for x in coordinate.coordinates))
+  else:
+    types = [type(coordinate)]
+  # if LabeledAxis is present, move it to the end of the list to ensure that we
+  # try inferring other coordinates first.
+  if cx.LabeledAxis in types:
+    types.remove(cx.LabeledAxis)
+    types.append(cx.LabeledAxis)
+  return tuple(types)
+
+
+def unwrap_optional(spec: T | OptionalSpec[T]) -> tuple[T, bool]:
+  """Returns underlying spec and a bool indicating if spec is Optional."""
+  is_optional = isinstance(spec, OptionalSpec)
+  inner_spec = spec.spec if is_optional else spec  # pytype: disable=attribute-error
+  return inner_spec, is_optional
+
+
+def _maybe_unwrap_field_spec(spec: T | FieldInQuerySpec[T]) -> tuple[T, bool]:
+  """Returns underlying spec and a bool indicating field in query request."""
+  is_field_spec = isinstance(spec, FieldInQuerySpec)
+  inner_spec = spec.spec if is_field_spec else spec  # pytype: disable=attribute-error
+  return inner_spec, is_field_spec
+
+
+def validate_inputs(
+    inputs: dict[str, dict[str, cx.Coordinate]] | typing.InputFields,
+    in_spec: dict[str, dict[str, cx.Coordinate | CoordLikeSpec]],
+):
+  """Validates that `inputs` satisfy expectations of `in_spec`."""
+  for dataset_key, dataset_spec in in_spec.items():
+    if dataset_key not in inputs:
+      raise ValueError(f'Data key {dataset_key} is missing in {inputs.keys()=}')
+
+    in_data = inputs[dataset_key]
+    for var_name, var_spec in dataset_spec.items():
+      inner_spec, is_optional = unwrap_optional(var_spec)
+      if var_name not in in_data:
+        if is_optional:
+          continue
+        else:
+          raise ValueError(f'Missing non-optional variables "{var_name}"')
+
+      x = in_data[var_name]
+      data_coord = x.coordinate if cx.is_field(x) else x
+      if isinstance(inner_spec, cx.Coordinate):
+        inner_spec = CoordSpec(inner_spec)
+      if isinstance(inner_spec, CoordSpec):
+        inner_spec.validate_compatible(data_coord)
+      else:
+        raise ValueError(f'Got in_spec entry {in_spec} of unsupported type')
+
+
+def construct_query(
+    inputs: typing.InputFields,
+    queries_spec: dict[str, dict[str, cx.Coordinate | QuerySpec]],
+) -> typing.Queries:
+  """Constructs query from data and OutputDataSpecs."""
+  queries = {}
+  for data_key, query_spec in queries_spec.items():
+    queries[data_key] = {}
+    for var_name, spec in query_spec.items():
+      spec, is_field_in_query = _maybe_unwrap_field_spec(spec)
+
+      if is_field_in_query:
+        queries[data_key][var_name] = inputs[data_key][var_name]
+      elif isinstance(spec, CoordSpec):
+        in_data = inputs.get(data_key, {})
+        x = in_data.get(var_name, None)
+        coord = x.coordinate if (x is not None and cx.is_field(x)) else None
+        queries[data_key][var_name] = spec.to_coordinate(coord)
+      elif isinstance(spec, cx.Coordinate):
+        queries[data_key][var_name] = spec
+  return queries
 
 
 def _remove_empty(inputs: dict[str, Any]) -> dict[str, Any]:

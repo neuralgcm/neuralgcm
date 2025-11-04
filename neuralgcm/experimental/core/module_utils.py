@@ -524,7 +524,9 @@ def with_callback(
       attrs[field.name] = property(
           lambda self, field=field: getattr(self.wrapped_instance, field.name)
       )
-  cls = type(base_class.__name__ + 'WithCallbacks', (base_class,), attrs)
+  cls = type(
+      base_class.__name__ + 'WithCallbacks', (base_class,), attrs, pytree=False
+  )
   return cls(module, callback_specs)
 
 

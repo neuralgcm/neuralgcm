@@ -537,6 +537,51 @@ class TransformsTest(parameterized.TestCase):
       with self.assertRaisesRegex(ValueError, 'Key temp not found'):
         transform(inputs_missing)
 
+  def test_dimensional_mean(self):
+    grid = coordinates.LonLatGrid.T21()
+    level = cx.SizedAxis('level', 5)
+    const_field = cx.wrap(np.ones(grid.shape, dtype=np.float32), grid)
+    level_field = cx.wrap(
+        np.ones(level.shape + grid.shape, dtype=np.float32), level, grid
+    )
+    inputs = {'a': const_field, 'b': level_field}
+
+    with self.subTest('weighted_average_lat_lon'):
+      transform = transforms.DimensionalMean(
+          dims_to_average=('longitude', 'latitude')
+      )
+      actual = transform(inputs)
+      expected = {
+          'a': cx.wrap(np.float32(1.0)),
+          'b': cx.wrap(np.ones(level.shape, dtype=np.float32), level),
+      }
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('unweighted_average_lon'):
+      lon_coord = const_field.axes['longitude']
+      lat_coord = const_field.axes['latitude']
+      lon_varying_data = np.broadcast_to(
+          np.arange(lon_coord.shape[0], dtype=np.float32)[:, np.newaxis],
+          grid.shape,
+      )
+      lon_varying_field = cx.wrap(lon_varying_data, lon_coord, lat_coord)
+      inputs_lon = {'c': lon_varying_field}
+      transform = transforms.DimensionalMean(dims_to_average=('longitude',))
+      actual = transform(inputs_lon)
+      expected_mean = np.mean(np.arange(lon_coord.shape[0]))
+      expected = {
+          'c': cx.wrap(
+              np.full(lat_coord.shape, expected_mean, dtype=np.float32),
+              lat_coord,
+          )
+      }
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('missing_dim_raises'):
+      transform = transforms.DimensionalMean(dims_to_average=('not_present',))
+      with self.assertRaisesRegex(ValueError, 'missing one or more dimensions'):
+        transform(inputs)
+
   def test_velocity_div_curl_roundtrip(self):
     mesh = parallelism.Mesh()
     ylm_map = spherical_transforms.YlmMapper(

@@ -23,6 +23,7 @@ import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -55,6 +56,14 @@ class DynamicInputModule(nnx.Module, abc.ABC):
   @abc.abstractmethod
   def __call__(self, time: cx.Field) -> typing.Fields:
     """Returns dynamic data at the specified time."""
+    raise NotImplementedError()
+
+  @property
+  @abc.abstractmethod
+  def inputs_spec(
+      self,
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
+    """Returns coordinate specification of the data this module ingests."""
     raise NotImplementedError()
 
 
@@ -143,3 +152,15 @@ class DynamicInputSlice(DynamicInputModule):
           time, self.time.value.untag('timedelta'), v.untag('timedelta')
       )
     return outputs
+
+  @property
+  def inputs_spec(
+      self,
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
+    """Returns coordinate specification of the data this module ingests."""
+    specs = {
+        k: data_specs.CoordSpec.with_any_timedelta(v)
+        for k, v in self.keys_to_coords.items()
+    }
+    specs['time'] = data_specs.CoordSpec.with_any_timedelta(cx.Scalar())
+    return {self.observation_key: specs}

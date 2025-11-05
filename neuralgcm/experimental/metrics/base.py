@@ -22,48 +22,6 @@ import coordax as cx
 
 
 @dataclasses.dataclass
-class Statistic(abc.ABC):
-  """Abstract base class for a statistic."""
-
-  @property
-  @abc.abstractmethod
-  def unique_name(self) -> str:
-    """A unique name for this statistic."""
-    ...
-
-  @abc.abstractmethod
-  def compute(
-      self,
-      predictions: dict[str, cx.Field],
-      targets: dict[str, cx.Field],
-  ) -> dict[str, cx.Field]:
-    """Computes the statistic values."""
-    ...
-
-
-@dataclasses.dataclass
-class PerVariableStatistic(Statistic):
-  """Abstract base class for a statistic computed independently per variable."""
-
-  @abc.abstractmethod
-  def _compute_per_variable(
-      self, predictions: cx.Field, targets: cx.Field
-  ) -> cx.Field:
-    """Computes the statistic for a single variable."""
-    ...
-
-  def compute(
-      self,
-      predictions: dict[str, cx.Field],
-      targets: dict[str, cx.Field],
-  ) -> dict[str, cx.Field]:
-    return {
-        k: self._compute_per_variable(predictions[k], targets[k])
-        for k in targets
-    }
-
-
-@dataclasses.dataclass
 class Metric(abc.ABC):
   """Base class for a metric."""
 
@@ -136,6 +94,60 @@ class PerVariableMetric(Metric):
       stats_per_var = {k: statistic_values[k][v] for k in self.statistics}
       values[v] = self._values_from_mean_statistics_per_variable(stats_per_var)
     return values
+
+
+@dataclasses.dataclass
+class Statistic(Metric, abc.ABC):
+  """Abstract base class for a statistic."""
+
+  @property
+  @abc.abstractmethod
+  def unique_name(self) -> str:
+    """A unique name for this statistic."""
+    ...
+
+  @abc.abstractmethod
+  def compute(
+      self,
+      predictions: dict[str, cx.Field],
+      targets: dict[str, cx.Field],
+  ) -> dict[str, cx.Field]:
+    """Computes the statistic values."""
+    ...
+
+  @property
+  def statistics(self) -> dict[str, Statistic]:
+    """When a Statistic is used as a Metric, it returns its own mean value."""
+    return {'self': self}
+
+  def _values_from_mean_statistics_with_internal_names(
+      self,
+      statistic_values: dict[str, dict[str, cx.Field]],
+  ) -> dict[str, cx.Field]:
+    """Returns 'self' statistic values."""
+    return statistic_values['self']
+
+
+@dataclasses.dataclass
+class PerVariableStatistic(Statistic):
+  """Abstract base class for a statistic computed independently per variable."""
+
+  @abc.abstractmethod
+  def _compute_per_variable(
+      self, predictions: cx.Field, targets: cx.Field
+  ) -> cx.Field:
+    """Computes the statistic for a single variable."""
+    ...
+
+  def compute(
+      self,
+      predictions: dict[str, cx.Field],
+      targets: dict[str, cx.Field],
+  ) -> dict[str, cx.Field]:
+    return {
+        k: self._compute_per_variable(predictions[k], targets[k])
+        for k in targets
+    }
 
 
 @dataclasses.dataclass

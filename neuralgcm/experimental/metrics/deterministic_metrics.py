@@ -85,36 +85,6 @@ class WindVectorSquaredError(base.Statistic):
 
 
 @dataclasses.dataclass
-class MSE(base.PerVariableMetric):
-  """Mean squared error metric."""
-
-  @property
-  def statistics(self) -> dict[str, base.Statistic]:
-    return {'SquaredError': SquaredError()}
-
-  def _values_from_mean_statistics_per_variable(
-      self,
-      statistic_values: dict[str, cx.Field],
-  ) -> cx.Field:
-    return statistic_values['SquaredError']
-
-
-@dataclasses.dataclass
-class MAE(base.PerVariableMetric):
-  """Mean absolute error metric."""
-
-  @property
-  def statistics(self) -> dict[str, base.Statistic]:
-    return {'AbsoluteError': AbsoluteError()}
-
-  def _values_from_mean_statistics_per_variable(
-      self,
-      statistic_values: dict[str, cx.Field],
-  ) -> cx.Field:
-    return statistic_values['AbsoluteError']
-
-
-@dataclasses.dataclass
 class RMSE(base.PerVariableMetric):
   """Root mean squared error metric."""
 
@@ -127,21 +97,6 @@ class RMSE(base.PerVariableMetric):
       statistic_values: dict[str, cx.Field],
   ) -> cx.Field:
     return cx.cmap(jnp.sqrt)(statistic_values['SquaredError'])
-
-
-@dataclasses.dataclass
-class Bias(base.PerVariableMetric):
-  """Mean error metric."""
-
-  @property
-  def statistics(self) -> dict[str, base.Statistic]:
-    return {'Error': Error()}
-
-  def _values_from_mean_statistics_per_variable(
-      self,
-      statistic_values: dict[str, cx.Field],
-  ) -> cx.Field:
-    return statistic_values['Error']
 
 
 @dataclasses.dataclass
@@ -165,3 +120,8 @@ class WindVectorRMSE(base.Metric):
   ) -> dict[str, cx.Field]:
     wind_vector_se = statistic_values['WindVectorSquaredError']
     return {k: cx.cmap(jnp.sqrt)(v) for k, v in wind_vector_se.items()}
+
+
+MSE = SquaredError
+MAE = AbsoluteError
+Bias = Error

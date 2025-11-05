@@ -16,15 +16,36 @@
 
 from __future__ import annotations
 import dataclasses
+import coordax as cx
 from neuralgcm.experimental.metrics import base
 from neuralgcm.experimental.metrics import deterministic_metrics
 
 
 @dataclasses.dataclass
-class MSE(deterministic_metrics.MSE, base.PerVariableLoss):
+class MSE(base.PerVariableLoss):
   """Mean Squared Error loss."""
+
+  @property
+  def statistics(self) -> dict[str, base.Statistic]:
+    return {'SquaredError': deterministic_metrics.SquaredError()}
+
+  def _values_from_mean_statistics_per_variable(
+      self,
+      statistic_values: dict[str, cx.Field],
+  ) -> cx.Field:
+    return statistic_values['SquaredError']
 
 
 @dataclasses.dataclass
-class MAE(deterministic_metrics.MAE, base.PerVariableLoss):
+class MAE(base.PerVariableLoss):
   """Mean Absolute Error loss."""
+
+  @property
+  def statistics(self) -> dict[str, base.Statistic]:
+    return {'AbsoluteError': deterministic_metrics.AbsoluteError()}
+
+  def _values_from_mean_statistics_per_variable(
+      self,
+      statistic_values: dict[str, cx.Field],
+  ) -> cx.Field:
+    return statistic_values['AbsoluteError']

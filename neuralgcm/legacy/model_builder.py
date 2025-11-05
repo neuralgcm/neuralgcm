@@ -603,14 +603,14 @@ class WhirlModel:
     )
 
     def forcing_fwd(forcing_data, sim_time):
-      return model_cls().forcing_fn(forcing_data, sim_time)
+      return model_cls().forcing_fn(forcing_data, sim_time)  # pytype: disable=wrong-keyword-args
 
     forcing_fn = hk.transform(forcing_fwd).apply
-    encode_fwd = lambda x, forcing: model_cls().encode(x, forcing)
+    encode_fwd = lambda x, forcing: model_cls().encode(x, forcing)  # pytype: disable=wrong-keyword-args
     encode_fn = hk.transform(encode_fwd).apply
-    decode_fwd = lambda x, forcing: model_cls().decode(x, forcing)
+    decode_fwd = lambda x, forcing: model_cls().decode(x, forcing)  # pytype: disable=wrong-keyword-args
     decode_fn = hk.transform(decode_fwd).apply
-    advance_fwd = lambda x, forcing: model_cls().advance(x, forcing)
+    advance_fwd = lambda x, forcing: model_cls().advance(x, forcing)  # pytype: disable=wrong-keyword-args
     advance_fn = hk.transform(advance_fwd).apply
     if to_xarray_fn is not None:
       to_xarray_fn = functools.partial(to_xarray_fn, coords=output_coords)
@@ -640,7 +640,7 @@ class WhirlModel:
     """Returns model parameters by initializing encode/advance/decode fn."""
 
     def fwd(x):
-      model = self.model_cls()
+      model = self.model_cls()  # pytype: disable=wrong-keyword-args
       decode = model_utils.with_forcing(
           model.decode, model.forcing_fn, forcing_data
       )

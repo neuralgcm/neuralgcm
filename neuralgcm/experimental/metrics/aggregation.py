@@ -75,6 +75,12 @@ class AggregationState:
     # along shared dimensions. This functionality could be added here in the
     # future by pre-padding stats with zeros or separate disjoint chunks in
     # different AggregationStates.
+    self_is_zeros = not self.sum_weighted_statistics
+    other_is_zeros = not other.sum_weighted_statistics
+    if self_is_zeros:
+      return other
+    if other_is_zeros:
+      return self
     self_coords = jax.tree.map(cx.get_coordinate, self, is_leaf=cx.is_field)
     other_coords = jax.tree.map(cx.get_coordinate, other, is_leaf=cx.is_field)
     if self_coords != other_coords:
@@ -141,13 +147,35 @@ def _is_present(dim: cx.Coordinate | str, field: cx.Field) -> bool:
     return dim in field.dims
 
 
+@functools.partial(
+    jax.tree_util.register_dataclass,
+    data_fields=['context'],
+    meta_fields=[
+        'dims_to_reduce',
+        'weight_by',
+        'scale_by',
+        'bin_by',
+        'skip_missing',
+        'skipna',
+        'keep_weights_for_nans',
+    ],
+)
 @dataclasses.dataclass
 class Aggregator:
   """Defines aggregation process over dimensions of statistics.
 
   This class configures the process of computing an `AggregationState` from raw
-  statistics. It specifies which dimensions to reduce over, and what weighting
-  or binning to apply before the reduction.
+  statistics. It specifies which dimensions to reduce over, and what weighting,
+  scaling or binning to apply before the reduction. Weighting, scaling and
+  binning can be inferred either from the coordinates of the processed
+  statistics or from the `context` values on the Aggregator, that holds
+  coordinate values used to aggregate statistics over dimensions one slice at a
+  time.
+
+  A common use case for the `context` is performing aggregation over data slices
+  (e.g. 'timedelta') one at a time. `context` plays a role of passing the
+  coordinate values to the weighting, scaling and binning functions, since those
+  are not available for individual slices.
 
   Attributes:
     dims_to_reduce: Sequence of coordinates or dimension names to reduce over.
@@ -161,6 +189,10 @@ class Aggregator:
       retained. Such behavior might be desired when computing the loss, where a
       NaN value is slipped without increasing the relative weight of the other
       entries in the statistics. Has effective only when `skipna` is True.
+    context: Optional dictionary of context fields, used for coordinate
+      dependent weighting, binning and scaling. Keys must include all dimensions
+      expected by the weighting, binning and scaling instances that are not
+      included on the statistis `Field`s themselves.
   """
 
   # TODO(dkochkov): Consider introducing a Protocol for added flexibility.
@@ -173,6 +205,19 @@ class Aggregator:
   skip_missing: bool = True
   skipna: bool = False
   keep_weights_for_nans: bool = False
+  context: dict[str, cx.Field] | None = None
+
+  def __post_init__(self):
+    self.dims_to_reduce = tuple(self.dims_to_reduce)
+    self.weight_by = tuple(self.weight_by)
+    if self.scale_by is not None:
+      self.scale_by = tuple(self.scale_by)
+    if self.bin_by is not None:
+      self.bin_by = tuple(self.bin_by)
+
+  def with_context(self, context: dict[str, cx.Field]) -> Aggregator:
+    """Returns a copy of the aggregator with context set."""
+    return dataclasses.replace(self, context=context)
 
   def aggregation_fn(
       self,
@@ -183,12 +228,16 @@ class Aggregator:
     """Applies configured reductions, (optional) weightings, and binnings."""
     weights = cx.wrap(1)
     for weighting_instance in self.weight_by:
-      weights *= weighting_instance.weights(stat_field, field_name=field_name)
+      weights *= weighting_instance.weights(
+          stat_field, field_name=field_name, context=self.context
+      )
 
     if self.bin_by:
       bin_mask = cx.wrap(1)
       for binner in self.bin_by:
-        bin_mask *= binner.create_bin_mask(stat_field, field_name=field_name)
+        bin_mask *= binner.create_bin_mask(
+            stat_field, field_name=field_name, context=self.context
+        )
       weights *= bin_mask
 
     untags = [d for d in self.dims_to_reduce if _is_present(d, stat_field)]
@@ -198,7 +247,9 @@ class Aggregator:
 
     if apply_scales and self.scale_by is not None:
       for scaler in self.scale_by:
-        stat_field *= scaler.scales(stat_field, field_name=field_name)
+        stat_field *= scaler.scales(
+            stat_field, field_name=field_name, context=self.context
+        )
 
     # TODO(dkochkov): Consider using `jnp.dot` + `jnp.sum` here for efficiency.
     sum_positional = cx.cmap(jnp.sum)

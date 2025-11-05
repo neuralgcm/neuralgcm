@@ -214,7 +214,7 @@ class EvaluatorsTest(parameterized.TestCase):
         transforms.ClipWavenumbers({ylm_grid: 2}),
     ])
     area_weighting = weighting.GridAreaWeighting()
-    variable_weighting = weighting.PerVariableWeighting(
+    variable_weighting = weighting.PerVariableWeighting.from_constants(
         variable_weights={'x': 1.0, 'y': 1.0}
     )
     nodal_aggregator = aggregation.Aggregator(

@@ -32,7 +32,10 @@ class Weighting(abc.ABC):
 
   @abc.abstractmethod
   def weights(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
     """Return raw weights for a given field."""
     ...
@@ -58,8 +61,12 @@ class GridAreaWeighting(Weighting):
   skip_missing: bool = True
 
   def weights(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
+    del context  # unused.
     lon_lat_dims = ('longitude', 'latitude')
     ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
     if all(d in field.axes for d in lon_lat_dims):
@@ -83,7 +90,7 @@ class GridAreaWeighting(Weighting):
 
       get_weight = cx.cmap(get_weight)
       lats = grid.fields['latitude']
-      lat_ax = cx.get_coordinate(lats)
+      lat_ax = lats.coordinate
       weights = get_weight(grid.fields['latitude'].untag(lat_ax)).tag(lat_ax)
       weights = weights.broadcast_like(grid)
     elif isinstance(grid, coordinates.SphericalHarmonicGrid):
@@ -112,9 +119,13 @@ class ConstantWeighting(Weighting):
   skip_missing: bool = True
 
   def weights(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
     """Returns the user-provided weights field, optionally normalized."""
+    del context  # unused.
     if all(d in field.dims for d in self.constant.dims):
       weights = self.constant
       return weights
@@ -124,52 +135,6 @@ class ConstantWeighting(Weighting):
       raise ValueError(
           f'{field=} does not have all coordinates in {self.constant=}.'
       )
-
-
-# TODO(dkochkov): Deprecate this in favor of scaling when configs are updated.
-@dataclasses.dataclass
-class TimeDeltaWeighting(Weighting):
-  """Time scaling that assumes error grows like a random walk.
-
-  This is analogous to `linear_transforms.TimeRescaling`. It computes weights
-  that are inversely proportional to the anticipated standard deviation of
-  errors at a given lead time, assuming random-walk-like error growth. The
-  weights are derived from the `TimeDelta` coordinate of the input field.
-
-  Attributes:
-    base_squared_error_in_hours: Number of hours before assumed variance starts
-      growing (almost) linearly.
-    asymptotic_squared_error_in_hours: Number of hours before assumed variance
-      slows its growth. Set to None (the default) if variance grows
-      indefinitely.
-    skip_missing: If True, fields without a matching coordinate will return a
-      weight of 1.0, otherwise an error is raised.
-  """
-
-  base_squared_error_in_hours: float
-  asymptotic_squared_error_in_hours: float | None = None
-  skip_missing: bool = True
-
-  def weights(
-      self, field: cx.Field, field_name: str | None = None
-  ) -> cx.Field:
-    """Computes weights based on the TimeDelta coordinate of the field."""
-    time_coord = field.axes.get('timedelta', None)
-
-    if time_coord is None and self.skip_missing:
-      return cx.wrap(1.0)
-    if not isinstance(time_coord, coordinates.TimeDelta):
-      raise ValueError(f'TimeDelta coordinate not found on {field=}')
-    # deltas are in timedelta64[s]. Convert to hours.
-    t = time_coord.deltas / np.timedelta64(1, 'h')
-    if self.asymptotic_squared_error_in_hours is not None:
-      t = t / (1 + t / self.asymptotic_squared_error_in_hours)
-
-    # Variance is assumed to grow linearly with our transformed time `t`.
-    # Weights are inverse of standard deviation.
-    inv_variance = 1 / (1 + t / self.base_squared_error_in_hours)
-    weights_data = np.sqrt(inv_variance)
-    return cx.wrap(weights_data, time_coord)
 
 
 @dataclasses.dataclass
@@ -183,10 +148,13 @@ class PressureLevelAtmosphericMassWeighting(Weighting):
   standard_pressure: float = 1013.25  # standard pressure in hPa.
 
   def weights(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
     """Return weights extracted from the pressure level coordinate."""
-    del field_name  # unused.
+    del field_name, context  # unused.
     if 'pressure' not in field.dims:
       return cx.wrap(1.0)
 
@@ -210,30 +178,136 @@ class ClipWeighting(Weighting):
   max_val: float
 
   def weights(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
     """Return weights for a given field, clipped to the specified range."""
-    weights = self.weighting.weights(field, field_name)
+    weights = self.weighting.weights(field, field_name, context=context)
     clip = functools.partial(jnp.clip, min=self.min_val, max=self.max_val)
     clip = cx.cmap(clip)
     return clip(weights)
 
 
-# TODO(dkochkov): Switch to parameterize this by Weighting intances
-# similar to PerVariableScaler.
 @dataclasses.dataclass
 class PerVariableWeighting(Weighting):
-  """Applies weights from a dictionary on a per-variable basis."""
+  """Applies weightings from a dictionary to fields with matching names."""
 
-  variable_weights: dict[str, float | int | cx.Field]
+  weightings_by_name: dict[str, Weighting]
+  default_weighting: Weighting | None = None
 
   def weights(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
-    """Return weights for a given field, looked up by field_name."""
+    """Return weights for `field` computed by a weighting for `field_name`."""
     if field_name is None:
       raise ValueError('PerVariableWeighting requires a `field_name`.')
-    weight = self.variable_weights[field_name]
-    if isinstance(weight, (int, float)):
-      return cx.wrap(float(weight))
-    return weight
+
+    weighting_instance = self.weightings_by_name.get(field_name)
+    if weighting_instance is not None:
+      return weighting_instance.weights(field, field_name, context)
+    if self.default_weighting is not None:
+      return self.default_weighting.weights(field, field_name, context)
+    raise KeyError(
+        f"'{field_name}' not found in weightings_by_name and no "
+        'default_weighting is set.'
+    )
+
+  @classmethod
+  def from_constants(
+      cls,
+      variable_weights: dict[str, float | cx.Field],
+      default_weighting: Weighting | None = None,
+  ) -> PerVariableWeighting:
+    """Returns a PerVariableWeighting with ConstantWeightings."""
+    weightings = {
+        name: ConstantWeighting(constant=w if cx.is_field(w) else cx.wrap(w))
+        for name, w in variable_weights.items()
+    }
+    return cls(
+        weightings_by_name=weightings, default_weighting=default_weighting
+    )
+
+
+@dataclasses.dataclass
+class CoordinateMaskWeighting(Weighting):
+  """Applies a 0/1 mask based on coordinate values.
+
+  This weighting is parameterized by a `mask_coord`. For each dimension in
+  `mask_coord.dims`, it checks for a matching coordinate in the input `field`
+  or, if not present on the `field`, a scalar value in the `context`.
+
+  If a matching coordinate is found on the `field`, it returns a weight of 1.0
+  for each value in that coordinate that is present in the `mask_coord`, and 0.0
+  otherwise.
+
+  If no matching coordinate is found of the `field`, the `context` is serched
+  for scalar value using the dimension name, indicating in-context processing of
+  `field` slices. If found, it returns a weight of 1.0 if the value from the
+  context (context[dim_name]) is present in `mask_coord`, and 0.0 otherwise.
+
+  If coordinates for multiple dimensions are found, the resulting weights are
+  multiplied.
+
+  If `skip_missing` is True, dimensions from `mask_coord` not found in the
+  `field` or `context` are ignored (effectively a weight of 1.0). Otherwise,
+  a ValueError is raised.
+  """
+
+  mask_coord: cx.Coordinate
+  skip_missing: bool = True
+
+  def weights(
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
+  ) -> cx.Field:
+    """Computes 0/1 weights based on coordinate values."""
+    del field_name  # unused.
+    all_scales = []
+    for dim_name in self.mask_coord.dims:
+      in_context = context and dim_name in context
+      in_field = dim_name in field.axes
+
+      if in_context and in_field:
+        raise ValueError(
+            f'Coordinate for {dim_name!r} found both in context and field.'
+        )
+
+      if not in_context and not in_field:
+        if self.skip_missing:
+          continue
+        raise ValueError(
+            f'Coordinate for {dim_name!r} not found on {field=} or in context.'
+        )
+
+      mask_values_field = self.mask_coord.fields[dim_name]
+      if in_context:
+        current_value = context[dim_name]
+        if current_value.ndim != 0:
+          raise ValueError(
+              f'Expected scalar {dim_name!r} in context, got '
+              f'{current_value.shape=}'
+          )
+        mask_values = mask_values_field.untag(dim_name)
+        is_present = (current_value == mask_values).data.any()
+        scale = cx.wrap(is_present.astype(jnp.float32))
+        all_scales.append(scale)
+      elif in_field:
+        coord_from_field = field.axes[dim_name]
+        field_values = coord_from_field.fields[dim_name]
+        mask_values_data = mask_values_field.untag(dim_name)
+        is_present_broadcasted = field_values == mask_values_data
+        scale_for_dim = cx.cmap(lambda x: x.any().astype(jnp.float32))(
+            is_present_broadcasted
+        )
+        all_scales.append(scale_for_dim)
+
+    if not all_scales:
+      return cx.wrap(1.0)
+    return functools.reduce(lambda x, y: x * y, all_scales)

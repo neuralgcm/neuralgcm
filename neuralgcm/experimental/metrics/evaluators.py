@@ -19,6 +19,7 @@ import collections
 import dataclasses
 from typing import Generic, TypeVar
 import coordax as cx
+import jax
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.metrics import aggregation
 from neuralgcm.experimental.metrics import base
@@ -110,3 +111,21 @@ class Evaluator(Generic[M]):
       weight = self.term_weights.get(loss_key, 1) if self.term_weights else 1
       total_loss += weight * term_total
     return total_loss
+
+  def with_context(self, context: dict[str, cx.Field]) -> Evaluator:
+    """Returns a copy of the evaluator with context set in aggregators."""
+    if isinstance(self.aggregators, dict):
+      new_aggregators = {
+          k: agg.with_context(context) for k, agg in self.aggregators.items()
+      }
+    else:
+      new_aggregators = self.aggregators.with_context(context)
+    return dataclasses.replace(self, aggregators=new_aggregators)
+
+
+jax.tree_util.register_dataclass(
+    Evaluator,
+    data_fields=['aggregators'],
+    meta_fields=['metrics', 'getters', 'term_weights'],
+    drop_fields=['is_loss_evaluator'],
+)

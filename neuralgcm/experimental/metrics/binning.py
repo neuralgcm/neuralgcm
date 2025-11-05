@@ -31,13 +31,17 @@ class Binning(abc.ABC):
 
   @abc.abstractmethod
   def create_bin_mask(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
     """Creates a bin mask for a statistic.
 
     Args:
       field: The field to generate a binning mask for.
       field_name: The name of the field to generate a binning mask for.
+      context: Optional context for coordinate-dependent binning.
 
     Returns:
       A boolean cx.Field that can be broadcast against the input field. It
@@ -52,9 +56,13 @@ class Regions(Binning):
   regions: dict[str, tuple[tuple[int, int], tuple[int, int]]]
 
   def create_bin_mask(
-      self, field: cx.Field, field_name: str | None = None
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
   ) -> cx.Field:
     """Creates a bin mask for a set of named regions."""
+    del context  # unused.
     lon_lat_dims = ('longitude', 'latitude')
     if not all(d in field.axes for d in lon_lat_dims):
       raise ValueError(f'{field.dims=} must have {lon_lat_dims} axes to bin.')

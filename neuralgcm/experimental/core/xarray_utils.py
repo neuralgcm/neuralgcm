@@ -15,7 +15,7 @@
 """Utilities for converting between xarray and DataObservation objects."""
 
 import collections
-from typing import TypeVar, cast
+from typing import TypeAlias, TypeVar, cast
 
 import coordax as cx
 from dinosaur import xarray_utils as dino_xarray_utils
@@ -23,12 +23,16 @@ import jax
 import jax_datetime as jdt
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import scales
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import xarray
 
+
+CoordSpec: TypeAlias = data_specs.CoordSpec
+OptionalSpec: TypeAlias = data_specs.OptionalSpec
 
 verify_grid_consistency = dino_xarray_utils.verify_grid_consistency
 
@@ -162,6 +166,134 @@ def field_from_xarray(
       cx.DummyAxis,
   )
   return cx.Field.from_xarray(data_array, coord_types + additional_coord_types)
+
+
+def validate_xarray_inputs(
+    inputs: dict[str, xarray.Dataset],
+    in_spec: dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]],
+):
+  """Validates that `inputs` from xarray satisfy expectations of `in_spec`."""
+  coords = {}
+  for data_key, dataset in inputs.items():
+    if data_key not in in_spec:
+      continue
+    coords[data_key] = {}
+    dataset_spec = in_spec[data_key]
+    for k, var_spec in dataset_spec.items():
+      if k in dataset:
+        spec, _ = data_specs.unwrap_optional(var_spec)
+        c_types = data_specs.get_coord_types(spec)
+        coords[data_key][k] = cx.coordinates_from_xarray(dataset[k], c_types)
+  data_specs.validate_inputs(coords, in_spec)
+
+
+def read_from_xarray(
+    nested_data: dict[str, xarray.Dataset],
+    in_spec: dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]],
+    strict_matches: bool = True,
+) -> typing.InputFields:
+  """Reads `nested_data` from xarray according to `in_spec`."""
+
+  def _get_field(da: xarray.DataArray, spec: cx.Coordinate | CoordSpec):
+    coord_types = data_specs.get_coord_types(spec)
+    if not strict_matches:
+      coord_types += (cx.LabeledAxis,)
+    return field_from_xarray(da, coord_types)
+
+  result = {}
+  for data_key, data_spec in in_spec.items():
+    if data_key not in nested_data:
+      raise ValueError(
+          f'Missing dataset for source {data_key!r} in '
+          f'nested_data. Available keys: {list(nested_data.keys())}'
+      )
+    dataset = nested_data[data_key]
+    specs, fields, missing_vars = {}, {}, []
+    for k, v in data_spec.items():
+      spec, is_optional = data_specs.unwrap_optional(v)
+      if k in dataset:
+        specs[k] = spec if isinstance(spec, CoordSpec) else CoordSpec(spec)
+        fields[k] = _get_field(dataset[k], spec)
+      elif not is_optional:
+        missing_vars.append(k)
+
+    if missing_vars:
+      raise ValueError(
+          f'Specs for {data_key!r} contains {missing_vars=} that are '
+          f'not in the corresponding dataset with keys {list(dataset.keys())}'
+      )
+
+    result[data_key] = {}
+    for k, v in fields.items():
+      spec = specs[k]
+      target_coord = data_specs.finalize_spec(spec, v.coordinate)
+      if not set(target_coord.dims).issubset(set(v.coordinate.dims)):
+        raise ValueError(
+            f'Dimensions for coordinate {target_coord} for {data_key}.{k} are '
+            f'not in {v.coordinate}'
+        )
+      if strict_matches:
+        v = v.untag(target_coord).tag(target_coord)
+      else:
+        v = v.untag(*target_coord.dims).tag(target_coord)
+      result[data_key][k] = v
+  return result
+
+
+def read_sharded_from_xarray(
+    nested_data: dict[str, xarray.Dataset],
+    in_spec: dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]],
+    mesh_shape: collections.OrderedDict[str, int],
+    dim_partitions: parallelism.DimPartitions,
+) -> dict[str, dict[str, cx.Field]]:
+  """Returns a `specs`-like structure of coordax.Fields from a `dataset` shard.
+
+  This is a helpful function for annotating coordax.Field with full coordinates
+  while reading shards of dataset in a distributed setting. By providing the
+  mesh shape and how different dimensions are partitioned we can include full
+  coordinate information by tagging the data with CoordinateShard objects. This
+  can later be dropped once the data is converted to jax arrays and sharded
+  across devices.
+
+  Args:
+    nested_data: dict of xarray datasets from which to read data.
+    in_spec: nested dictionary that associates variables with coordinates.
+    mesh_shape: shape of the sharding mesh indicating number of devices in each
+      axis.
+    dim_partitions: mapping from dimension names to labels of device axes that
+      the dimension is partitioned across.
+
+  Returns:
+    A dictionary of dictionaries of coordax.Fields tagged with CoordinateShard
+    coordinates.
+  """
+
+  def _wrap_axis(ax: cx.Coordinate) -> cx.Coordinate:
+    return parallelism.CoordinateShard(ax, mesh_shape, dim_partitions)
+
+  def wrap_coordinate_shard(coord_or_spec):
+    if isinstance(coord_or_spec, data_specs.OptionalSpec):
+      return data_specs.OptionalSpec(wrap_coordinate_shard(coord_or_spec.spec))
+    elif isinstance(coord_or_spec, data_specs.CoordSpec):
+      coord = coord_or_spec.coord
+      coord = cx.compose_coordinates(*[_wrap_axis(ax) for ax in coord.axes])
+      exact = data_specs.AxisMatchRules.EXACT
+      replaced = data_specs.AxisMatchRules.REPLACED
+      replace_dict = {exact: replaced}
+      exact_to_replaced = lambda v: replace_dict.get(v, v)
+      new_dim_match_rules = {
+          dim: exact_to_replaced(coord_or_spec.dim_match_rules.get(dim, exact))
+          for dim in coord_or_spec.coord.dims
+      }
+      return data_specs.CoordSpec(coord, new_dim_match_rules)
+    elif isinstance(coord_or_spec, cx.Coordinate):
+      return wrap_coordinate_shard(data_specs.CoordSpec(coord_or_spec))
+    else:
+      raise ValueError(f'Unsupported coord or spec type: {coord_or_spec}')
+
+  if_leaf = lambda x: not isinstance(x, dict)  # in_spec must be a nested dict.
+  shard_specs = jax.tree.map(wrap_coordinate_shard, in_spec, is_leaf=if_leaf)
+  return read_from_xarray(nested_data, shard_specs, strict_matches=False)
 
 
 def read_fields_from_xarray(

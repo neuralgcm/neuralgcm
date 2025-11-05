@@ -175,15 +175,36 @@ class Model(nnx.Module, abc.ABC):
     return outputs
 
   @property
-  def required_dynamic_input_specs(
+  def dynamic_inputs_spec(
       self,
-  ) -> dict[str, dict[str, data_specs.DataSpec]]:
-    """Returns the required dynamic inputs for the given query."""
-    raise NotImplementedError()
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
+    """Returns inputs spec for all DynamicInputModule components."""
+    dynamic_input_modules = module_utils.retrieve_subclass_modules(
+        self, dynamic_io.DynamicInputModule
+    )
+    all_inputs_spec = {}
+    for module in dynamic_input_modules:
+      for k, v in module.inputs_spec.items():
+        if k not in all_inputs_spec:  # new data key, add all specs.
+          all_inputs_spec[k] = v
+        else:
+          # existing data key, check that all overlapping specs are consistent.
+          current = all_inputs_spec[k]
+          for var_name, var_spec in v.items():
+            if var_name in current and var_spec != current[var_name]:
+              raise ValueError(
+                  f'Inconsistent specs for {k}/{var_name}: {var_spec} vs'
+                  f' {current[var_name]}'
+              )
+            else:
+              all_inputs_spec[k][var_name] = var_spec
+    return all_inputs_spec
 
   @property
-  def required_input_specs(self) -> dict[str, dict[str, data_specs.DataSpec]]:
-    """Returns the required inputs for the given query."""
+  def inputs_spec(
+      self,
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
+    """Returns inputs spec supported by this model."""
     raise NotImplementedError()
 
   @classmethod
@@ -385,18 +406,20 @@ class VectorizedModel(Model):
     self._run_vectorized(run_get_diagnostic_values, v_axis)
 
   @property
-  def required_dynamic_input_specs(
+  def dynamic_inputs_spec(
       self,
-  ) -> dict[str, dict[str, data_specs.DataSpec]]:
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
     """Returns the required dynamic inputs for the given query."""
     # TODO(dkochkov): Consider returning vectorized specs.
-    return self.vectorized_model.required_dynamic_input_specs
+    return self.vectorized_model.dynamic_inputs_spec
 
   @property
-  def required_input_specs(self) -> dict[str, dict[str, data_specs.DataSpec]]:
+  def inputs_spec(
+      self,
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
     """Returns the required inputs for the given query."""
     # TODO(dkochkov): Consider returning vectorized specs.
-    return self.vectorized_model.required_input_specs
+    return self.vectorized_model.inputs_spec
 
 
 def _checked_jit(func=None, *, static_argnums=(), static_argnames=()):
@@ -553,16 +576,18 @@ class InferenceModel:
     return cls(graph_def, model_state, dummy_model_sim_state, fiddle_config)
 
   @functools.cached_property
-  def required_dynamic_input_specs(
+  def dynamic_inputs_spec(
       self,
-  ) -> dict[str, dict[str, data_specs.DataSpec]]:
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
     """Returns the required dynamic inputs for the given query."""
-    return self._dummy_model().required_dynamic_input_specs
+    return self._dummy_model().dynamic_inputs_spec
 
   @functools.cached_property
-  def required_input_specs(self) -> dict[str, dict[str, data_specs.DataSpec]]:
+  def inputs_spec(
+      self,
+  ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
     """Returns the required inputs for the given query."""
-    return self._dummy_model().required_input_specs
+    return self._dummy_model().inputs_spec
 
 
 jax.tree_util.register_dataclass(

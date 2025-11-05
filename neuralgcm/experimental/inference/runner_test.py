@@ -24,6 +24,7 @@ from fiddle.experimental import auto_config
 from flax import nnx
 import jax
 from neuralgcm.experimental.core import api
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import random_processes
@@ -45,19 +46,25 @@ class MockModel(api.Model):
 
   def __post_init__(self):
     self.prognostics = typing.Prognostic({
-        k: cx.wrap(np.zeros(c.shape), c)
-        for k, c in self.required_input_specs['state'].items()
+        k: cx.wrap(np.zeros(v.coord.shape), v.coord)
+        for k, v in self.inputs_spec['state'].items()
     })
 
   @property
-  def required_input_specs(self) -> dict[str, dict[str, cx.Coordinate]]:
-    return self.input_specs
+  def inputs_spec(
+      self,
+  ) -> dict[str, dict[str, data_specs.CoordSpec]]:
+    is_coord = lambda x: isinstance(x, cx.Coordinate)
+    make_spec = data_specs.CoordSpec.with_any_timedelta
+    return jax.tree.map(make_spec, self.input_specs, is_leaf=is_coord)
 
   @property
-  def required_dynamic_input_specs(
+  def dynamic_inputs_spec(
       self,
   ) -> dict[str, dict[str, cx.Coordinate]]:
-    return self.dynamic_input_specs
+    is_coord = lambda x: isinstance(x, cx.Coordinate)
+    make_spec = data_specs.CoordSpec.with_any_timedelta
+    return jax.tree.map(make_spec, self.dynamic_input_specs, is_leaf=is_coord)
 
   @property
   def timestep(self) -> np.timedelta64:

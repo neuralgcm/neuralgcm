@@ -296,106 +296,6 @@ def read_sharded_from_xarray(
   return read_from_xarray(nested_data, shard_specs, strict_matches=False)
 
 
-def read_fields_from_xarray(
-    nested_data: dict[str, xarray.Dataset],
-    input_specs: dict[str, dict[str, cx.Coordinate]],
-    strict_matches: bool = True,
-) -> dict[str, dict[str, cx.Field]]:
-  """Returns a `specs`-like structure of coordax.Fields from nested datasets.
-
-  Args:
-    nested_data: dict of xarray datasets from which to read data.
-    input_specs: nested dictionary that associates variable with coordinates.
-    strict_matches: whether to require exact coordinate matches.
-
-  Returns:
-    A dictionary of dictionaries of coordax.Fields.
-  """
-  is_coordinate = lambda x: isinstance(x, cx.Coordinate)
-  is_cartesian_prod = lambda x: isinstance(x, cx.CartesianProduct)
-  unfold_products = lambda x: x.coordinates if is_cartesian_prod(x) else x
-  result = {}
-
-  for source, observation_specs in input_specs.items():
-    if source not in nested_data:
-      raise ValueError(
-          f'Missing dataset for source {source!r} in '
-          f'nested_data. Available keys: {list(nested_data.keys())}'
-      )
-    dataset = nested_data[source]
-    requested_var_names = set(observation_specs.keys())
-
-    if not requested_var_names.issubset(dataset.keys()):
-      missing_vars = requested_var_names.difference(dataset.keys())
-      raise ValueError(
-          f'Specs for {source!r} contains {missing_vars=} that are '
-          f'not in the corresponding dataset with keys {list(dataset.keys())}'
-      )
-
-    variables = {k: dataset[k] for k in requested_var_names}
-    unfolded = jax.tree.map(  # unpack product coords to catch all coord types.
-        unfold_products, observation_specs, is_leaf=is_coordinate
-    )
-    current_spec_coords = jax.tree.leaves(unfolded, is_leaf=is_coordinate)
-    additional_coord_types = list(set([type(x) for x in current_spec_coords]))
-    if not strict_matches:
-      additional_coord_types += [cx.LabeledAxis]
-
-    fields = {
-        k: field_from_xarray(v, tuple(additional_coord_types))
-        for k, v in variables.items()
-    }
-
-    result[source] = {}
-    for k, target_coord in observation_specs.items():
-      if strict_matches:
-        result[source][k] = fields[k].untag(target_coord).tag(target_coord)
-      else:
-        result[source][k] = (
-            fields[k].untag(*target_coord.dims).tag(target_coord)
-        )
-
-  return result
-
-
-def read_sharded_fields_from_xarray(
-    nested_data: dict[str, xarray.Dataset],
-    input_specs: dict[str, dict[str, cx.Coordinate]],
-    mesh_shape: collections.OrderedDict[str, int],
-    dim_partitions: parallelism.DimPartitions,
-) -> dict[str, dict[str, cx.Field]]:
-  """Returns a `specs`-like structure of coordax.Fields from a `dataset` shard.
-
-  This is a helpful function for annotating coordax.Field with full coordinates
-  while reading shards of dataset in a distributed setting. By providing the
-  mesh shape and how different dimensions are partitioned we can include full
-  coordinate information by tagging the data with CoordinateShard objects. This
-  can later be dropped once the data is converted to jax arrays and sharded
-  across devices.
-
-  Args:
-    nested_data: dict of xarray datasets from which to read data.
-    input_specs: nested dictionary that associates variable with coordinates.
-    mesh_shape: shape of the sharding mesh indicating number of devices in each
-      axis.
-    dim_partitions: mapping from dimension names to labels of device axes that
-      the dimension is partitioned across.
-
-  Returns:
-    A dictionary of dictionaries of coordax.Fields tagged with CoordinateShard
-    coordinates.
-  """
-
-  def wrap_coordinate_shard(coord: cx.Coordinate) -> cx.Coordinate:
-    return parallelism.CoordinateShard(coord, mesh_shape, dim_partitions)
-
-  is_coordinate = lambda x: isinstance(x, cx.Coordinate)
-  shard_specs = jax.tree.map(
-      wrap_coordinate_shard, input_specs, is_leaf=is_coordinate
-  )
-  return read_fields_from_xarray(nested_data, shard_specs, strict_matches=False)
-
-
 def fields_to_xarray(
     fields: dict[str, cx.Field],
 ) -> xarray.Dataset:
@@ -418,9 +318,9 @@ def model_inputs_from_xarray(
 ) -> dict[str, dict[str, cx.Field]]:
   """Returns subset of `nested_data` supported by the model for assimilation."""
   nested_data = ensure_timedelta_axis(nested_data)
-  return read_fields_from_xarray(
+  return read_from_xarray(
       nested_data=nested_data,
-      input_specs=model.required_input_specs,
+      in_spec=model.inputs_spec,
       strict_matches=False,
   )
 
@@ -431,8 +331,8 @@ def model_dynamic_inputs_from_xarray(
 ) -> dict[str, dict[str, cx.Field]]:
   """Returns subset of `nested_data` required by the model."""
   nested_data = ensure_timedelta_axis(nested_data)
-  return read_fields_from_xarray(
+  return read_from_xarray(
       nested_data=nested_data,
-      input_specs=model.required_dynamic_input_specs,
+      in_spec=model.dynamic_inputs_spec,
       strict_matches=False,
   )

@@ -48,8 +48,10 @@ Quantity = scales.Quantity
 # Main structured API types.
 #
 Fields = dict[str, cx.Field]
+InputFields = dict[str, Fields]
 Observation = dict[str, dict[str, cx.Field]]
 Query = dict[str, dict[str, cx.Coordinate | cx.Field]]
+Queries = dict[str, Query]
 
 
 #

@@ -220,6 +220,39 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     np.testing.assert_allclose(integrated_field.data, expected_data, atol=1e-6)
     self.assertEqual(integrated_field.dims, coords.dims)
 
+  def test_lon_lat_grid_integrate(self):
+    grid = coordinates.LonLatGrid.T21()
+    field = cx.wrap(np.ones(grid.shape), grid)
+    radius = 123.4
+    integral = grid.integrate(field, radius=radius)
+    np.testing.assert_allclose(integral.data, 4 * np.pi * radius**2, rtol=1e-5)
+
+  def test_lon_lat_grid_partial_integrate(self):
+    n_lon, n_lat = 64, 32
+    grid = coordinates.LonLatGrid(
+        longitude_nodes=n_lon,
+        latitude_nodes=n_lat,
+        lon_lat_padding=(8, 4),
+    )
+    # data that is 1 everywhere except 2 on first half of longitudes
+    data = np.ones(grid.shape)
+    data[:(n_lon // 2), :] = 2
+    field = cx.wrap(data, grid)
+
+    field_lat = grid.integrate(field, dims='longitude')
+    self.assertEqual(field_lat.coordinate, cx.SelectedAxis(grid, axis=1))
+
+    field_lon = grid.integrate(field, dims='latitude')
+    self.assertEqual(field_lon.coordinate, cx.SelectedAxis(grid, axis=0))
+
+    scalar = grid.integrate(field)
+    self.assertEqual(scalar.coordinate, cx.Scalar())
+
+    sclar_from_lon = grid.integrate(field_lon, dims='longitude')
+    sclar_from_lat = grid.integrate(field_lat, dims='latitude')
+    cx.testing.assert_fields_allclose(sclar_from_lon, scalar)
+    cx.testing.assert_fields_allclose(sclar_from_lat, scalar)
+
 
 if __name__ == '__main__':
   absltest.main()

@@ -19,10 +19,11 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import functools
-from typing import Any, Iterable, Literal, Self, TYPE_CHECKING, cast
+from typing import Any, Iterable, Literal, Self, TYPE_CHECKING, cast, Sequence
 
 import coordax as cx
 from dinosaur import coordinate_systems as dinosaur_coordinates
+from dinosaur import fourier
 from dinosaur import sigma_coordinates
 from dinosaur import spherical_harmonic
 from dinosaur import vertical_interpolation
@@ -233,6 +234,53 @@ class LonLatGrid(cx.Coordinate):
   def cos_lat(self) -> cx.Field:
     padded_lats = np.pad(self._ylm_grid.latitudes, (0, self.lon_lat_padding[1]))
     return cx.wrap(np.cos(padded_lats), cx.SelectedAxis(self, axis=1))
+
+  def integrate(
+      self,
+      x: cx.Field,
+      dims: str | Sequence[str] = ('longitude', 'latitude'),
+      radius: float = 1.0,
+  ) -> cx.Field:
+    """Integrates `x` over dimensions in `dims` using quadrature.
+
+    Args:
+      x: Field to integrate.
+      dims: Dimensions to integrate. Can be 'longitude', 'latitude', or a
+        sequence of thereof.
+      radius: Radius of sphere, defaults to 1.0.
+
+    Returns:
+      Field with all or a subset of dimensions of LonLatGrid integrated out.
+    """
+    _, lon_w = fourier.quadrature_nodes(self.longitude_nodes)
+    _, lat_w = spherical_harmonic.get_latitude_nodes(
+        self.latitude_nodes, self.latitude_spacing
+    )
+
+    def _integrate_lon(array):
+      return radius**2 * jnp.sum(array[: self.longitude_nodes] * lon_w)
+
+    def _integrate_lat(array):
+      return radius**2 * jnp.sum(array[: self.latitude_nodes] * lat_w)
+
+    def _integrate(array):
+      unpadded = array[:self.longitude_nodes, :self.latitude_nodes]
+      return radius**2 * jnp.sum(unpadded * lat_w * lon_w)
+
+    dims_tuple = tuple(sorted({dims} if isinstance(dims, str) else set(dims)))
+
+    match dims_tuple:
+      case ('longitude',):
+        return cx.cmap(_integrate_lon)(x.untag(cx.SelectedAxis(self, axis=0)))
+      case ('latitude',):
+        return cx.cmap(_integrate_lat)(x.untag(cx.SelectedAxis(self, axis=1)))
+      case ('latitude', 'longitude'):
+        return cx.cmap(_integrate)(x.untag(self))
+      case _:
+        raise ValueError(
+            f'dims must be "longitude", "latitude", or a sequence '
+            f'thereof, got {dims}'
+        )
 
   @classmethod
   def from_dinosaur_grid(

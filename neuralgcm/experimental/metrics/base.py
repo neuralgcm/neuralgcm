@@ -18,6 +18,7 @@ from __future__ import annotations
 import abc
 import collections
 import dataclasses
+from typing import Iterator
 import coordax as cx
 
 
@@ -337,3 +338,87 @@ class SumLoss(Loss):
       for k, v in sorted(sub_debug_terms.items()):
         all_debug_terms[f'{term_name}.{k}'] = v
     return all_debug_terms
+
+
+def generate_unique_statistics_for_all_metrics(
+    metrics: dict[str, Metric],
+    predictions: dict[str, cx.Field],
+    targets: dict[str, cx.Field],
+) -> Iterator[tuple[str, dict[str, cx.Field]]]:
+  """Computes and yields unique statistics required by `metrics`.
+
+  This function identifies all unique statistics across the provided `metrics`,
+  computes their values on pairs of `predictions` and `targets`, and yields
+  the results as (unique_name, value) tuples. This avoids redundant
+  computation when multiple metrics share the same underlying statistics.
+
+  Args:
+    metrics: A dictionary of metric instances.
+    predictions: Predictions, as a dictionary of variable names to `cx.Field`s.
+    targets: Target values, as a dictionary of variable names to `cx.Field`s.
+
+  Yields:
+    Tuples of (unique_statistic_name, statistic_value), where
+    statistic_value is a dictionary mapping variable names to `cx.Field`s.
+  """
+  unique_statistics = {}
+  for m in metrics.values():
+    for _, stat in m.statistics.items():
+      unique_statistics[stat.unique_name] = stat
+  for k, stat in unique_statistics.items():
+    try:
+      yield k, stat.compute(predictions, targets)
+    except Exception as e:
+      raise ValueError(
+          'Failed to compute statistic'
+          f' {k}={stat} from:\n{predictions=}\n{targets=}'
+      ) from e
+
+
+def compute_unique_statistics_for_all_metrics(
+    metrics: dict[str, Metric],
+    predictions: dict[str, cx.Field],
+    targets: dict[str, cx.Field],
+) -> dict[str, dict[str, cx.Field]]:
+  """Computes unique statistics required by `metrics`."""
+  kv = generate_unique_statistics_for_all_metrics(metrics, predictions, targets)
+  return dict(kv)
+
+
+def compute_metric_from_statistics(
+    metric: Metric,
+    statistic_values: dict[str, dict[str, cx.Field]],
+) -> dict[str, cx.Field]:
+  """Computes metric values from statistics keyed by unique_name.
+
+  Args:
+    metric: A metric instance.
+    statistic_values: Statistic values keyed by their `unique_name`.
+
+  Returns:
+    The resulting values of `metric`.
+  """
+  statistic_values = {  # Rename statistics from unique to internal names.
+      k: statistic_values[v.unique_name] for k, v in metric.statistics.items()
+  }
+  return metric.values_from_mean_statistics(statistic_values)
+
+
+def compute_metrics_from_statistics(
+    metrics: dict[str, Metric],
+    statistic_values: dict[str, dict[str, cx.Field]],
+) -> dict[str, dict[str, cx.Field]]:
+  """Computes multiple metrics from statistics keyed by unique_name.
+
+  Args:
+    metrics: A dictionary of metric instances.
+    statistic_values: Statistic values keyed by their `unique_name`.
+
+  Returns:
+    The resulting values of `metrics`.
+  """
+  return {
+      metric_name: compute_metric_from_statistics(metric, statistic_values)
+      for metric_name, metric in metrics.items()
+  }
+

@@ -89,7 +89,7 @@ class EvaluatorsTest(parameterized.TestCase):
         'EnergySkill_ensemble_beta_1.0',
         'EnergySpread_ensemble_beta_1.0',
     ]
-    self.assertEqual(
+    self.assertSameElements(
         list(aggregation_state.sum_weighted_statistics.keys()),
         expected_crps_stats,
     )
@@ -235,6 +235,27 @@ class EvaluatorsTest(parameterized.TestCase):
     self.assertTrue(evaluator.is_loss_evaluator)
     total_loss = evaluator.evaluate_total(predictions, targets)
     self.assertEqual(total_loss.ndim, 0)
+
+  def test_evaluator_shared_statistics(self):
+    dim = cx.SizedAxis('spatial', 2)
+    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+    mse = deterministic_metrics.MSE()
+    rmse = deterministic_metrics.RMSE()
+    evaluator = evaluators.Evaluator(
+        metrics={'mse': mse, 'rmse': rmse},
+        aggregators=aggregation.Aggregator(
+            dims_to_reduce=['spatial'], weight_by=[]
+        ),
+    )
+    agg_states = evaluator.evaluate(predictions, targets)
+    self.assertCountEqual(agg_states.keys(), ['mse', 'rmse'])
+    # check values
+    mse_values = agg_states['mse'].metric_values(mse)
+    rmse_values = agg_states['rmse'].metric_values(rmse)
+    # mse = ((2-1)**2 + (3-1)**2) / 2 = (1 + 4) / 2 = 2.5
+    np.testing.assert_almost_equal(mse_values['x'].data, 2.5)
+    np.testing.assert_almost_equal(rmse_values['x'].data, np.sqrt(2.5))
 
 
 if __name__ == '__main__':

@@ -48,23 +48,54 @@ class Evaluator(Generic[M]):
             f'{self.term_weights=} can only be set when all metrics are Losses.'
         )
 
-  def _evaluate_single(
+  def _get_getter(self, key: str) -> transforms.Transform | None:
+    """Returns getter for a given metric key."""
+    if isinstance(self.getters, dict):
+      return self.getters[key]
+    return self.getters
+
+  def _get_aggregator(self, key: str) -> aggregation.Aggregator:
+    """Returns aggregator for a given metric key."""
+    if isinstance(self.aggregators, dict):
+      return self.aggregators[key]
+    return self.aggregators
+
+  def _evaluate_group(
       self,
-      metric: base.Metric,
-      aggregator: aggregation.Aggregator,
+      metric_keys: list[str],
       getter: transforms.Transform | None,
       predictions: dict[str, cx.Field],
       targets: dict[str, cx.Field],
-  ) -> aggregation.AggregationState:
-    """Evaluates statistics and aggregates them, returning a dict of states."""
+  ) -> dict[str, aggregation.AggregationState]:
+    """Returns aggregation states for metrics that use the same getter."""
     if getter:
       predictions = getter(predictions)
       targets = getter(targets)
-    raw_stats = {
-        stat.unique_name: stat.compute(predictions, targets)
-        for stat in metric.statistics.values()
+    metrics_group = {key: self.metrics[key] for key in metric_keys}
+    unique_stats = base.compute_unique_statistics_for_all_metrics(
+        metrics_group, predictions, targets
+    )
+    # TODO(dkochkov): Consider supporting direct aggregator comparison.
+    aggregator_groups = collections.defaultdict(list)
+    for key in metric_keys:
+      aggregator_groups[id(self._get_aggregator(key))].append(key)
+    id_to_aggregator = {
+        id(self._get_aggregator(k)): self._get_aggregator(k)
+        for k in metric_keys
     }
-    return aggregator.aggregate_statistics(raw_stats)
+    agg_states = {}
+    for aggregator_id, keys in aggregator_groups.items():
+      aggregator = id_to_aggregator[aggregator_id]
+      stats_for_group = {}
+      for key in keys:
+        for stat in self.metrics[key].statistics.values():
+          stats_for_group[stat.unique_name] = unique_stats[stat.unique_name]
+      group_agg_state = aggregator.aggregate_statistics(stats_for_group)
+      group_metrics = {k: self.metrics[k] for k in keys}
+      agg_states |= aggregation.split_aggregation_state_for_metrics(
+          group_metrics, group_agg_state
+      )
+    return agg_states
 
   def evaluate(
       self,
@@ -72,21 +103,18 @@ class Evaluator(Generic[M]):
       targets: dict[str, cx.Field],
   ) -> dict[str, aggregation.AggregationState]:
     """Evaluates statistics and aggregates them, returning a dict of states."""
-    getters = (
-        self.getters
-        if isinstance(self.getters, dict)
-        else collections.defaultdict(lambda: self.getters)
-    )
-    aggregators = (
-        self.aggregators
-        if isinstance(self.aggregators, dict)
-        else collections.defaultdict(lambda: self.aggregators)
-    )  # defaultdict effectively implements sharing of single getter/aggregator.
+    getter_groups = collections.defaultdict(list)
+    for key in self.metrics:
+      getter = self._get_getter(key)
+      getter_groups[id(getter)].append(key)
+
+    id_to_getter = {
+        id(self._get_getter(k)): self._get_getter(k) for k in self.metrics
+    }
     agg_states = {}
-    for k, metric in sorted(self.metrics.items()):
-      agg_states[k] = self._evaluate_single(
-          metric, aggregators[k], getters[k], predictions, targets
-      )
+    for getter_id, keys in getter_groups.items():
+      getter = id_to_getter[getter_id]
+      agg_states |= self._evaluate_group(keys, getter, predictions, targets)
     return agg_states
 
   def evaluate_total(

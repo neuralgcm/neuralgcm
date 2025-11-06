@@ -287,3 +287,45 @@ class Aggregator:
     return AggregationState(
         dict(sum_weighted_stats_result), dict(sum_weights_result)
     )
+
+
+def split_aggregation_state_for_metrics(
+    metrics: dict[str, base.Metric],
+    aggregation_state: AggregationState,
+) -> dict[str, AggregationState]:
+  """Splits aggregation state for unique statistics to per-metric aggregations.
+
+  Args:
+    metrics: A dictionary mapping metric names to `Metric` instances.
+    aggregation_state: An `AggregationState` containing aggregated statistics
+      indexed by their unique names. Can be computed by aggregating outputs of
+      `base.compute_unique_statistics_for_all_metrics(metrics, ...)`.
+
+  Returns:
+    A dictionary mapping metric names to `AggregationState` instances, where
+    each `AggregationState` contains only the statistics required by the
+    corresponding metric.
+
+  Raises:
+    ValueError: If a metric requires statistics not in `aggregation_state`.
+  """
+  unique_stat_keys = aggregation_state.sum_weighted_statistics.keys()
+  aggregation_state_per_metric = {}
+  for metric_name, metric in metrics.items():
+    required_stats = {s.unique_name for s in metric.statistics.values()}
+    if not required_stats.issubset(set(unique_stat_keys)):
+      raise ValueError(
+          f'Metric {metric_name} requires statistics {required_stats}, but '
+          f'aggregation state with {unique_stat_keys=} does not contain them.'
+      )
+    metric_sum_weighted_statistics = {
+        k: aggregation_state.sum_weighted_statistics[k] for k in required_stats
+    }
+    metric_sum_weights = {
+        k: aggregation_state.sum_weights[k] for k in required_stats
+    }
+    aggregation_state_per_metric[metric_name] = AggregationState(
+        sum_weighted_statistics=metric_sum_weighted_statistics,
+        sum_weights=metric_sum_weights,
+    )
+  return aggregation_state_per_metric

@@ -18,6 +18,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import coordax as cx
 from coordax import testing as coordax_testing
+from dinosaur import sigma_coordinates
 import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
@@ -148,6 +149,76 @@ class CoordinatesTest(parameterized.TestCase):
         reconstructed = xarray_utils.field_from_xarray(data_array)
         expected = expected_field_transform(field)
         coordax_testing.assert_fields_equal(reconstructed, expected)
+
+
+class CoordinatesMethodsTest(parameterized.TestCase):
+  """Tests methods of coordinate objects."""
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='sigma_axis_minus_3',
+          shape=(4, 5, 3),
+          sigma_axis=-3,
+      ),
+      dict(
+          testcase_name='sigma_axis_1',
+          shape=(5, 4, 3),
+          sigma_axis=1,
+      ),
+  )
+  def test_sigma_level_integrate(self, shape, sigma_axis):
+    sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
+    pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
+    coords = cx.compose_coordinates(*[
+        sigma_coord
+        if i == pos_sigma_axis
+        else cx.SizedAxis(f'ax{i}', shape[i])
+        for i in range(len(shape))
+    ])
+    data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    field = cx.wrap(data, coords)
+    integrated_field = sigma_coord.integrate(field)
+    expected_data = sigma_coordinates.sigma_integral(
+        data,
+        sigma_coord.sigma_levels,
+        axis=sigma_axis,
+        keepdims=False,
+    )
+    np.testing.assert_allclose(integrated_field.data, expected_data, atol=1e-6)
+    expected_dims = tuple(d for d in coords.dims if d not in sigma_coord.dims)
+    self.assertEqual(integrated_field.dims, expected_dims)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='sigma_axis_minus_3',
+          shape=(4, 5, 3),
+          sigma_axis=-3,
+      ),
+      dict(
+          testcase_name='sigma_axis_1',
+          shape=(5, 4, 3),
+          sigma_axis=1,
+      ),
+  )
+  def test_sigma_level_integrate_cumulative(self, shape, sigma_axis):
+    sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
+    pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
+    coords = cx.compose_coordinates(*[
+        sigma_coord
+        if i == pos_sigma_axis
+        else cx.SizedAxis(f'ax{i}', shape[i])
+        for i in range(len(shape))
+    ])
+    data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    field = cx.wrap(data, coords)
+    integrated_field = sigma_coord.integrate_cumulative(field)
+    expected_data = sigma_coordinates.cumulative_sigma_integral(
+        data,
+        sigma_coord.sigma_levels,
+        axis=sigma_axis,
+    )
+    np.testing.assert_allclose(integrated_field.data, expected_data, atol=1e-6)
+    self.assertEqual(integrated_field.dims, coords.dims)
 
 
 if __name__ == '__main__':

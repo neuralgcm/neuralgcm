@@ -805,6 +805,30 @@ class SigmaLevels(cx.Coordinate):
   def fields(self):
     return {'sigma': cx.wrap(self.sigma_levels.centers, self)}
 
+  def integrate(self, x: cx.Field) -> cx.Field:
+    """Integrates `x` over the sigma levels."""
+    sigma_integrate = functools.partial(
+        sigma_coordinates.sigma_integral,
+        coordinates=self.sigma_levels, axis=0, keepdims=False
+    )
+    return cx.cmap(sigma_integrate)(x.untag(self))
+
+  def integrate_cumulative(
+      self,
+      x: cx.Field,
+      downward: bool = True,
+      cumsum_method: str = 'dot',
+      sharding: jax.sharding.NamedSharding | None = None,
+  ) -> cx.Field:
+    """Integrates `x` over the sigma levels."""
+    sigma_cumulative_integrate = functools.partial(
+        sigma_coordinates.cumulative_sigma_integral,
+        coordinates=self.sigma_levels, axis=0, downward=downward,
+        cumsum_method=cumsum_method,
+        sharding=sharding,
+    )
+    return cx.cpmap(sigma_cumulative_integrate)(x.untag(self)).tag(self)
+
   @property
   def centers(self):
     return self.sigma_levels.centers

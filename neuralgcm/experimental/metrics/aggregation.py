@@ -59,9 +59,53 @@ class AggregationState:
   sum_weights: dict[str, dict[str, cx.Field]]
 
   @classmethod
-  def zero(cls) -> AggregationState:
+  def empty(cls) -> AggregationState:
     """An initial/'zero' aggregation state (empty dicts)."""
     return cls(sum_weighted_statistics={}, sum_weights={})
+
+  @classmethod
+  def zeros_for_metric(
+      cls,
+      metric: base.Metric,
+      aggregator: Aggregator,
+      predictions_struct: dict[str, cx.Field],
+      targets_struct: dict[str, cx.Field],
+  ) -> AggregationState:
+    """Constructs zero aggregation state for metric without computation.
+
+    This is useful for initializing an `AggregationState` with the correct
+    structure (including shapes and coordinates) before accumulating actual
+    statistics. It uses `jax.eval_shape` under the hood to avoid actually
+    computing the statistics and their aggregation.
+
+    Args:
+      metric: The metric for which to create the zero state.
+      aggregator: The `Aggregator` instance that will be used to aggregate the
+        statistics, determining the final structure and dimensions.
+      predictions_struct: Predictions struct used to infer the shapes and
+        coordinates of the aggregated statistics. Can be obtained from actual
+        values using `pytree_utils.shape_structure(predictions)` or constructed
+        from coordinates using `cx.shape_struct_field`.
+      targets_struct: Targets used to infer the shapes and
+        coordinates of the aggregated statistics. Can be obtained from actual
+        values using `pytree_utils.shape_structure(targets)` or constructed from
+        coordinates using `cx.shape_struct_field`.
+
+    Returns:
+      An `AggregationState` with the same structure as would be produced by
+      aggregating the given metric's statistics, but with all numerical values
+      initialized to zeros.
+    """
+
+    def _get_dummy_aggregation_state():
+      statistics = {
+          s.unique_name: s.compute(predictions_struct, targets_struct)
+          for s in metric.statistics.values()
+      }
+      return aggregator.aggregate_statistics(statistics)
+
+    dummy_aggregation_state = jax.eval_shape(_get_dummy_aggregation_state)
+    return jax.tree.map(jnp.zeros_like, dummy_aggregation_state)
 
   @jax.jit
   def __add__(self, other: AggregationState) -> AggregationState:
@@ -75,11 +119,11 @@ class AggregationState:
     # along shared dimensions. This functionality could be added here in the
     # future by pre-padding stats with zeros or separate disjoint chunks in
     # different AggregationStates.
-    self_is_zeros = not self.sum_weighted_statistics
-    other_is_zeros = not other.sum_weighted_statistics
-    if self_is_zeros:
+    self_is_empty = not self.sum_weighted_statistics
+    other_is_empty = not other.sum_weighted_statistics
+    if self_is_empty:
       return other
-    if other_is_zeros:
+    if other_is_empty:
       return self
     self_coords = jax.tree.map(cx.get_coordinate, self, is_leaf=cx.is_field)
     other_coords = jax.tree.map(cx.get_coordinate, other, is_leaf=cx.is_field)
@@ -99,7 +143,7 @@ class AggregationState:
       cls, aggregation_states: Sequence[AggregationState]
   ) -> AggregationState:
     """Sums sequence of aggregation states."""
-    return sum(aggregation_states, start=cls.zero())
+    return sum(aggregation_states, start=cls.empty())
 
   def mean_statistics(self) -> dict[str, dict[str, cx.Field]]:
     """Returns the statistics normalized by their corresponding weights."""

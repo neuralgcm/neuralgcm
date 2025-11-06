@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import operator
+
 from absl.testing import absltest
 from absl.testing import parameterized
+import chex
 import coordax as cx
+from flax import nnx
 import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
@@ -256,6 +260,81 @@ class EvaluatorsTest(parameterized.TestCase):
     # mse = ((2-1)**2 + (3-1)**2) / 2 = (1 + 4) / 2 = 2.5
     np.testing.assert_almost_equal(mse_values['x'].data, 2.5)
     np.testing.assert_almost_equal(rmse_values['x'].data, np.sqrt(2.5))
+
+  def test_evaluation_through_scan_gives_same_results_as_default(self):
+    length, n_spatial = 6, 10
+    key_p, key_t = jax.random.split(jax.random.key(42))
+    dt = coordinates.TimeDelta(np.arange(length) * np.timedelta64(1, 'h'))
+    x = cx.SizedAxis('x', n_spatial)
+    coord = cx.compose_coordinates(dt, x)
+    predictions = {'u': cx.wrap(jax.random.uniform(key_p, coord.shape), coord)}
+    targets = {'u': cx.wrap(jax.random.uniform(key_t, coord.shape), coord)}
+
+    rmse = deterministic_metrics.RMSE()
+    three_hour_mask_coord = coordinates.TimeDelta(np.timedelta64(3, 'h')[None])
+
+    agg_total = aggregation.Aggregator(  # full RMSE.
+        dims_to_reduce=('timedelta', 'x'), weight_by=[]
+    )
+    agg_3hr = aggregation.Aggregator(  # RMSE at dt == 3hr.
+        dims_to_reduce=('timedelta', 'x'),
+        weight_by=[weighting.CoordinateMaskWeighting(three_hour_mask_coord)],
+    )
+    evaluator = evaluators.Evaluator(
+        metrics={'rmse_total': rmse, 'rmse_3hr': rmse},
+        aggregators={'rmse_total': agg_total, 'rmse_3hr': agg_3hr},
+    )
+    # Note: 'timedelta' is included in `dims_to_reduce` to check that weighting
+    # from context is applied correctly.
+
+    # Single pass evaluation.
+    agg_states = evaluator.evaluate(predictions, targets)
+    metric_values = {
+        k: agg_states[k].metric_values(rmse)['u'].data
+        for k in ['rmse_total', 'rmse_3hr']
+    }
+
+    # Through scan from context evaluation.
+    data_struct = {'u': cx.shape_struct_field(x)}  # same targets/predictions.
+    init_agg_states = {
+        'rmse_total': aggregation.AggregationState.zeros_for_metric(
+            rmse, agg_total, data_struct, data_struct
+        ),
+        'rmse_3hr': aggregation.AggregationState.zeros_for_metric(
+            rmse, agg_3hr, data_struct, data_struct
+        ),
+    }
+
+    def scan_body(aggregation_carry, prediction_i, target_i, evaluator_slice):
+      agg_state = evaluator_slice.evaluate(prediction_i, target_i)
+      new_carry = jax.tree.map(
+          operator.add,
+          aggregation_carry,
+          agg_state,
+          is_leaf=lambda x: isinstance(x, aggregation.AggregationState),
+      )
+      return new_carry
+
+    evaluate_in_scan_fn = nnx.scan(
+        scan_body,
+        length=length,
+        in_axes=(nnx.Carry, 0, 0, 0),
+        out_axes=nnx.Carry,
+    )
+    evaluator_with_dt_context = evaluator.with_context(
+        {'timedelta': dt.fields['timedelta'].untag(dt)}
+    )
+    scanned_agg_states = evaluate_in_scan_fn(
+        init_agg_states,
+        cx.untag(predictions, dt),  # need to untag dt to be able to scan.
+        cx.untag(targets, dt),
+        evaluator_with_dt_context,
+    )
+    scanned_metric_values = {
+        k: scanned_agg_states[k].metric_values(rmse)['u'].data
+        for k in ['rmse_total', 'rmse_3hr']
+    }
+    chex.assert_trees_all_close(metric_values, scanned_metric_values)
 
 
 if __name__ == '__main__':

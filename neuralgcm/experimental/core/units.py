@@ -43,6 +43,8 @@ class SimUnits:
   water_vapor_gas_constant: float
   water_vapor_isobaric_heat_capacity: float
   water_density: float
+  latent_heat_vaporization: float
+  latent_heat_fusion: float
   kappa: float
   reference_datetime: np.datetime64
   scale: scales.Scale
@@ -61,6 +63,16 @@ class SimUnits:
   def g(self) -> float:
     """Alias for `gravity_acceleration`."""
     return self.gravity_acceleration
+
+  @property
+  def Lv(self) -> float:
+    """Alias for `latent_heat_vaporization`."""
+    return self.latent_heat_vaporization
+
+  @property
+  def Lf(self) -> float:
+    """Alias for `latent_heat_fusion`."""
+    return self.latent_heat_fusion
 
   @property
   def Cp(self) -> float:
@@ -127,6 +139,8 @@ class SimUnits:
       water_vapor_gas_constant_si: Quantity = scales.IDEAL_GAS_CONSTANT_H20,
       water_vapor_isobaric_heat_capacity_si: Quantity = scales.WATER_VAPOR_CP,
       water_density_si: Quantity = scales.WATER_DENSITY,
+      latent_heat_vaporization_si: Quantity = scales.LATENT_HEAT_OF_VAPORIZATION,
+      latent_heat_fusion_si: Quantity = scales.LATENT_HEAT_OF_FUSION,
       kappa_si: Quantity = scales.KAPPA,
       reference_datetime: np.datetime64 = np.datetime64('1979-01-01T00:00:00'),
       scale: scales.Scale = scales.DEFAULT_SCALE,
@@ -140,6 +154,8 @@ class SimUnits:
         scale.nondimensionalize(water_vapor_gas_constant_si),
         scale.nondimensionalize(water_vapor_isobaric_heat_capacity_si),
         scale.nondimensionalize(water_density_si),
+        scale.nondimensionalize(latent_heat_vaporization_si),
+        scale.nondimensionalize(latent_heat_fusion_si),
         scale.nondimensionalize(kappa_si),
         reference_datetime=reference_datetime,
         scale=scale,

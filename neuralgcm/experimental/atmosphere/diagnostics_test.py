@@ -27,6 +27,7 @@ from neuralgcm.experimental.atmosphere import diagnostics as atmos_diagnostics
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import observation_operators
+from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_transforms
@@ -141,6 +142,74 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
         'evaporation': ones_like(grid),
     }
     chex.assert_trees_all_equal_shapes_and_dtypes(actual, expected_struct)
+
+
+class EnergyDiagnosticsTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.sim_units = units.DEFAULT_UNITS
+    self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    self.lon_lat_grid = coordinates.LonLatGrid.T21()
+    self.sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
+    self.mesh = parallelism.Mesh()
+    self.ylm_transform = spherical_transforms.FixedYlmMapping(
+        lon_lat_grid=self.lon_lat_grid,
+        ylm_grid=self.ylm_grid,
+        partition_schema_key=None,
+        mesh=self.mesh,
+    )
+    full_modal = cx.compose_coordinates(self.sigma_levels, self.ylm_grid)
+    ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
+    self.prognostics = {
+        'divergence': ones_like(full_modal),
+        'vorticity': ones_like(full_modal),
+        'temperature_variation': ones_like(full_modal),
+        'specific_humidity': ones_like(full_modal),
+        'specific_cloud_ice_water_content': ones_like(full_modal),
+        'specific_cloud_liquid_water_content': ones_like(full_modal),
+        'log_surface_pressure': ones_like(self.ylm_grid),
+    }
+    self.tendencies = {k: 0.1 * v for k, v in self.prognostics.items()}
+    self.reference_temperatures = jnp.linspace(
+        300, 200, self.sigma_levels.shape[0]
+    )
+    self.model_orography = orographies.ModalOrography(
+        ylm_transform=self.ylm_transform, rngs=nnx.Rngs(0)
+    )
+
+    self.energy_query = {
+        'top_net_thermal_radiation': self.lon_lat_grid,
+        'top_net_solar_radiation': self.lon_lat_grid,
+        'surface_sensible_heat_flux': self.lon_lat_grid,
+        'surface_latent_heat_flux': self.lon_lat_grid,
+        'surface_net_solar_radiation': self.lon_lat_grid,
+        'surface_net_thermal_radiation': self.lon_lat_grid,
+        'mean_evaporation_rate': self.lon_lat_grid,
+    }
+
+    self.observation_operator = observation_operators.DataObservationOperator(
+        fields={
+            k: cx.wrap(jnp.ones(c.shape), c)
+            for k, c in self.energy_query.items()
+        }
+    )
+
+  def test_energy_residuals_shape_and_dtype(self):
+    energy_residuals = atmos_diagnostics.ExtractEnergyResiduals(
+        ylm_transform=self.ylm_transform,
+        levels=self.sigma_levels,
+        sim_units=self.sim_units,
+        model_orography=self.model_orography,
+        observation_operator=self.observation_operator,
+        in_out_fluxes_query=self.energy_query,
+        reference_temperature=self.reference_temperatures,
+    )
+    imbalance = energy_residuals(
+        self.tendencies, prognostics=self.prognostics
+    )['imbalance']
+    self.assertEqual(imbalance.shape, self.lon_lat_grid.shape)
+    self.assertEqual(imbalance.dtype, jnp.float32)
 
 
 if __name__ == '__main__':

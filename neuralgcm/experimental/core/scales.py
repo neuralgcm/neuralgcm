@@ -68,6 +68,10 @@ KAPPA = 2 / 7 * units.dimensionless
 # https://glossary.ametsoc.org/wiki/Latent_heat
 LATENT_HEAT_OF_VAPORIZATION = 2.501e6 * units.J / units.kilogram
 
+# The Latent Heat of Fusion for water assuming T = 273.15 K
+# https://glossary.ametsoc.org/wiki/Latent_heat
+LATENT_HEAT_OF_FUSION = 0.3337e6 * units.J / units.kilogram
+
 # Ideas gas constant for dry air (di-atomic). For `KAPPA == 1004` this value is
 # approximately 287.07.
 IDEAL_GAS_CONSTANT = ISOBARIC_HEAT_CAPACITY * KAPPA

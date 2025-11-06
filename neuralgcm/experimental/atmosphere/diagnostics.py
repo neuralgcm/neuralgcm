@@ -15,7 +15,8 @@
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
 import dataclasses
-from typing import Literal
+import functools
+from typing import Literal, Protocol, Sequence
 
 import coordax as cx
 from dinosaur import sigma_coordinates
@@ -24,8 +25,24 @@ import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
+from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import transforms
+from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
+
+
+class EnergyBalanceModule(Protocol):
+  """Protocol for energy balance modules that adjust tendencies."""
+
+  def __call__(
+      self,
+      imbalance: cx.Field,
+      tendencies: dict[str, cx.Field],
+      *args,
+      **kwargs,
+  ) -> dict[str, cx.Field]:
+    """Adjusts tendencies based on energy imbalance."""
 
 
 @nnx_compat.dataclass
@@ -236,3 +253,208 @@ class ExtractPrecipitationAndEvaporationWithConstraints(
           f' {self.evaporation_key=}.'
       )
     return self._apply_scaling(precipitation_and_evaporation)
+
+
+@nnx_compat.dataclass
+class ExtractEnergyResiduals(nnx.Module):
+  """Computes column energy imbalance based on moist enthalpy formulation.
+
+  This module calculates the imbalance between surface and TOA fluxes (RT - FS)
+  and the column energy tendency due to parameterizations dE/dt|_NN based on
+  E = phi_s*p_s/g + p_s/g * integral(Cp*T + Lv*q - Lf*qi + k)dsigma
+  (See Durran's book section 8.6.4 where it is shown that this is equivalent to
+  E = p_s/g * integral(Cv*T + Lv*q + phi - Lf*qi + k)dsigma
+  albeit it does not have moisture species there):
+  The tendency dE/dt|_NN is computed as:
+  dE/dt|_NN = p_s/g * [
+      (phi_s + integral(Cp*T + Lv*q - Lf*qi + k)dsigma) * d(log p_s)/dt|_NN +
+      integral(Cp*dT/dt|_NN + Lv*dq/dt|_NN - Lf*dqi/dt|_NN + dk/dt|_NN)dsigma
+  ]
+  The module returns the imbalance: (RT - FS) - dE/dt|_NN
+  where RT and FS are TOA and surface fluxes obtained from
+  observation_operator.
+  If use_evaporation_for_latent_heat is True, FS uses latent heat flux
+  derived from mean_evaporation_rate (by multiplying by Lv which is inaccurate
+  in ice covered regions), otherwise it uses surface_latent_heat_flux
+  from net_energy_terms.
+  If use_liquid_ice_moist_static_energy is True, qi is included in the
+  column energy integral and we need to predict also snowfall to close budget,
+  otherwise it is excluded.
+
+  """
+
+  ylm_transform: spherical_transforms.FixedYlmMapping
+  levels: coordinates.SigmaLevels
+  sim_units: units.SimUnits
+  model_orography: orographies.ModalOrography
+  observation_operator: observation_operators.ObservationOperator
+  in_out_fluxes_query: dict[str, cx.Coordinate]
+  reference_temperature: Sequence[float]
+  prognostics_arg_key: str | int = 'prognostics'
+  use_evaporation_for_latent_heat: bool = False
+  use_liquid_ice_moist_static_energy: bool = False
+
+  def __post_init__(self):
+    self.rt_keys = ['top_net_thermal_radiation', 'top_net_solar_radiation']
+    self.fs_keys = [
+        'surface_sensible_heat_flux',
+        'surface_net_solar_radiation',
+        'surface_net_thermal_radiation',
+    ]
+    if self.use_evaporation_for_latent_heat:
+      required_keys = self.rt_keys + self.fs_keys + ['mean_evaporation_rate']
+    else:
+      required_keys = self.rt_keys + self.fs_keys + ['surface_latent_heat_flux']
+
+    if self.use_liquid_ice_moist_static_energy:
+      required_keys.append('snowfall')
+    missing_keys = [
+        k for k in required_keys if k not in self.in_out_fluxes_query
+    ]
+    if missing_keys:
+      raise ValueError(
+          f'Missing energy terms in in_out_fluxes_query: {missing_keys}'
+      )
+
+  def _compute_ke_and_tendency(
+      self,
+      tendencies: dict[str, cx.Field],
+      prognostics: dict[str, cx.Field],
+  ) -> tuple[cx.Field, cx.Field]:
+    """Computes nodal kinetic energy and its tendency."""
+    velocity_from_div_curl = transforms.VelocityFromModalDivCurl(
+        self.ylm_transform
+    )
+    winds = velocity_from_div_curl({
+        'vorticity': prognostics['vorticity'],
+        'divergence': prognostics['divergence'],
+    })
+    u_nodal = winds['u_component_of_wind']
+    v_nodal = winds['v_component_of_wind']
+    k_nodal = 0.5 * (u_nodal**2 + v_nodal**2)
+    wind_tends = velocity_from_div_curl({
+        'vorticity': tendencies['vorticity'],
+        'divergence': tendencies['divergence'],
+    })
+    du_dt_nodal = wind_tends['u_component_of_wind']
+    dv_dt_nodal = wind_tends['v_component_of_wind']
+    dk_dt_nodal = u_nodal * du_dt_nodal + v_nodal * dv_dt_nodal
+    return k_nodal, dk_dt_nodal
+
+  def _compute_vertically_integrated_tendency(
+      self,
+      tendencies: dict[str, cx.Field],
+      prognostics: dict[str, cx.Field],
+  ) -> cx.Field:
+    """Computes column energy tendency due to parameterization."""
+    to_nodal = self.ylm_transform.to_nodal
+    p_surface_field = cx.cmap(jnp.exp)(
+        to_nodal(prognostics['log_surface_pressure'])
+    )
+    cp = self.sim_units.Cp
+    lv = self.sim_units.Lv
+    g = self.sim_units.gravity_acceleration
+    lf = self.sim_units.Lf
+
+    t_nodal_field = to_nodal(prognostics['temperature_variation']) + cx.wrap(
+        jnp.asarray(self.reference_temperature), self.levels
+    )
+    q_nodal_field = to_nodal(prognostics['specific_humidity'])
+
+    if self.use_liquid_ice_moist_static_energy:
+      qi_nodal_field = to_nodal(prognostics['specific_cloud_ice_water_content'])
+      dqi_dt_nodal_field = to_nodal(
+          tendencies['specific_cloud_ice_water_content']
+      )
+    else:
+      qi_nodal_field = 0.0
+      dqi_dt_nodal_field = 0.0
+
+    k_nodal_field, dk_dt_nodal_field = self._compute_ke_and_tendency(
+        tendencies, prognostics
+    )
+    temp_tend_nodal_field = to_nodal(tendencies['temperature_variation'])
+    hum_tend_nodal_field = to_nodal(tendencies['specific_humidity'])
+
+    phi_s = cx.wrap(
+        self.model_orography.nodal_orography * g, self.ylm_transform.nodal_grid
+    )
+    log_sp_tend = tendencies.get('log_surface_pressure')
+    if log_sp_tend is not None:
+      log_sp_tend_nodal_field = to_nodal(log_sp_tend)
+    else:
+      log_sp_tend_nodal_field = p_surface_field * 0
+
+    integrand1 = (
+        cp * t_nodal_field
+        + lv * q_nodal_field
+        - lf * qi_nodal_field
+        + k_nodal_field
+    )
+    i1 = self.levels.integrate(integrand1)
+    integrand2 = (
+        cp * temp_tend_nodal_field
+        + lv * hum_tend_nodal_field
+        - lf * dqi_dt_nodal_field
+        + dk_dt_nodal_field
+    )
+    i2 = self.levels.integrate(integrand2)
+
+    energy_tendency_data = (p_surface_field / g) * (
+        (phi_s + i1) * log_sp_tend_nodal_field + i2
+    )
+
+    return energy_tendency_data
+
+  def __call__(
+      self,
+      inputs: dict[str, cx.Field],
+      *args,
+      **kwargs,
+  ) -> dict[str, cx.Field]:
+    """Computes temperature tendency adjustment to conserve energy."""
+    tendencies = inputs
+    if isinstance(self.prognostics_arg_key, int):
+      prognostics = args[self.prognostics_arg_key]
+    else:
+      prognostics = kwargs.get(self.prognostics_arg_key)
+    if not isinstance(prognostics, dict):
+      raise ValueError(
+          f'Prognostics must be a dictionary, got {type(prognostics)=} instead.'
+      )
+
+    e_tendency_nn = self._compute_vertically_integrated_tendency(
+        tendencies, prognostics
+    )
+
+    net_energy_terms = self.observation_operator.observe(
+        prognostics, query=self.in_out_fluxes_query
+    )
+    # Assuming observation_operator returns RT and FS fluxes in J/m^2
+    # accumulated over an hour time and need to be converted to W/m^2.
+    # RT is TOA flux into atm, and FS is surface flux from atm.
+    # The user-provided formula is dE/dt = RT - FS.
+    sec_in_hour_inv = 1 / 3600
+    rt = sum(net_energy_terms[k] for k in self.rt_keys) * sec_in_hour_inv
+    fs = sum(net_energy_terms[k] for k in self.fs_keys) * sec_in_hour_inv
+
+    if self.use_evaporation_for_latent_heat:
+      fs += (
+          net_energy_terms['mean_evaporation_rate']
+          * sec_in_hour_inv
+          * self.sim_units.Lv
+      )
+    else:
+      fs += net_energy_terms['surface_latent_heat_flux'] * sec_in_hour_inv
+    if self.use_liquid_ice_moist_static_energy:
+      fs += (
+          net_energy_terms['snowfall']
+          * sec_in_hour_inv
+          * self.sim_units.Lf
+          * self.sim_units.water_density
+      )
+
+    # Energy imbalance: difference between required tendency (rt - fs) and
+    # tendency from NN (e_tendency_nn).
+    imbalance = (rt - fs) - e_tendency_nn
+    return {'imbalance': imbalance}

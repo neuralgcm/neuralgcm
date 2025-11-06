@@ -356,11 +356,11 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
 
   def test_nested_evaluators_loss(self):
     eval_atmo = evaluators.Evaluator(
-        metrics={'mse_t': deterministic_losses.MSE()},
+        metrics={'mse': deterministic_losses.MSE()},
         aggregators=self.aggregator,
     )
     eval_ocean = evaluators.Evaluator(
-        metrics={'mae_sst': deterministic_losses.MAE()},
+        metrics={'mae': deterministic_losses.MAE()},
         aggregators=self.aggregator,
     )
     nested = evaluators.NestedEvaluators(
@@ -370,15 +370,20 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
     self.assertTrue(nested.is_loss_evaluator)
     agg_states = nested.evaluate(self.predictions, self.targets)
     # check structure
-    self.assertCountEqual(agg_states.keys(), ['atmosphere', 'ocean'])
-    self.assertCountEqual(agg_states['atmosphere'].keys(), ['mse_t'])
-    self.assertCountEqual(agg_states['ocean'].keys(), ['mae_sst'])
+    expected_metrics_struct = {
+        'atmosphere': {'mse': {'t': cx.wrap(0.0)}},
+        'ocean': {'mae': {'sst': cx.wrap(0.0)}},
+    }
+    metric_values = nested.evaluate_metrics(self.predictions, self.targets)
+    chex.assert_trees_all_equal_structs(metric_values, expected_metrics_struct)
     # check total loss value
     total_loss = nested.evaluate_total(self.predictions, self.targets)
     # atmosphere mse_t = ((2-1)**2 + (3-1)**2) / 2 = 2.5
     # ocean mae_sst = (abs(10-12) + abs(14-12)) / 2 = 2.0
     # total = 0.4 * 2.5 + 0.6 * 2.0 = 1.0 + 1.2 = 2.2
     np.testing.assert_almost_equal(total_loss.data, 2.2)
+    total_loss_from_agg_states = nested.evaluate_total({}, {}, agg_states)
+    np.testing.assert_almost_equal(total_loss_from_agg_states.data, 2.2)
 
   def test_flattened_evaluator_loss(self):
     loss = deterministic_losses.MSE(
@@ -391,6 +396,12 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
     self.assertTrue(flat_eval.is_loss_evaluator)
     agg_states = flat_eval.evaluate(self.predictions, self.targets)
     # check structure
+    expected_metrics_struct = {
+        'flat_mse': {'atmosphere.t': cx.wrap(0.0), 'ocean.sst': cx.wrap(0.0)}
+    }
+    metric_values = flat_eval.evaluate_metrics(self.predictions, self.targets)
+    chex.assert_trees_all_equal_structs(metric_values, expected_metrics_struct)
+
     self.assertCountEqual(agg_states.keys(), ['flat_mse'])
     self.assertIn(
         'SquaredError', agg_states['flat_mse'].sum_weighted_statistics
@@ -404,7 +415,7 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
 
   def test_nested_evaluators_with_default(self):
     eval_ocean = evaluators.Evaluator(
-        metrics={'mae_sst': deterministic_losses.MAE()},
+        metrics={'mae': deterministic_losses.MAE()},
         aggregators=self.aggregator,
     )
     default_eval = evaluators.Evaluator(
@@ -425,7 +436,7 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
 
   def test_nested_evaluators_raises_on_missing_key(self):
     eval_ocean = evaluators.Evaluator(
-        metrics={'mae_sst': deterministic_losses.MAE()},
+        metrics={'mae': deterministic_losses.MAE()},
         aggregators=self.aggregator,
     )
     nested = evaluators.NestedEvaluators(

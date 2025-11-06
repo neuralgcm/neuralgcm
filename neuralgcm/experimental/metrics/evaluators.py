@@ -117,6 +117,20 @@ class Evaluator(Generic[M]):
       agg_states |= self._evaluate_group(keys, getter, predictions, targets)
     return agg_states
 
+  def evaluate_metrics(
+      self,
+      predictions: dict[str, cx.Field],
+      targets: dict[str, cx.Field],
+      agg_states: dict[str, aggregation.AggregationState] | None = None,
+  ) -> dict[str, dict[str, cx.Field]]:
+    """Evaluates metrics and returns their values."""
+    if agg_states is None:
+      agg_states = self.evaluate(predictions, targets)
+    metric_values = {}
+    for key, metric in self.metrics.items():
+      metric_values[key] = agg_states[key].metric_values(metric)
+    return metric_values
+
   def evaluate_total(
       self,
       predictions: dict[str, cx.Field],
@@ -197,6 +211,17 @@ class FlattenedEvaluator:
     """Flattens inputs and evaluates metrics."""
     return self.evaluator.evaluate(
         _flatten_dict(predictions), _flatten_dict(targets)
+    )
+
+  def evaluate_metrics(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+      agg_states: dict[str, aggregation.AggregationState] | None = None,
+  ) -> dict[str, dict[str, cx.Field]]:
+    """Flattens inputs and evaluates metrics."""
+    return self.evaluator.evaluate_metrics(
+        _flatten_dict(predictions), _flatten_dict(targets), agg_states
     )
 
   def evaluate_total(
@@ -284,6 +309,25 @@ class NestedEvaluators:
       result[key] = evaluator.evaluate(predictions[key], targets[key])
     return result
 
+  def evaluate_metrics(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+      agg_states: (
+          dict[str, dict[str, aggregation.AggregationState]] | None
+      ) = None,
+  ) -> dict[str, dict[str, dict[str, cx.Field]]]:
+    """Evaluates metrics for each dataset and returns nested metric values."""
+    if agg_states is None:
+      agg_states = self.evaluate(predictions, targets)
+    metrics_results = {}
+    for key, states in agg_states.items():
+      evaluator = self.evaluators.get(key, self.default_evaluator)
+      metrics_results[key] = evaluator.evaluate_metrics(  # pytype: disable=attribute-error
+          predictions.get(key, {}), targets.get(key, {}), states
+      )
+    return metrics_results
+
   def evaluate_total(
       self,
       predictions: dict[str, dict[str, cx.Field]],
@@ -301,11 +345,10 @@ class NestedEvaluators:
     weights = self.evaluator_weights or {}
     for key, states in sorted(agg_states.items()):
       evaluator = self.evaluators.get(key, self.default_evaluator)
-      if key in predictions and key in targets:
-        term_total = evaluator.evaluate_total(  # pytype: disable=attribute-error
-            predictions[key], targets[key], states
-        )
-        total_loss += weights.get(key, 1.0) * term_total
+      term_total = evaluator.evaluate_total(  # pytype: disable=attribute-error
+          predictions.get(key, {}), targets.get(key, {}), states
+      )
+      total_loss += weights.get(key, 1.0) * term_total
     return total_loss
 
   def with_context(self, context: dict[str, cx.Field]) -> NestedEvaluators:

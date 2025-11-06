@@ -337,6 +337,106 @@ class EvaluatorsTest(parameterized.TestCase):
     chex.assert_trees_all_close(metric_values, scanned_metric_values)
 
 
+class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    dim = cx.SizedAxis('spatial', 2)
+    self.predictions = {
+        'atmosphere': {'t': cx.wrap(np.array([2.0, 3.0]), dim)},
+        'ocean': {'sst': cx.wrap(np.array([10.0, 14.0]), dim)},
+    }
+    self.targets = {
+        'atmosphere': {'t': cx.wrap(np.array([1.0, 1.0]), dim)},
+        'ocean': {'sst': cx.wrap(np.array([12.0, 12.0]), dim)},
+    }
+    self.aggregator = aggregation.Aggregator(
+        dims_to_reduce=['spatial'], weight_by=[]
+    )
+
+  def test_nested_evaluators_loss(self):
+    eval_atmo = evaluators.Evaluator(
+        metrics={'mse_t': deterministic_losses.MSE()},
+        aggregators=self.aggregator,
+    )
+    eval_ocean = evaluators.Evaluator(
+        metrics={'mae_sst': deterministic_losses.MAE()},
+        aggregators=self.aggregator,
+    )
+    nested = evaluators.NestedEvaluators(
+        evaluators={'atmosphere': eval_atmo, 'ocean': eval_ocean},
+        evaluator_weights={'atmosphere': 0.4, 'ocean': 0.6},
+    )
+    self.assertTrue(nested.is_loss_evaluator)
+    agg_states = nested.evaluate(self.predictions, self.targets)
+    # check structure
+    self.assertCountEqual(agg_states.keys(), ['atmosphere', 'ocean'])
+    self.assertCountEqual(agg_states['atmosphere'].keys(), ['mse_t'])
+    self.assertCountEqual(agg_states['ocean'].keys(), ['mae_sst'])
+    # check total loss value
+    total_loss = nested.evaluate_total(self.predictions, self.targets)
+    # atmosphere mse_t = ((2-1)**2 + (3-1)**2) / 2 = 2.5
+    # ocean mae_sst = (abs(10-12) + abs(14-12)) / 2 = 2.0
+    # total = 0.4 * 2.5 + 0.6 * 2.0 = 1.0 + 1.2 = 2.2
+    np.testing.assert_almost_equal(total_loss.data, 2.2)
+
+  def test_flattened_evaluator_loss(self):
+    loss = deterministic_losses.MSE(
+        variable_weights={'atmosphere.t': 0.4, 'ocean.sst': 0.6}
+    )
+    evaluator = evaluators.Evaluator(
+        metrics={'flat_mse': loss}, aggregators=self.aggregator
+    )
+    flat_eval = evaluators.FlattenedEvaluator(evaluator)
+    self.assertTrue(flat_eval.is_loss_evaluator)
+    agg_states = flat_eval.evaluate(self.predictions, self.targets)
+    # check structure
+    self.assertCountEqual(agg_states.keys(), ['flat_mse'])
+    self.assertIn(
+        'SquaredError', agg_states['flat_mse'].sum_weighted_statistics
+    )
+    # check total loss value
+    total_loss = flat_eval.evaluate_total(self.predictions, self.targets)
+    # atmosphere.t mse = 2.5
+    # ocean.sst mse = ( (10-12)^2 + (14-12)^2 ) / 2 = 4.0
+    # total = 0.4 * 2.5 + 0.6 * 4.0 = 1.0 + 2.4 = 3.4
+    np.testing.assert_almost_equal(total_loss.data, 3.4)
+
+  def test_nested_evaluators_with_default(self):
+    eval_ocean = evaluators.Evaluator(
+        metrics={'mae_sst': deterministic_losses.MAE()},
+        aggregators=self.aggregator,
+    )
+    default_eval = evaluators.Evaluator(
+        metrics={'mse': deterministic_losses.MSE()},
+        aggregators=self.aggregator,
+    )
+    nested = evaluators.NestedEvaluators(
+        evaluators={'ocean': eval_ocean, ...: default_eval},
+        evaluator_weights={'ocean': 0.6},
+    )
+    self.assertTrue(nested.is_loss_evaluator)
+    # 'atmosphere' uses default MSE, 'ocean' uses MAE
+    total_loss = nested.evaluate_total(self.predictions, self.targets)
+    # atmosphere mse_t = 2.5
+    # ocean mae_sst = 2.0
+    # total = 1.0 * 2.5 + 0.6 * 2.0 = 2.5 + 1.2 = 3.7
+    np.testing.assert_almost_equal(total_loss.data, 3.7)
+
+  def test_nested_evaluators_raises_on_missing_key(self):
+    eval_ocean = evaluators.Evaluator(
+        metrics={'mae_sst': deterministic_losses.MAE()},
+        aggregators=self.aggregator,
+    )
+    nested = evaluators.NestedEvaluators(
+        evaluators={'ocean': eval_ocean},
+    )
+    with self.assertRaisesRegex(
+        ValueError, "No evaluator found for key 'atmosphere'"
+    ):
+      nested.evaluate(self.predictions, self.targets)
+
+
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')
   absltest.main()

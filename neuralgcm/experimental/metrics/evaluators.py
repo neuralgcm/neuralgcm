@@ -17,7 +17,7 @@
 from __future__ import annotations
 import collections
 import dataclasses
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 import coordax as cx
 import jax
 from neuralgcm.experimental.core import transforms
@@ -155,5 +155,182 @@ jax.tree_util.register_dataclass(
     Evaluator,
     data_fields=['aggregators'],
     meta_fields=['metrics', 'getters', 'term_weights'],
+    drop_fields=['is_loss_evaluator'],
+)
+
+
+def _flatten_dict(data: dict[str, dict[str, cx.Field]]) -> dict[str, cx.Field]:
+  """Flattens dict['dataset']['var'] to dict['dataset.var']."""
+  flat_dict = {}
+  for dataset_key, variables in data.items():
+    for var_name, value in variables.items():
+      flat_dict[f'{dataset_key}.{var_name}'] = value
+  return flat_dict
+
+
+@dataclasses.dataclass
+class FlattenedEvaluator:
+  """Evaluator wrapper that flattens nested inputs before evaluation.
+
+  This evaluator takes nested prediction and target dictionaries of the form
+  `{dataset_key: {variable_name: cx.Field}}` and flattens them into a single
+  dictionary of the form `{dataset_key.variable_name: cx.Field}` before
+  passing them to the wrapped `Evaluator`. This is useful when a single metric
+  or loss function needs to operate on variables from different datasets.
+
+  Attributes:
+    evaluator: The `Evaluator` instance to apply to flattened inputs.
+    is_loss_evaluator: True if the wrapped evaluator computes losses.
+  """
+
+  evaluator: Evaluator
+  is_loss_evaluator: bool = dataclasses.field(init=False)
+
+  def __post_init__(self):
+    self.is_loss_evaluator = self.evaluator.is_loss_evaluator
+
+  def evaluate(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+  ) -> dict[str, aggregation.AggregationState]:
+    """Flattens inputs and evaluates metrics."""
+    return self.evaluator.evaluate(
+        _flatten_dict(predictions), _flatten_dict(targets)
+    )
+
+  def evaluate_total(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+      agg_states: dict[str, aggregation.AggregationState] | None = None,
+  ) -> cx.Field:
+    """Flattens inputs and evaluates total loss."""
+    if not self.is_loss_evaluator:
+      raise TypeError('evaluate_total() requires the evaluator to be a loss.')
+    return self.evaluator.evaluate_total(
+        _flatten_dict(predictions), _flatten_dict(targets), agg_states
+    )
+
+  def with_context(self, context: dict[str, cx.Field]) -> FlattenedEvaluator:
+    """Returns a copy with context set in the wrapped evaluator."""
+    return dataclasses.replace(
+        self, evaluator=self.evaluator.with_context(context)
+    )
+
+
+@dataclasses.dataclass
+class NestedEvaluators:
+  """An evaluator that applies different evaluators to nested inputs.
+
+  This class holds a dictionary of `Evaluator` instances, where each evaluator
+  corresponds to a `dataset_key` in the nested predictions and targets
+  dictionaries (`{dataset_key: {variable_name: cx.Field}}`). Evaluation is
+  performed independently for each dataset. If all contained evaluators are
+  loss evaluators, `evaluate_total` can be used to compute a weighted sum of
+  total losses from each dataset.
+
+  Attributes:
+    evaluators: A dictionary mapping dataset_keys to `Evaluator` instances. Can
+      include `...` as a key to specify a default evaluator for dataset_keys not
+      explicitly listed.
+    evaluator_weights: Optional weights used to scale contributions of
+      individual evaluators to the total loss. Keys must match those of
+      `evaluators`. Missing keys defaults to the weight of 1.0.
+    is_loss_evaluator: True if all wrapped evaluators compute losses.
+    default_evaluator: The default evaluator specified with `...`, or None.
+  """
+
+  evaluators: dict[Any, Evaluator]
+  evaluator_weights: dict[str, float] | None = None
+  is_loss_evaluator: bool = dataclasses.field(init=False)
+  default_evaluator: Evaluator | None = dataclasses.field(init=False)
+
+  def __post_init__(self):
+    self.evaluators = dict(self.evaluators)  # make mutable copy
+    self.default_evaluator = self.evaluators.pop(..., None)
+    all_evals = list(self.evaluators.values())
+    if self.default_evaluator:
+      all_evals.append(self.default_evaluator)
+
+    self.is_loss_evaluator = all(ev.is_loss_evaluator for ev in all_evals)
+    if not self.is_loss_evaluator and self.evaluator_weights is not None:
+      raise TypeError(
+          f'{self.evaluator_weights=} can only be set when all evaluators are'
+          ' loss evaluators.'
+      )
+    if self.evaluator_weights is not None:
+      if not set(self.evaluator_weights).issubset(set(self.evaluators)):
+        raise ValueError(
+            f'Keys in {self.evaluator_weights=} must be a subset of keys in'
+            f' {self.evaluators=}.'
+        )
+
+  def evaluate(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+  ) -> dict[str, dict[str, aggregation.AggregationState]]:
+    """Evaluates metrics for each dataset, returning nested aggregation states."""
+    result = {}
+    all_keys = set(predictions.keys()) & set(targets.keys())
+    for key in all_keys:
+      evaluator = self.evaluators.get(key, self.default_evaluator)
+      if evaluator is None:
+        raise ValueError(
+            f"No evaluator found for key '{key}' and no default (...) was "
+            'provided in NestedEvaluators.'
+        )
+      result[key] = evaluator.evaluate(predictions[key], targets[key])
+    return result
+
+  def evaluate_total(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+      agg_states: (
+          dict[str, dict[str, aggregation.AggregationState]] | None
+      ) = None,
+  ) -> cx.Field:
+    """Evaluates and sums total losses from all datasets."""
+    if not self.is_loss_evaluator:
+      raise TypeError('evaluate_total() requires all evaluators to be losses.')
+    if agg_states is None:
+      agg_states = self.evaluate(predictions, targets)
+    total_loss = cx.wrap(0.0)
+    weights = self.evaluator_weights or {}
+    for key, states in sorted(agg_states.items()):
+      evaluator = self.evaluators.get(key, self.default_evaluator)
+      if key in predictions and key in targets:
+        term_total = evaluator.evaluate_total(  # pytype: disable=attribute-error
+            predictions[key], targets[key], states
+        )
+        total_loss += weights.get(key, 1.0) * term_total
+    return total_loss
+
+  def with_context(self, context: dict[str, cx.Field]) -> NestedEvaluators:
+    """Returns a copy with context set in all nested evaluators."""
+    new_evaluators = {
+        k: ev.with_context(context) for k, ev in self.evaluators.items()
+    }
+    if self.default_evaluator:
+      new_evaluators[...] = self.default_evaluator.with_context(context)
+    return dataclasses.replace(
+        self,
+        evaluators=new_evaluators,
+        evaluator_weights=self.evaluator_weights,
+    )
+
+
+jax.tree_util.register_dataclass(
+    FlattenedEvaluator,
+    data_fields=['evaluator'],
+    meta_fields=[],
+    drop_fields=['is_loss_evaluator'],
+)
+jax.tree_util.register_dataclass(
+    NestedEvaluators,
+    data_fields=['evaluators'],
+    meta_fields=['evaluator_weights'],
     drop_fields=['is_loss_evaluator'],
 )

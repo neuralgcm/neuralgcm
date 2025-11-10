@@ -599,26 +599,36 @@ def with_callback(
 ):
   """Returns module with `callback_specs.module` attached to `method_name`."""
   base_class = type(module)
+  method_to_wrap = getattr(base_class, method_name)
+
+  depth = getattr(module, '_wrapper_depth', 0)
+  new_depth = depth + 1
+  callback_module_attr = f'_callback_module_{new_depth}'
+  callback_method_name_attr = f'_callback_method_name_{new_depth}'
 
   def __init__(self, wrapped_instance, callback_specs):  # pylint: disable=invalid-name
     self.wrapped_instance = wrapped_instance
-    self.callback_specs = format_callbacks(callback_specs)
+    self._wrapper_depth = new_depth  # pylint: disable=protected-access
+    formatted_specs = format_callbacks(callback_specs)
+    setattr(self, callback_module_attr, formatted_specs.module)
+    setattr(self, callback_method_name_attr, formatted_specs.method_name)
 
   def __getattr__(self, attr_name):  # pylint: disable=invalid-name
     """Delegate attribute access to the wrapped instance."""
     return getattr(self.wrapped_instance, attr_name)
 
-  @functools.wraps(getattr(base_class, method_name))
+  @functools.wraps(method_to_wrap)
   def wrapped_fn(self, *args, **kwargs):
-    result = getattr(self.wrapped_instance, method_name)(*args, **kwargs)
-    # The reason we use getattr here is because we need to access of method of
-    # the callback module that is an attribute of this module. Otherwise nnx
-    # would raise an error informing that we are trying to mutate an object that
-    # is out of current scope. (This is exactly what would happen if we added
-    # a reference to a callback_module.method as attribute of this class.)
-    callback_fn = getattr(
-        self.callback_specs.module, self.callback_specs.method_name
-    )
+    result = method_to_wrap(self.wrapped_instance, *args, **kwargs)
+    # The reason this function closes over method and module attrs and uses
+    # getattr to access those is to ensure that the method acts on modules that
+    # are in a valid context. Closing over nnx modules and calling them is not
+    # allowed in nnx (an error is raised under nnx.jit). This effectively
+    # mimicks an explicit injection of a callback module that would be accessed
+    # via a qualifying class attribute.
+    callback_module = getattr(self, callback_module_attr)
+    callback_method_name = getattr(self, callback_method_name_attr)
+    callback_fn = getattr(callback_module, callback_method_name)
     callback_fn(result, *args, **kwargs)
     return result
 

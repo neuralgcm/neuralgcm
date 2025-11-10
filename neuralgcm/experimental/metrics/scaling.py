@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-from typing import Literal
+import functools
 
 import coordax as cx
 import jax.numpy as jnp
@@ -153,14 +153,35 @@ class WavenumberScaler(ScaleFactor):
 
 
 @dataclasses.dataclass
-class MaskedScaler(ScaleFactor):
-  """Masks a specified number of elements from the start or end of a dimension."""
+class CoordinateMaskScaler(ScaleFactor):
+  """Applies fixed scaling of masked/unmasked values based on coordinate values.
 
-  coord_name: str
-  n_to_mask: int
-  mask_position: Literal['start', 'end'] = 'start'
+  This scaler is parameterized by a `mask_coord`. For each dimension in
+  `mask_coord.dims`, it checks for a matching coordinate in the input `field`
+  or, if not present on the `field`, a scalar value in the `context`.
+
+  If a matching coordinate is found on the `field`, it returns `masked_value`
+  for each value in that coordinate that is present in the `mask_coord`, and
+  `unmasked_value` otherwise.
+
+  If no matching coordinate is found of the `field`, the `context` is searched
+  for scalar value using the dimension name, indicating in-context processing
+  of `field` slices. If found, it returns `masked_value` if the value from the
+  context (context[dim_name]) is present in `mask_coord`, and `unmasked_value`
+  otherwise.
+
+  If coordinates for multiple dimensions are found, the resulting masks are
+  multiplied.
+
+  If `skip_missing` is True, dimensions from `mask_coord` not found in the
+  `field` or `context` are ignored (effectively resulting in `unmasked_value`).
+  Otherwise, a ValueError is raised.
+  """
+
+  mask_coord: cx.Coordinate
   masked_value: float = 0.0
   unmasked_value: float = 1.0
+  skip_missing: bool = True
 
   def scales(
       self,
@@ -168,20 +189,54 @@ class MaskedScaler(ScaleFactor):
       field_name: str | None = None,
       context: dict[str, cx.Field] | None = None,
   ) -> cx.Field | float:
-    del field_name, context  # unused.
-    coord = field.axes.get(self.coord_name)
-    if coord is None:
-      raise ValueError(f"Dimension '{self.coord_name}' not found in field.")
+    """Computes scales based on coordinate values."""
+    del field_name  # unused.
+    all_masks = []
+    for dim_name in self.mask_coord.dims:
+      in_context = context and dim_name in context
+      in_field = dim_name in field.axes
 
-    scales = np.full(coord.shape, self.unmasked_value, dtype=np.float32)
-    if self.mask_position == 'start':
-      scales[: self.n_to_mask] = self.masked_value
-    elif self.mask_position == 'end':
-      scales[-self.n_to_mask :] = self.masked_value
-    else:
-      raise ValueError("`mask_position` must be either 'start' or 'end'.")
+      if in_context and in_field:
+        raise ValueError(
+            f'Coordinate for {dim_name!r} found both in context and field.'
+        )
 
-    return cx.wrap(scales, coord)
+      if not in_context and not in_field:
+        if self.skip_missing:
+          continue
+        raise ValueError(
+            f'Coordinate for {dim_name!r} not found on {field=} or in context.'
+        )
+
+      mask_values_field = self.mask_coord.fields[dim_name]
+      if in_context:
+        current_value = context[dim_name]
+        if current_value.ndim != 0:
+          raise ValueError(
+              f'Expected scalar {dim_name!r} in context, got '
+              f'{current_value.shape=}'
+          )
+        mask_values = mask_values_field.untag(dim_name)
+        is_present = (current_value == mask_values).data.any()
+        mask = cx.wrap(is_present)
+        all_masks.append(mask)
+      elif in_field:
+        coord_from_field = field.axes[dim_name]
+        field_values = coord_from_field.fields[dim_name]
+        mask_values_data = mask_values_field.untag(dim_name)
+        is_present_broadcasted = field_values == mask_values_data
+        mask_for_dim = cx.cmap(lambda x: x.any())(is_present_broadcasted)
+        all_masks.append(mask_for_dim)
+
+    if not all_masks:
+      return self.unmasked_value
+
+    final_mask = functools.reduce(lambda x, y: x & y, all_masks)
+    return cx.cmap(
+        lambda x: jnp.where(
+            x, self.masked_value, self.unmasked_value
+        ).astype(jnp.float32)
+    )(final_mask)
 
 
 @dataclasses.dataclass

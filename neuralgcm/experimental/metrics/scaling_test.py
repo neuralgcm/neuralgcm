@@ -22,69 +22,51 @@ from neuralgcm.experimental.metrics import scaling
 import numpy as np
 
 
-class MaskedScalerTest(parameterized.TestCase):
+class CoordinateMaskScalerTest(parameterized.TestCase):
 
-  def setUp(self):
-    super().setUp()
-    self.coord = coordinates.TimeDelta(
-        np.array([np.timedelta64(i, 'h') for i in range(10)])
+  def test_coordinate_mask_scaler(self):
+    time_coord = coordinates.TimeDelta(
+        np.array([0, 6, 12, 18]) * np.timedelta64(1, 'h')
     )
-    self.field = cx.wrap(np.zeros(self.coord.shape, np.float32), self.coord)
+    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    mask_deltas = np.array([6, 18]) * np.timedelta64(1, 'h')
+    mask_coord = coordinates.TimeDelta(mask_deltas)
+    mask_scaler = scaling.CoordinateMaskScaler(
+        mask_coord=mask_coord, masked_value=0.0, unmasked_value=5.0
+    )
+    scales = mask_scaler.scales(field)
+    expected_scales = np.array([5.0, 0.0, 5.0, 0.0])
+    np.testing.assert_allclose(scales.data, expected_scales)
 
-  @parameterized.named_parameters(
-      dict(
-          testcase_name='mask_from_start',
-          n=3,
-          position='start',
-          expected=[0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-      ),
-      dict(
-          testcase_name='mask_from_end',
-          n=2,
-          position='end',
-          expected=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],
-      ),
-      dict(
-          testcase_name='mask_zero_elements',
-          n=0,
-          position='start',
-          expected=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-      ),
-      dict(
-          testcase_name='mask_all_elements',
-          n=10,
-          position='start',
-          expected=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-      ),
-  )
-  def test_scales_returns_correct_mask(self, n, position, expected):
-    """Tests that the scaler produces the correct mask array."""
-    scaler = scaling.MaskedScaler(
-        coord_name='timedelta', n_to_mask=n, mask_position=position
-    )
-    result = scaler.scales(self.field)
-    np.testing.assert_allclose(
-        result.data, np.array(expected, dtype=np.float32)
-    )
-    self.assertEqual(result.coordinate, self.coord)
+  def test_coordinate_mask_scaler_with_context(self):
+    x = cx.SizedAxis('x', 4)
+    field = cx.wrap(np.ones(x.shape), x)
+    mask_deltas = np.array([6, 18]) * np.timedelta64(1, 'h')
+    mask_coord = coordinates.TimeDelta(mask_deltas)
+    mask_scaler = scaling.CoordinateMaskScaler(mask_coord=mask_coord)
 
-  def test_invalid_position_raises_error(self):
-    """Tests that an invalid position raises a ValueError."""
-    with self.assertRaisesRegex(
-        ValueError, "`mask_position` must be either 'start' or 'end'."
-    ):
-      scaler = scaling.MaskedScaler(
-          coord_name='timedelta', n_to_mask=1, mask_position='middle'
-      )
-      scaler.scales(self.field)
+    context_time_match = {'timedelta': cx.wrap(np.timedelta64(6, 'h'))}
+    scales_match = mask_scaler.scales(field, context=context_time_match)
+    np.testing.assert_allclose(scales_match.data, 0.0)
+
+    context_time_no_match = {'timedelta': cx.wrap(np.timedelta64(3, 'h'))}
+    scales_no_match = mask_scaler.scales(field, context=context_time_no_match)
+    np.testing.assert_allclose(scales_no_match.data, 1.0)
 
   def test_missing_dimension_raises_error(self):
     """Tests that a missing dimension raises a ValueError."""
+    time_coord = coordinates.TimeDelta(
+        np.array([0, 6, 12, 18]) * np.timedelta64(1, 'h')
+    )
+    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    mask_coord = cx.SizedAxis('nondim', 2)
     with self.assertRaisesRegex(
-        ValueError, "Dimension 'nondim' not found in field."
+        ValueError, "Coordinate for 'nondim' not found"
     ):
-      scaler = scaling.MaskedScaler(coord_name='nondim', n_to_mask=1)
-      scaler.scales(self.field)
+      scaler = scaling.CoordinateMaskScaler(
+          mask_coord=mask_coord, skip_missing=False
+      )
+      scaler.scales(field)
 
 
 if __name__ == '__main__':

@@ -295,15 +295,8 @@ class EvaluatorsTest(parameterized.TestCase):
     }
 
     # Through scan from context evaluation.
-    data_struct = {'u': cx.shape_struct_field(x)}  # same targets/predictions.
-    init_agg_states = {
-        'rmse_total': aggregation.AggregationState.zeros_for_metric(
-            rmse, agg_total, data_struct, data_struct
-        ),
-        'rmse_3hr': aggregation.AggregationState.zeros_for_metric(
-            rmse, agg_3hr, data_struct, data_struct
-        ),
-    }
+    in_struct = {'u': cx.shape_struct_field(x)}  # same targets/predictions.
+    init_agg_states = evaluator.zeros_aggregation_states(in_struct, in_struct)
 
     def scan_body(aggregation_carry, prediction_i, target_i, evaluator_slice):
       agg_state = evaluator_slice.evaluate(prediction_i, target_i)
@@ -335,6 +328,22 @@ class EvaluatorsTest(parameterized.TestCase):
         for k in ['rmse_total', 'rmse_3hr']
     }
     chex.assert_trees_all_close(metric_values, scanned_metric_values)
+
+  def test_evaluator_zeros_aggregation_states(self):
+    dim = cx.SizedAxis('spatial', 2)
+    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+    mse = deterministic_metrics.MSE()
+    rmse = deterministic_metrics.RMSE()
+    evaluator = evaluators.Evaluator(
+        metrics={'mse': mse, 'rmse': rmse},
+        aggregators=aggregation.Aggregator(
+            dims_to_reduce=['spatial'], weight_by=[]
+        ),
+    )
+    agg_states = evaluator.evaluate(predictions, targets)
+    zeros_agg_states = evaluator.zeros_aggregation_states(predictions, targets)
+    chex.assert_trees_all_equal_structs(agg_states, zeros_agg_states)
 
 
 class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
@@ -446,6 +455,38 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
         ValueError, "No evaluator found for key 'atmosphere'"
     ):
       nested.evaluate(self.predictions, self.targets)
+
+  def test_nested_evaluators_zeros_aggregation_states(self):
+    eval_atmo = evaluators.Evaluator(
+        metrics={'mse': deterministic_losses.MSE()},
+        aggregators=self.aggregator,
+    )
+    eval_ocean = evaluators.Evaluator(
+        metrics={'mae': deterministic_losses.MAE()},
+        aggregators=self.aggregator,
+    )
+    nested = evaluators.NestedEvaluators(
+        evaluators={'atmosphere': eval_atmo, 'ocean': eval_ocean}
+    )
+    agg_states = nested.evaluate(self.predictions, self.targets)
+    zeros_agg_states = nested.zeros_aggregation_states(
+        self.predictions, self.targets
+    )
+    chex.assert_trees_all_equal_structs(agg_states, zeros_agg_states)
+
+  def test_flattened_evaluator_zeros_aggregation_states(self):
+    loss = deterministic_losses.MSE(
+        variable_weights={'atmosphere.t': 0.4, 'ocean.sst': 0.6}
+    )
+    evaluator = evaluators.Evaluator(
+        metrics={'flat_mse': loss}, aggregators=self.aggregator
+    )
+    flat_eval = evaluators.FlattenedEvaluator(evaluator)
+    agg_states = flat_eval.evaluate(self.predictions, self.targets)
+    zeros_agg_states = flat_eval.zeros_aggregation_states(
+        self.predictions, self.targets
+    )
+    chex.assert_trees_all_equal_structs(agg_states, zeros_agg_states)
 
 
 if __name__ == '__main__':

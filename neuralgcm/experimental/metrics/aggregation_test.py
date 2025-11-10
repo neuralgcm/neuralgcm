@@ -25,9 +25,9 @@ from neuralgcm.experimental.metrics import evaluators
 import numpy as np
 
 
-class AggregationStateTest(parameterized.TestCase):
+class AggregatorTest(parameterized.TestCase):
 
-  def test_zeros_for_metric_constructor(self):
+  def test_zeros_aggregation_state_constructor(self):
     dim = cx.SizedAxis('spatial', 2)
     predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
     targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
@@ -41,11 +41,11 @@ class AggregationStateTest(parameterized.TestCase):
         aggregators=aggregator,
     )
     agg_states = evaluator.evaluate(predictions, targets)
-    zero_state_mse = aggregation.AggregationState.zeros_for_metric(
-        mse, aggregator, predictions, targets
+    zero_state_mse = aggregator.zeros_aggregation_state(
+        mse, predictions, targets
     )
-    zero_state_rmse = aggregation.AggregationState.zeros_for_metric(
-        rmse, aggregator, predictions, targets
+    zero_state_rmse = aggregator.zeros_aggregation_state(
+        rmse, predictions, targets
     )
 
     chex.assert_trees_all_equal_structs(zero_state_mse, agg_states['mse'])

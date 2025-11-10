@@ -90,11 +90,12 @@ class Evaluator(Generic[M]):
       for key in keys:
         for stat in self.metrics[key].statistics.values():
           stats_for_group[stat.unique_name] = unique_stats[stat.unique_name]
+      # process aggregation for a group of metrics.
       group_agg_state = aggregator.aggregate_statistics(stats_for_group)
       group_metrics = {k: self.metrics[k] for k in keys}
       agg_states |= aggregation.split_aggregation_state_for_metrics(
           group_metrics, group_agg_state
-      )
+      )  # results in agg_states indexed by metric keys.
     return agg_states
 
   def evaluate(
@@ -163,6 +164,29 @@ class Evaluator(Generic[M]):
     else:
       new_aggregators = self.aggregators.with_context(context)
     return dataclasses.replace(self, aggregators=new_aggregators)
+
+  def zeros_aggregation_states(
+      self,
+      predictions: dict[str, cx.Field],
+      targets: dict[str, cx.Field],
+  ) -> dict[str, aggregation.AggregationState]:
+    """Returns zero AggregationStates for all metrics without computation."""
+
+    def apply_getter(getter, x):
+      if getter is None:
+        return x
+      return getter.output_shapes(x)
+
+    return {
+        k: (
+            self._get_aggregator(k).zeros_aggregation_state(
+                metric,
+                apply_getter(self._get_getter(k), predictions),
+                apply_getter(self._get_getter(k), targets),
+            )
+        )
+        for k, metric in self.metrics.items()
+    }
 
 
 jax.tree_util.register_dataclass(
@@ -241,6 +265,16 @@ class FlattenedEvaluator:
     """Returns a copy with context set in the wrapped evaluator."""
     return dataclasses.replace(
         self, evaluator=self.evaluator.with_context(context)
+    )
+
+  def zeros_aggregation_states(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+  ) -> dict[str, aggregation.AggregationState]:
+    """Flattens inputs and returns zero aggregation states."""
+    return self.evaluator.zeros_aggregation_states(
+        _flatten_dict(predictions), _flatten_dict(targets)
     )
 
 
@@ -363,6 +397,26 @@ class NestedEvaluators:
         evaluators=new_evaluators,
         evaluator_weights=self.evaluator_weights,
     )
+
+  def zeros_aggregation_states(
+      self,
+      predictions: dict[str, dict[str, cx.Field]],
+      targets: dict[str, dict[str, cx.Field]],
+  ) -> dict[str, dict[str, aggregation.AggregationState]]:
+    """Returns zero aggregation states for each dataset."""
+    result = {}
+    all_keys = set(predictions.keys()) & set(targets.keys())
+    for key in all_keys:
+      evaluator = self.evaluators.get(key, self.default_evaluator)
+      if evaluator is None:
+        raise ValueError(
+            f"No evaluator found for key '{key}' and no default (...) was "
+            'provided in NestedEvaluators.'
+        )
+      result[key] = evaluator.zeros_aggregation_states(
+          predictions[key], targets[key]
+      )
+    return result
 
 
 jax.tree_util.register_dataclass(

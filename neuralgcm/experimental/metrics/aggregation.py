@@ -63,50 +63,6 @@ class AggregationState:
     """An initial/'zero' aggregation state (empty dicts)."""
     return cls(sum_weighted_statistics={}, sum_weights={})
 
-  @classmethod
-  def zeros_for_metric(
-      cls,
-      metric: base.Metric,
-      aggregator: Aggregator,
-      predictions_struct: dict[str, cx.Field],
-      targets_struct: dict[str, cx.Field],
-  ) -> AggregationState:
-    """Constructs zero aggregation state for metric without computation.
-
-    This is useful for initializing an `AggregationState` with the correct
-    structure (including shapes and coordinates) before accumulating actual
-    statistics. It uses `jax.eval_shape` under the hood to avoid actually
-    computing the statistics and their aggregation.
-
-    Args:
-      metric: The metric for which to create the zero state.
-      aggregator: The `Aggregator` instance that will be used to aggregate the
-        statistics, determining the final structure and dimensions.
-      predictions_struct: Predictions struct used to infer the shapes and
-        coordinates of the aggregated statistics. Can be obtained from actual
-        values using `pytree_utils.shape_structure(predictions)` or constructed
-        from coordinates using `cx.shape_struct_field`.
-      targets_struct: Targets used to infer the shapes and
-        coordinates of the aggregated statistics. Can be obtained from actual
-        values using `pytree_utils.shape_structure(targets)` or constructed from
-        coordinates using `cx.shape_struct_field`.
-
-    Returns:
-      An `AggregationState` with the same structure as would be produced by
-      aggregating the given metric's statistics, but with all numerical values
-      initialized to zeros.
-    """
-
-    def _get_dummy_aggregation_state():
-      statistics = {
-          s.unique_name: s.compute(predictions_struct, targets_struct)
-          for s in metric.statistics.values()
-      }
-      return aggregator.aggregate_statistics(statistics)
-
-    dummy_aggregation_state = jax.eval_shape(_get_dummy_aggregation_state)
-    return jax.tree.map(jnp.zeros_like, dummy_aggregation_state)
-
   @jax.jit
   def __add__(self, other: AggregationState) -> AggregationState:
     # Weight and weighted stats are aggregated using `Field.sum` method, which
@@ -331,6 +287,46 @@ class Aggregator:
     return AggregationState(
         dict(sum_weighted_stats_result), dict(sum_weights_result)
     )
+
+  def zeros_aggregation_state(
+      self,
+      metric: base.Metric,
+      predictions: dict[str, cx.Field],
+      targets: dict[str, cx.Field],
+  ) -> AggregationState:
+    """Constructs zero aggregation state for metric without computation.
+
+    This is useful for initializing an `AggregationState` with the correct
+    structure (including shapes and coordinates) before accumulating actual
+    statistics. It uses `jax.eval_shape` under the hood to avoid actually
+    computing the statistics and their aggregation.
+
+    Args:
+      metric: The metric for which to create the zero state.
+      predictions: Predictions struct used to infer the shapes and
+        coordinates of the aggregated statistics. Can be obtained from actual
+        values using `pytree_utils.shape_structure(predictions)` or constructed
+        from coordinates using `cx.shape_struct_field`.
+      targets: Targets used to infer the shapes and
+        coordinates of the aggregated statistics. Can be obtained from actual
+        values using `pytree_utils.shape_structure(targets)` or constructed from
+        coordinates using `cx.shape_struct_field`.
+
+    Returns:
+      An `AggregationState` with the same structure as would be produced by
+      aggregating the given metric's statistics, but with all numerical values
+      initialized to zeros.
+    """
+
+    def _get_dummy_aggregation_state():
+      statistics = {
+          s.unique_name: s.compute(predictions, targets)
+          for s in metric.statistics.values()
+      }
+      return self.aggregate_statistics(statistics)
+
+    dummy_aggregation_state = jax.eval_shape(_get_dummy_aggregation_state)
+    return jax.tree.map(jnp.zeros_like, dummy_aggregation_state)
 
 
 def split_aggregation_state_for_metrics(

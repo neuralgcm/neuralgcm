@@ -27,6 +27,7 @@ import coordax as cx
 from flax import nnx
 import jax
 from neuralgcm.experimental.core import field_utils
+from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
 
@@ -130,15 +131,34 @@ def untag_module_state(
     module: nnx.Module,
     coordinate: cx.Coordinate,
     vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    skip_missing: bool = False,
 ) -> None:
-  """Untags axes of `coordinate` from the state of the `module`."""
+  """Untags axes of `coordinate` from the vectorized state of the `module`.
+
+  Performs in-place untagging of vectorization axes from the `module` state. For
+  each vectorization slice specified by `vectorized_axes`, untags axes from
+  `coordinate.axes` that are present in the associated state. If `coordinate`
+  has axes that are not present in anywhere in `vectorized_axes`, those axes
+  are ignored if `skip_missing` is True, otherwise an error is raised.
+
+  Args:
+    module: The module whose state will be untagged.
+    coordinate: The coordinate axes to be untagged from the vectorized state.
+    vectorized_axes: A dictionary mapping state filters to the coordinates
+      representing vectorization axes for the associated state slice.
+    skip_missing: If True, axes in `coordinate` that are not present in any
+      of the coordinates in `vectorized_axes` will be ignored. Otherwise, a
+      ValueError will be raised.
+  """
   vectorized_axes_set = functools.reduce(
-      operator.or_, (set(v.axes) for v in vectorized_axes.values())
+      operator.or_, (set(v.axes) for v in vectorized_axes.values()), set()
   )
-  if any(ax not in vectorized_axes_set for ax in coordinate.axes):
+  axes_not_in_vectorized_axes = set(coordinate.axes) - vectorized_axes_set
+  if axes_not_in_vectorized_axes and not skip_missing:
     raise ValueError(
-        f'untag_module_state got {coordinate=} with axis that is not present '
-        f'anywhere in {vectorized_axes=}'
+        f'untag_module_state got {coordinate=} with axes'
+        f' ["{axes_not_in_vectorized_axes}"] that are not present in'
+        f' {vectorized_axes=}'
     )
   for state_filter, coord in vectorized_axes.items():
     untag_components = [ax for ax in coordinate.axes if ax in coord.axes]
@@ -152,15 +172,34 @@ def tag_module_state(
     module: nnx.Module,
     coordinate: cx.Coordinate,
     vectorized_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
+    skip_missing: bool = False,
 ) -> None:
-  """Tags axes of `coordinate` to the state of the `module`."""
+  """Tags axes of `coordinate` to the state of the `module`.
+
+  Performs in-place tagging of vectorization axes to the `module` state. For
+  each vectorization slice specified by `vectorized_axes`, tags axes from
+  `coordinate.axes` that are present in the associated state. If `coordinate`
+  has axes that are not present in anywhere in `vectorized_axes`, those axes
+  are ignored if `skip_missing` is True, otherwise an error is raised.
+
+  Args:
+    module: The module whose state will be tagged.
+    coordinate: The coordinate axes to be tagged to the vectorized state.
+    vectorized_axes: A dictionary mapping state filters to the coordinates
+      representing vectorization axes for the associated state slice.
+    skip_missing: If True, axes in `coordinate` that are not present in any
+      of the coordinates in `vectorized_axes` will be ignored. Otherwise, a
+      ValueError will be raised.
+  """
   vectorized_axes_set = functools.reduce(
-      operator.or_, (set(v.axes) for v in vectorized_axes.values())
+      operator.or_, (set(v.axes) for v in vectorized_axes.values()), set()
   )
-  if any(ax not in vectorized_axes_set for ax in coordinate.axes):
+  axes_not_in_vectorized_axes = set(coordinate.axes) - vectorized_axes_set
+  if axes_not_in_vectorized_axes and not skip_missing:
     raise ValueError(
-        f'tag_module_state got {coordinate=} with axis that is not present '
-        f'anywhere in {vectorized_axes=}'
+        f'tag_module_state got {coordinate=} with axes'
+        f' ["{axes_not_in_vectorized_axes}"] that are not present in'
+        f' {vectorized_axes=}'
     )
   for state_filter, coord in vectorized_axes.items():
     tag_components = [ax for ax in coordinate.axes if ax in coord.axes]
@@ -400,6 +439,10 @@ def vectorize_module_fn(
     fn: Callable[..., Any],
     vector_axes: dict[nnx.filterlib.Filter, cx.Coordinate],
     axes_to_vectorize: cx.Coordinate | Sequence[cx.Coordinate],
+    custom_spmd_axis_names: None | str | tuple[str, ...] = None,
+    custom_axis_names: None | str | tuple[str, ...] = None,
+    mesh: parallelism.Mesh | None = None,
+    allow_non_vector_axes: bool = False,
 ) -> Callable[..., Any]:
   """Returns a wrapped `fn` that vectorizes `fn` over `axes_to_vectorize`.
 
@@ -410,29 +453,81 @@ def vectorize_module_fn(
   and outputs.
 
   Args:
-      fn: The function to vectorize, must have signature `fn(module, *args)`.
-      vector_axes: A dictionary describing how module state is vectorized.
-      axes_to_vectorize: A single coordinate or a sequence of coordinates
-        representing the axes to vectorize `fn` over.
+    fn: The function to vectorize, must have signature `fn(module, *args)`.
+    vector_axes: A dictionary describing how module state is vectorized.
+    axes_to_vectorize: A single coordinate or a sequence of coordinates
+      representing the axes to vectorize `fn` over.
+    custom_spmd_axis_names: Custom spmd_axis_name(s) to use in vmaps. If
+      specified, must have length equal to the rank of axes_to_vectorize.
+    custom_axis_names: Custom axis_name(s) to use in vmaps. If specified, should
+      have length equal to the rank of axes_to_vectorize.
+    mesh: Parallelism mesh to infer spmd_axis_name and axis_name vmap arguments
+      from axes in axes_to_vectorize. If None, spmd_axis_name and axis_name are
+      not inferred. Cannot be specified with custom_spmd_axis_names or
+      custom_axis_names.
+    allow_non_vector_axes: Whether to allow `axes_to_vectorize` to contain axes
+      that do not appear in `vector_axes`. This can be helpful for mapping over
+      axes that only appear in args. Defaults to False.
 
   Returns:
-      A wrapped function that applies vectorization.
+    A wrapped function that applies vectorization.
   """
 
   @functools.wraps(fn)
   def wrapped_fn(module: nnx.Module, *args: Any) -> Any:
     """Wrapped function that applies vectorization."""
-    if not axes_to_vectorize:
-      return fn(module, *args)
-
-    if isinstance(axes_to_vectorize, Sequence):
-      axes_seq = axes_to_vectorize
-    elif isinstance(axes_to_vectorize, cx.Coordinate):
-      axes_seq = axes_to_vectorize.axes
+    vmap_axes = axes_to_vectorize
+    if isinstance(vmap_axes, Sequence):
+      vmap_axes = cx.compose_coordinates(*axes_to_vectorize)
+    if isinstance(vmap_axes, cx.Coordinate):
+      axes_seq = vmap_axes.axes  # ensures that axes are 1d.
     else:
       raise ValueError(
-          f'Unsupported type for `axes_to_vectorize`: {type(axes_to_vectorize)}'
+          f'Unsupported type for `axes_to_vectorize`: {type(vmap_axes)}'
       )
+
+    if not axes_seq:
+      return fn(module, *args)
+
+    if mesh is not None and mesh.axis_names:
+      if custom_spmd_axis_names is not None or custom_axis_names is not None:
+        raise ValueError(
+            'Cannot specify both mesh and custom spmd_axis_names or '
+            'custom_axis_names.'
+        )
+      dims_seq = sum([c.dims for c in axes_seq], start=())
+      names_in_mesh = [d if d in mesh.axis_names else None for d in dims_seq]
+      spmd_axis_names = names_in_mesh
+      axis_names = names_in_mesh
+    else:
+      spmd_axis_names = custom_spmd_axis_names
+      axis_names = custom_axis_names
+
+    is_str = lambda x: isinstance(x, str)
+    is_sequence = lambda x: isinstance(x, Sequence)
+    if spmd_axis_names is None or is_str(spmd_axis_names):
+      spmd_axis_names = [spmd_axis_names] * len(axes_seq)
+    elif is_sequence(spmd_axis_names):
+      if len(spmd_axis_names) != len(axes_seq):
+        raise ValueError(
+            'custom_spmd_axis_names must have length equal to the rank of '
+            f'axes_to_vectorize, got {len(custom_spmd_axis_names)=} and '
+            f'{len(axes_seq)=}'
+        )
+    else:
+      raise ValueError(f'Unsupported {type(custom_spmd_axis_names)=}')
+
+    if axis_names is None or is_str(axis_names):
+      axis_names = [axis_names] * len(axes_seq)
+    elif is_sequence(axis_names):
+      if len(axis_names) != len(axes_seq):
+        raise ValueError(
+            'custom_axis_names must have length equal to the rank of '
+            f'axes_to_vectorize, got {len(axis_names)=} and '
+            f'{len(axes_seq)=}'
+        )
+    else:
+      raise ValueError(f'Unsupported {type(custom_axis_names)=}')
 
     # Calculate nested axes for the module state and args.
     map_vector_axes = vector_axes.copy()
@@ -440,26 +535,39 @@ def vectorize_module_fn(
       map_vector_axes[...] = cx.Scalar()  # Replicate non-vectorized state.
     nested_model_axes = state_in_axes_for_coord(map_vector_axes, axes_seq)
     nested_args_axes_list = [
-        field_utils.in_axes_for_coord(arg, axes_seq)
-        for arg in args
+        field_utils.in_axes_for_coord(arg, axes_seq) for arg in args
     ]
     vmap_levels_axes = zip(
         reversed(nested_model_axes),
         *(reversed(arg_axes) for arg_axes in nested_args_axes_list),
     )
+    reversed_axis_names = tuple(reversed(axis_names))
+    reversed_spmd_axis_names = tuple(reversed(spmd_axis_names))
 
     vmapped_fn = fn
-    for state_axes, *current_args_axes in vmap_levels_axes:
+    for i, (state_axes, *current_args_axes) in enumerate(vmap_levels_axes):
       # `in_axes` is a tuple where the first element corresponds to the module's
       # state and the rest correspond to the `*args`.
       in_axes = (state_axes, *current_args_axes)
-      vmapped_fn = nnx.vmap(vmapped_fn, in_axes=in_axes)
+      axis_name = reversed_axis_names[i]  # mapping happens in reverse order.
+      spmd_axis_name = reversed_spmd_axis_names[i]
+      vmapped_fn = nnx.vmap(
+          vmapped_fn,
+          in_axes=in_axes,
+          axis_name=axis_name,
+          spmd_axis_name=spmd_axis_name,
+      )
+
+    def _untag_coord_in_any_order(tree, c):
+      untag_f = lambda x: x.untag(*sorted(c.axes, key=x.coordinate.axes.index))
+      untag_arrays = lambda x: untag_f(x) if cx.is_field(x) else x
+      return jax.tree.map(untag_arrays, tree, is_leaf=cx.is_field)
 
     coord = cx.compose_coordinates(*axes_seq)
-    untagged_args = [cx.untag(arg, coord) for arg in args]
-    untag_module_state(module, coord, vector_axes)
+    untagged_args = [_untag_coord_in_any_order(arg, coord) for arg in args]
+    untag_module_state(module, coord, vector_axes, allow_non_vector_axes)
     result = vmapped_fn(module, *untagged_args)
-    tag_module_state(module, coord, vector_axes)
+    tag_module_state(module, coord, vector_axes, allow_non_vector_axes)
     if result is not None:
       result = cx.tag(result, coord)
 

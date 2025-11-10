@@ -13,6 +13,8 @@
 # limitations under the License.
 """Tests that normalization modules work as expected."""
 
+import dataclasses
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
@@ -23,6 +25,7 @@ from jax import config  # pylint: disable=g-importing-member
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import module_utils
+from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -218,11 +221,11 @@ class ModuleUtilsTest(parameterized.TestCase):
 
     with self.subTest('axis_not_in_vectorized_axes'):
       new_b = cx.LabeledAxis('batch', np.linspace(0, 1, 3))
-      with self.assertRaisesRegex(ValueError, 'not present anywhere in'):
+      with self.assertRaisesRegex(ValueError, 'that are not present in'):
         module_utils.untag_module_state(module, new_b, vectorization_specs)
 
       module_utils.untag_module_state(module, b, vectorization_specs)
-      with self.assertRaisesRegex(ValueError, 'not present anywhere in'):
+      with self.assertRaisesRegex(ValueError, 'that are not present in'):
         module_utils.tag_module_state(module, new_b, vectorization_specs)
 
   @parameterized.named_parameters(
@@ -525,6 +528,45 @@ class VectorizeModuleFnTest(parameterized.TestCase):
       self.assertEqual(set(actual.keys()), set(expected.keys()))
       for k, v in actual.items():
         self.assertEqual(v, expected[k])
+
+  def test_vectorize_module_fn_with_args(self):
+
+    @nnx_compat.dataclass
+    class ScaleDemoModule(nnx.Module):
+      param: nnx.Param = dataclasses.field(
+          default_factory=lambda: nnx.Param(cx.wrap(2.0))
+      )
+
+      def __call__(self, x: cx.Field) -> cx.Field:
+        return x * self.param.value
+
+    e, b = cx.SizedAxis('e', 2), cx.SizedAxis('b', 4)
+    eb = cx.compose_coordinates(e, b)
+
+    # Vectorize module over `e` and simple `fn` over `eb`.
+    module = ScaleDemoModule()
+    vector_axes = {nnx.Param: e}  # vectorize module for dimension `e`.
+    module_utils.vectorize_module(module, vector_axes)
+    module.param.value = cx.wrap(1 + np.arange(e.size), e)  # update scales.
+    fn = lambda module, x: module(x)
+    eb_vectorized_fn = module_utils.vectorize_module_fn(
+        fn, vector_axes, eb, allow_non_vector_axes=True
+    )
+
+    # Apply vectorized function to inputs with different axes order.
+    x = cx.wrap(np.arange(e.size * b.size).reshape((e.size, b.size)), eb)
+    x_reordered = x.order_as(b, e)
+    expected_data = x.data * (1 + np.arange(e.size))[:, np.newaxis]
+
+    with self.subTest('in_vectorization_order'):
+      result_x = eb_vectorized_fn(module, x)
+      self.assertEqual(result_x.coordinate, eb)
+      np.testing.assert_allclose(result_x.data, expected_data)
+
+    with self.subTest('in_different_from_vectorization_order'):
+      result_x_reordered = eb_vectorized_fn(module, x_reordered)
+      self.assertEqual(result_x_reordered.coordinate, eb)
+      np.testing.assert_allclose(result_x_reordered.data, expected_data)
 
 
 if __name__ == '__main__':

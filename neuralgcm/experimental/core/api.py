@@ -282,9 +282,25 @@ class VectorizedModel(Model):
     object.__setattr__(vectorized, '_vector_axes', list(v_axes.items()))
     return vectorized
 
-  def _run_vectorized(self, fn, axes_to_vectorize, *args):
+  def run_vectorized(
+      self,
+      fn,
+      axes_to_vectorize,
+      *args,
+      custom_spmd_axis_names: None | str | tuple[str, ...] = None,
+      custom_axis_names: None | str | tuple[str, ...] = None,
+  ):
+    """Runs a `fn(model, *args)` vectorized over `axes_to_vectorize`."""
+    custom_names = (
+        custom_spmd_axis_names is not None or custom_axis_names is not None
+    )
     vectorized_fn = module_utils.vectorize_module_fn(
-        fn, self.vector_axes, axes_to_vectorize
+        fn,
+        self.vector_axes,
+        axes_to_vectorize,
+        custom_spmd_axis_names,
+        custom_axis_names,
+        None if custom_names else getattr(self.vectorized_model, 'mesh', None),
     )
     return vectorized_fn(self.vectorized_model, *args)
 
@@ -328,7 +344,7 @@ class VectorizedModel(Model):
       return model.assimilate(inputs)
 
     v_axis = self._vec_coord_for_filter(typing.Prognostic)
-    self._run_vectorized(run_assimilate, v_axis, inputs)
+    self.run_vectorized(run_assimilate, v_axis, inputs)
 
   def advance(self) -> None:
     """Advances the model state by one timestep."""
@@ -337,7 +353,7 @@ class VectorizedModel(Model):
       return model.advance()
 
     v_axis = self._vec_coord_for_filter(typing.Prognostic)
-    self._run_vectorized(run_advance, v_axis)
+    self.run_vectorized(run_advance, v_axis)
 
   def observe(self, query: typing.Query) -> typing.Observation:
     """Computes observations specified in `query` from the model state."""
@@ -346,7 +362,7 @@ class VectorizedModel(Model):
       return model.observe(q)
 
     v_axis = self._vec_coord_for_filter(typing.Prognostic)
-    return self._run_vectorized(run_observe, v_axis, query)
+    return self.run_vectorized(run_observe, v_axis, query)
 
   @property
   def timestep(self):
@@ -374,7 +390,7 @@ class VectorizedModel(Model):
       model.update_dynamic_inputs(inputs)
 
     v_axis = self._vec_coord_for_filter(typing.DynamicInput)
-    self._run_vectorized(update_dynamic, v_axis, dynamic_inputs)
+    self.run_vectorized(update_dynamic, v_axis, dynamic_inputs)
 
   @module_utils.ensure_unchanged_state_structure
   def initialize_random_processes(self, rng: cx.Field) -> None:
@@ -384,7 +400,7 @@ class VectorizedModel(Model):
       model.initialize_random_processes(inputs)
 
     v_axis = self._vec_coord_for_filter(typing.Randomness)
-    self._run_vectorized(init_rng, v_axis, rng)
+    self.run_vectorized(init_rng, v_axis, rng)
 
   @module_utils.ensure_unchanged_state_structure
   def reset_diagnostic_state(self):
@@ -394,7 +410,7 @@ class VectorizedModel(Model):
       model.reset_diagnostic_state()
 
     v_axis = self._vec_coord_for_filter(typing.Diagnostic)
-    self._run_vectorized(run_reset_diagnostic, v_axis)
+    self.run_vectorized(run_reset_diagnostic, v_axis)
 
   def diagnostic_values(self) -> typing.Pytree:
     """Returns diagnostic values of the model."""
@@ -403,7 +419,7 @@ class VectorizedModel(Model):
       return model.diagnostic_values()
 
     v_axis = self._vec_coord_for_filter(typing.Diagnostic)
-    self._run_vectorized(run_get_diagnostic_values, v_axis)
+    self.run_vectorized(run_get_diagnostic_values, v_axis)
 
   @property
   def dynamic_inputs_spec(

@@ -137,8 +137,8 @@ def steady_state_jw(
     t0: typing.Quantity = 288.0 * typing.units.kelvin,
     delta_t: typing.Quantity = 4.8e5 * typing.units.kelvin,
     gamma: typing.Quantity = 0.005 * typing.units.kelvin / typing.units.m,
-    sigma_tropo: float = 0.2,
-    sigma0: float = 0.252,
+    eta_tropo: float = 0.2,
+    eta0: float = 0.252,
     as_nodal: bool = False,
     temperature_format: Literal['absolute', 'variation'] = 'variation',
 ) -> dict[str, cx.Field]:
@@ -148,15 +148,15 @@ def steady_state_jw(
   )
   dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.steady_state_jw(
-      coords=dinosaur_coords,
-      physics_specs=dino_specs,
-      u0=_as_dino_qty(u0),
-      p0=_as_dino_qty(p0),
-      t0=_as_dino_qty(t0),
-      delta_t=_as_dino_qty(delta_t),
-      gamma=_as_dino_qty(gamma),
-      sigma_tropo=sigma_tropo,
-      sigma0=sigma0,
+      dinosaur_coords,  # coords
+      dino_specs,  # physics_specs
+      _as_dino_qty(u0),  # u0
+      _as_dino_qty(p0),  # p0
+      _as_dino_qty(t0),  # t0
+      _as_dino_qty(delta_t),  # delta_t
+      _as_dino_qty(gamma),  # gamma
+      eta_tropo,  # eta_tropo
+      eta0,  # eta0
   )
   dino_state = init_state_fn(rng)
   return _dino_state_to_neuralgcm_dict(
@@ -174,8 +174,8 @@ def perturbed_jw(
     t0: typing.Quantity = 288.0 * typing.units.kelvin,
     delta_t: typing.Quantity = 4.8e5 * typing.units.kelvin,
     gamma: typing.Quantity = 0.005 * typing.units.kelvin / typing.units.m,
-    sigma_tropo: float = 0.2,
-    sigma0: float = 0.252,
+    eta_tropo: float = 0.2,
+    eta0: float = 0.252,
     u_perturb: typing.Quantity = 1.0 * typing.units.m / typing.units.s,
     lon_location: float = np.pi / 9,
     lat_location: float = 2 * np.pi / 9,
@@ -189,15 +189,15 @@ def perturbed_jw(
   )
   dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.steady_state_jw(
-      coords=dinosaur_coords,
-      physics_specs=dino_specs,
-      u0=_as_dino_qty(u0),
-      p0=_as_dino_qty(p0),
-      t0=_as_dino_qty(t0),
-      delta_t=_as_dino_qty(delta_t),
-      gamma=_as_dino_qty(gamma),
-      sigma_tropo=sigma_tropo,
-      sigma0=sigma0,
+      dinosaur_coords,  # coords
+      dino_specs,  # physics_specs
+      _as_dino_qty(u0),  # u0
+      _as_dino_qty(p0),  # p0
+      _as_dino_qty(t0),  # t0
+      _as_dino_qty(delta_t),  # delta_t
+      _as_dino_qty(gamma),  # gamma
+      eta_tropo,  # eta_tropo
+      eta0,  # eta0
   )
   dino_steady_state = init_state_fn(rng)
   dino_perturbation = primitive_equations_states.baroclinic_perturbation_jw(

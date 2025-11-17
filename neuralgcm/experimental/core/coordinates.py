@@ -1167,9 +1167,14 @@ class SoilLevels(cx.Coordinate):
   def __hash__(self) -> int:
     return hash(self._components())
 
+  def __fiddle_serialize__(self):
+    return {'centers': self.centers.tolist()}
+
   @classmethod
-  def with_era5_levels(cls):
-    return cls(centers=[3.5, 17.5, 64, 194.5])
+  def with_era5_levels(cls, layers=(0, 1, 2, 3)):
+    era5_centers = [3.5, 17.5, 64, 194.5]
+    centers = [era5_centers[i] for i in layers]
+    return cls(centers=centers)
 
   @classmethod
   def from_xarray(

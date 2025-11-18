@@ -28,7 +28,7 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import random_processes
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
@@ -72,12 +72,12 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       self,
       samples,
       expected_correlation_length,
-      ylm_transform,
+      ylm_map,
   ):
     """Checks the correlation length of random field."""
     unused_n_samples, n_lngs, n_lats = samples.shape
     expected_corr_frac = expected_correlation_length / (
-        2 * np.pi * ylm_transform.radius
+        2 * np.pi * ylm_map.radius
     )
     # Mean autocorrelation in the lat direction at the longitude=0 line.
     acorr_lat = auto_correlation(samples[:, 0, :], axis=-1).mean(axis=0)
@@ -103,7 +103,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
   def check_mean(
       self,
       samples,
-      ylm_transform,
+      ylm_map,
       expected_mean,
       variance,
       correlation_length,
@@ -130,7 +130,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
 
     # Check average mean over whole earth (standard_error will be lower so this
     # is a good second check).
-    expected_corr_frac = correlation_length / ylm_transform.radius
+    expected_corr_frac = correlation_length / ylm_map.radius
     n_equivalent_integrated_samples = n_samples / expected_corr_frac**2
     if variance:
       standard_error = np.sqrt(variance) / np.sqrt(
@@ -147,20 +147,20 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
   def check_variance(
       self,
       samples,
-      ylm_transform,
+      ylm_map,
       correlation_length,
       expected_variance,
       var_tol_in_standard_errs,
   ):
     expected_variance = expected_variance or 0.0
     expected_integrated_variance = (
-        expected_variance * 4 * np.pi * ylm_transform.radius**2
+        expected_variance * 4 * np.pi * ylm_map.radius**2
     )
 
     n_samples, unused_n_lngs, unused_n_lats = samples.shape
     # Integrating over the sphere we get additional statistical power since
     # points decorrelate.
-    expected_corr_frac = correlation_length / ylm_transform.radius
+    expected_corr_frac = correlation_length / ylm_map.radius
     n_equivalent_integrated_samples = n_samples / expected_corr_frac**2
     standard_error = np.sqrt(
         # The variance of a (normal) variance estimate is 2 σ⁴ / (n - 1).
@@ -170,7 +170,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     )
 
     np.testing.assert_allclose(
-        ylm_transform.dinosaur_grid.integrate(np.var(samples, axis=0)),
+        ylm_map.dinosaur_grid.integrate(np.var(samples, axis=0)),
         expected_integrated_variance,
         atol=var_tol_in_standard_errs * standard_error,
         rtol=0.0,
@@ -181,7 +181,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       random_field,
       mean,
       variance,
-      ylm_transform,
+      ylm_map,
       correlation_length,
       correlation_time,
       run_mean_check=True,
@@ -192,7 +192,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       var_tol_in_standard_errs=4,
   ):
     dt = self.dt
-    grid = ylm_transform.nodal_grid
+    grid = ylm_map.nodal_grid
 
     # generating multiple trajectories of random fields.
     n_samples = 500
@@ -234,14 +234,14 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     if run_correlation_length_check and variance is not None:
       with self.subTest('unconditional_sample_correlation_len'):
         self.check_correlation_length(
-            initial_values, correlation_length, ylm_transform
+            initial_values, correlation_length, ylm_map
         )
 
     if run_mean_check:
       with self.subTest('unconditional_sample_pointwise_mean'):
         self.check_mean(
             initial_values,
-            ylm_transform=ylm_transform,
+            ylm_map=ylm_map,
             expected_mean=mean,
             variance=variance,
             correlation_length=correlation_length,
@@ -252,7 +252,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       with self.subTest('unconditional_sample_integrated_var'):
         self.check_variance(
             initial_values,
-            ylm_transform,
+            ylm_map,
             correlation_length=correlation_length,
             expected_variance=variance,
             var_tol_in_standard_errs=var_tol_in_standard_errs,
@@ -286,14 +286,14 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     if run_correlation_length_check and variance is not None:
       with self.subTest('final_sample_correlation_len'):
         self.check_correlation_length(
-            final_sample, correlation_length, ylm_transform
+            final_sample, correlation_length, ylm_map
         )
 
     if run_mean_check:
       with self.subTest('final_sample_pointwise_mean'):
         self.check_mean(
             final_sample,
-            ylm_transform=ylm_transform,
+            ylm_map=ylm_map,
             expected_mean=mean,
             variance=variance,
             correlation_length=correlation_length,
@@ -304,7 +304,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
       with self.subTest('final_sample_integrated_var'):
         self.check_variance(
             final_sample,
-            ylm_transform,
+            ylm_map,
             correlation_length=correlation_length,
             expected_variance=variance,
             var_tol_in_standard_errs=var_tol_in_standard_errs,
@@ -335,7 +335,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T42_reasonable_corrs',
           variance=0.7,
-          ylm_transform=spherical_transforms.FixedYlmMapping(
+          ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T42(),
               coordinates.SphericalHarmonicGrid.T42(),
               partition_schema_key=None,
@@ -347,7 +347,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T21_reasonable_corrs',
           variance=1.5,
-          ylm_transform=spherical_transforms.FixedYlmMapping(
+          ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T21(),
               coordinates.SphericalHarmonicGrid.T21(),
               partition_schema_key=None,
@@ -359,7 +359,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T42_large_radius',
           variance=1.2,
-          ylm_transform=spherical_transforms.FixedYlmMapping(
+          ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T42(),
               coordinates.SphericalHarmonicGrid.T42(),
               partition_schema_key=None,
@@ -372,7 +372,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       dict(
           testcase_name='T85_long_corrs',
           variance=2.7,
-          ylm_transform=spherical_transforms.FixedYlmMapping(
+          ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T85(),
               coordinates.SphericalHarmonicGrid.T85(),
               partition_schema_key=None,
@@ -385,12 +385,12 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
   def test_unconditional_and_trajectory_stats(
       self,
       variance,
-      ylm_transform,
+      ylm_map,
       correlation_length,
       correlation_time,
   ):
     grf = random_processes.GaussianRandomField(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
         correlation_time=correlation_time * typing.Quantity('1 hour'),
@@ -402,7 +402,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         grf,
         0.0,  # mean = 0
         variance,
-        ylm_transform,
+        ylm_map,
         correlation_length,
         correlation_time,
     )
@@ -431,14 +431,14 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       self, correlation_time_type, correlation_length_type, variance_type
   ):
     """Tests that random process does not mutate structure of nnx.state."""
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
         partition_schema_key=None,
         mesh=parallelism.Mesh(),
     )
     grf = random_processes.GaussianRandomField(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
         correlation_time=3 * typing.Quantity('1 hour'),
@@ -450,7 +450,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         rngs=nnx.Rngs(0),
     )
     with self.subTest('nnx_state_structure_invariance'):
-      self.check_nnx_state_structure_is_invariant(grf, ylm_transform.nodal_grid)
+      self.check_nnx_state_structure_is_invariant(grf, ylm_map.nodal_grid)
 
     with self.subTest('nnx_param_count'):
       params = nnx.state(grf, nnx.Param)
@@ -470,7 +470,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
 
   def setUp(self):
     super().setUp()
-    self.ylm_transform = spherical_transforms.FixedYlmMapping(
+    self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T85(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T85(),
         partition_schema_key=None,
@@ -485,7 +485,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
   ):
     axis = cx.SizedAxis('grf', len(variances))
     return random_processes.VectorizedGaussianRandomField(
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
         axis=axis,
@@ -518,7 +518,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     samples_axis = cx.DummyAxis(None, n_samples)
 
     ###
-    grid = self.ylm_transform.lon_lat_grid
+    grid = self.ylm_map.lon_lat_grid
     init_rngs = cx.wrap(
         jax.random.split(jax.random.key(5), n_samples), samples_axis
     )
@@ -569,7 +569,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       for x in [initial_values, final_nodal_value]:
         self.check_mean(
             x[:, i],
-            ylm_transform=self.ylm_transform,
+            ylm_map=self.ylm_map,
             expected_mean=0.0,
             variance=variance,
             correlation_length=correlation_length,
@@ -577,7 +577,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         )
         self.check_variance(
             x[:, i],
-            self.ylm_transform,
+            self.ylm_map,
             correlation_length=correlation_length,
             expected_variance=variance,
             var_tol_in_standard_errs=5,
@@ -585,7 +585,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         self.check_correlation_length(
             x[:, i],
             expected_correlation_length=correlation_length,
-            ylm_transform=self.ylm_transform,
+            ylm_map=self.ylm_map,
         )
 
       # Fields 0 and 1 should be independent.
@@ -631,16 +631,16 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       self, correlation_time_type, correlation_length_type, variance_type
   ):
     """Tests that random process does not mutate structure of nnx.state."""
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
         partition_schema_key=None,
         mesh=parallelism.Mesh(),
     )
-    grid = ylm_transform.nodal_grid
+    grid = ylm_map.nodal_grid
     axis = cx.SizedAxis('grf', 2)  # 2 fields.
     grf = random_processes.VectorizedGaussianRandomField(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
         axis=axis,
@@ -671,7 +671,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
 
   def test_init_under_jit(self):
     """Tests that random process can be initialized under jit."""
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
         partition_schema_key=None,
@@ -681,7 +681,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     @nnx.jit
     def build_grf():
       grf = random_processes.VectorizedGaussianRandomField(
-          ylm_transform=ylm_transform,
+          ylm_map=ylm_map,
           dt=self.dt,
           sim_units=self.sim_units,
           axis=cx.SizedAxis('grf', 2),

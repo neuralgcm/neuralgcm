@@ -129,7 +129,7 @@ class OrographyFeatures(transforms.TransformABC):
     del inputs  # unused.
     # TODO(dkochkov): update orographies to return fields.
     if isinstance(self.orography_module, orographies.ModalOrography):
-      grid = self.orography_module.ylm_transform.nodal_grid
+      grid = self.orography_module.ylm_map.nodal_grid
     elif isinstance(self.orography_module, orographies.Orography):
       grid = self.orography_module.grid
     else:
@@ -150,9 +150,9 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
-    ylm_transform = self.orography_module.ylm_transform
-    ylm_grid = ylm_transform.modal_grid
-    grid = ylm_transform.nodal_grid
+    ylm_map = self.orography_module.ylm_map
+    ylm_grid = ylm_map.modal_grid
+    grid = ylm_map.nodal_grid
     modal_features = {
         'orography': cx.wrap(self.orography_module.modal_orography, ylm_grid)
     }
@@ -160,7 +160,7 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
         typing.KeyWithCosLatFactor(k, 0): v for k, v in modal_features.items()
     }
     modal_gradient_features = self.compute_gradients_transform(modal_features)
-    sh_grid = ylm_transform.dinosaur_grid
+    sh_grid = ylm_map.dinosaur_grid
     sec_lat = 1 / sh_grid.cos_lat
     sec2_lat = sh_grid.sec2_lat
     lat_axis = grid.axes[1]
@@ -176,7 +176,7 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
       all_modal_features = modal_gradient_features
     for k, v in all_modal_features.items():
       sec_lat_scale = sec_lat_scales[k.factor_order]
-      features[k.name] = ylm_transform.to_nodal(v) * sec_lat_scale
+      features[k.name] = ylm_map.to_nodal(v) * sec_lat_scale
     return features
 
 

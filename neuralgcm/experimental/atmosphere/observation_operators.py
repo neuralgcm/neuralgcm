@@ -29,7 +29,7 @@ from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
 
 
@@ -50,7 +50,7 @@ class PressureLevelObservationOperator(
   """
 
   primitive_equation: equations.PrimitiveEquations
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   sigma_levels: coordinates.SigmaLevels
   orography: orographies.ModalOrography
   pressure_levels: coordinates.PressureLevels
@@ -90,7 +90,7 @@ class PressureLevelObservationOperator(
     # prognostic fields in observer to remove this dependency.
     pressure_interpolated_state = state_conversion.primitive_equations_to_uvtz(
         source_state=source_state,
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         sigma_levels=self.sigma_levels,
         pressure_levels=self.pressure_levels,
         primitive_equations=self.primitive_equation,
@@ -133,7 +133,7 @@ class SigmaLevelObservationOperator(observation_operators.ObservationOperator):
   """
 
   primitive_equation: equations.PrimitiveEquations
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   sigma_levels: coordinates.SigmaLevels
   orography: orographies.ModalOrography
   target_sigma_levels: coordinates.SigmaLevels
@@ -159,7 +159,7 @@ class SigmaLevelObservationOperator(observation_operators.ObservationOperator):
     inputs = copy.copy(inputs)  # avoid mutating inputs.
     time = inputs.pop('time')
     target_coords = coordinates.DinosaurCoordinates(
-        horizontal=self.ylm_transform.nodal_grid,
+        horizontal=self.ylm_map.nodal_grid,
         vertical=self.target_sigma_levels,
     )
     # TODO(dkochkov): make primitive_equation_to_uvtz work with flat structure
@@ -177,7 +177,7 @@ class SigmaLevelObservationOperator(observation_operators.ObservationOperator):
     # prognostic fields in observer to remove this dependency.
     interpolated_state = state_conversion.primitive_equations_to_sigma(
         source_state=source_state,
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         sigma_levels=self.sigma_levels,
         primitive_equations=self.primitive_equation,
         orography=self.orography,

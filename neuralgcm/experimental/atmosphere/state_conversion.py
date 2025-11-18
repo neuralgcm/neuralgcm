@@ -27,7 +27,7 @@ from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
@@ -77,7 +77,7 @@ def uvtz_to_primitive_equations(
 
 def primitive_equations_to_uvtz(
     source_state: dinosaur_primitive_equations.StateWithTime,
-    ylm_transform: spherical_transforms.FixedYlmMapping,
+    ylm_map: spherical_harmonics.FixedYlmMapping,
     sigma_levels: coordinates.SigmaLevels,
     pressure_levels: coordinates.PressureLevels,
     primitive_equations: equations.PrimitiveEquations,
@@ -93,7 +93,7 @@ def primitive_equations_to_uvtz(
 
   Args:
     source_state: State in primitive equations representation.
-    ylm_transform: Spherical transform that defines modal-nodal conversion.
+    ylm_map: Spherical transform that defines modal-nodal conversion.
     sigma_levels: Sigma coordinates used by the primitive equations module.
     pressure_levels: Pressure coordinates on which to comupte the outputs.
     primitive_equations: Primitive equations module.
@@ -110,10 +110,10 @@ def primitive_equations_to_uvtz(
           pressure_levels.pressure_levels.centers * typing.units.millibar
       ),
   )
-  to_nodal_fn = ylm_transform.to_nodal_array
+  to_nodal_fn = ylm_map.to_nodal_array
   velocity_fn = functools.partial(
       spherical_harmonic.vor_div_to_uv_nodal,
-      ylm_transform.dinosaur_grid,
+      ylm_map.dinosaur_grid,
   )
   u, v = velocity_fn(  # returned in nodal space.
       vorticity=source_state.vorticity, divergence=source_state.divergence
@@ -147,7 +147,7 @@ def primitive_equations_to_uvtz(
   surface_pressure = jnp.exp(to_nodal_fn(source_state.log_surface_pressure))
   u, v, t, z, tracers, surface_pressure = (
       parallelism.with_dycore_to_physics_sharding(
-          ylm_transform.mesh, (u, v, t, z, tracers, surface_pressure)
+          ylm_map.mesh, (u, v, t, z, tracers, surface_pressure)
       )
   )
   interpolate_with_linear_extrap_fn = (
@@ -187,7 +187,7 @@ def primitive_equations_to_uvtz(
   for k, v in regrid_with_constant_fn(tracers).items():
     outputs[k] = v
   target_coords = coordinates.DinosaurCoordinates(
-      horizontal=ylm_transform.nodal_grid, vertical=pressure_levels
+      horizontal=ylm_map.nodal_grid, vertical=pressure_levels
   )
   outputs = {k: cx.wrap(v, target_coords) for k, v in outputs.items()}
   return outputs
@@ -229,7 +229,7 @@ def sigma_to_primitive_equations(
 
 def primitive_equations_to_sigma(
     source_state: dinosaur_primitive_equations.StateWithTime,
-    ylm_transform: spherical_transforms.FixedYlmMapping,
+    ylm_map: spherical_harmonics.FixedYlmMapping,
     sigma_levels: coordinates.SigmaLevels,
     primitive_equations: equations.PrimitiveEquations,
     orography: orographies.Orography,
@@ -238,10 +238,10 @@ def primitive_equations_to_sigma(
 ) -> dict[str, cx.Field]:
   """Converts primitive equations state to sigma level data representation."""
   # TODO(dkochkov): Update this method to leverage coordax.
-  to_nodal_fn = ylm_transform.to_nodal_array
+  to_nodal_fn = ylm_map.to_nodal_array
   velocity_fn = functools.partial(
       spherical_harmonic.vor_div_to_uv_nodal,
-      ylm_transform.dinosaur_grid,
+      ylm_map.dinosaur_grid,
   )
   u, v = velocity_fn(  # returned in nodal space.
       vorticity=source_state.vorticity, divergence=source_state.divergence
@@ -277,7 +277,7 @@ def primitive_equations_to_sigma(
 
   u, v, t, z, tracers, surface_pressure = (
       parallelism.with_dycore_to_physics_sharding(
-          ylm_transform.mesh, (u, v, t, z, tracers, surface_pressure)
+          ylm_map.mesh, (u, v, t, z, tracers, surface_pressure)
       )
   )
 

@@ -21,7 +21,7 @@ import jax
 from neuralgcm.experimental.atmosphere import idealized_states
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
 
 
@@ -33,7 +33,7 @@ class TestStatesTest(parameterized.TestCase):
     self.sigma = coordinates.SigmaLevels.equidistant(8)
     self.grid = coordinates.LonLatGrid.T42()
     self.ylm_grid = coordinates.SphericalHarmonicGrid.T42()
-    self.ylm_map = spherical_transforms.FixedYlmMapping(
+    self.ylm_map = spherical_harmonics.FixedYlmMapping(
         self.grid,
         self.ylm_grid,
         partition_schema_key=None,

@@ -30,7 +30,7 @@ from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import towers
 from neuralgcm.experimental.core import transformer_layers
@@ -288,7 +288,7 @@ class TransformerTowerTransformTest(parameterized.TestCase):
     # Configure the TransformerTower
     rngs = nnx.Rngs(0)
     num_heads = 2
-    ylm_mapper = spherical_transforms.YlmMapper(
+    ylm_mapper = spherical_harmonics.YlmMapper(
         mesh=self.mesh, partition_schema_key=None
     )
     positional_encoder = transformer_layers.SphericalPositionalEncoder(

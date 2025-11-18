@@ -22,7 +22,7 @@ from flax import nnx
 import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.metrics import aggregation
 from neuralgcm.experimental.metrics import base
@@ -206,7 +206,7 @@ class EvaluatorsTest(parameterized.TestCase):
 
     #
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=grid,
         ylm_grid=ylm_grid,
         mesh=parallelism.Mesh(),
@@ -214,7 +214,7 @@ class EvaluatorsTest(parameterized.TestCase):
     )
     nodal_getter = transforms.Identity()
     modal_getter = transforms.Sequential([
-        transforms.ToModal(ylm_transform),
+        transforms.ToModal(ylm_map),
         transforms.ClipWavenumbers({ylm_grid: 2}),
     ])
     area_weighting = weighting.GridAreaWeighting()

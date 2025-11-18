@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 from absl.testing import absltest
 from absl.testing import parameterized
 import coordax as cx
@@ -36,7 +37,9 @@ class MockModel(api.Model):
   """A mock model for testing purposes."""
 
   x: cx.Coordinate
-  steady_increment: nnx.Param[jax.Array] = nnx.Param(0.0)
+  steady_increment: nnx.Param[jax.Array] = dataclasses.field(
+      default_factory=lambda: nnx.Param(0.0)
+  )
   modulation_factor: dynamic_io.DynamicInputSlice | None = None
   random_increment: random_processes.NormalUncorrelated | None = None
   data_key: str = 'prognostics'

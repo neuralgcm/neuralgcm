@@ -209,8 +209,9 @@ class FixedYlmMapping:
 
   def inverse_laplacian(self, x: cx.Field) -> cx.Field:
     """Returns the inverse Laplacian of `x`."""
-    return cx.cpmap(
-        self.dinosaur_grid.inverse_laplacian)(x.untag(self.modal_grid)).tag(self.modal_grid)
+    return cx.cpmap(self.dinosaur_grid.inverse_laplacian)(
+        x.untag(self.modal_grid)
+    ).tag(self.modal_grid)
 
   def d_dlon(self, x: cx.Field) -> cx.Field:
     """Returns the longitudinal derivative of `x`."""
@@ -224,7 +225,9 @@ class FixedYlmMapping:
 
   def sec_lat_d_dlat_cos2(self, x: cx.Field) -> cx.Field:
     """Returns `secθ ∂/∂θ(cos²θ x)`."""
-    y = cx.cpmap(self.dinosaur_grid.sec_lat_d_dlat_cos2)(x.untag(self.modal_grid))
+    y = cx.cpmap(self.dinosaur_grid.sec_lat_d_dlat_cos2)(
+        x.untag(self.modal_grid)
+    )
     return y.tag(self.modal_grid)
 
   def clip_wavenumbers(self, x: cx.Field, n: int = 1) -> cx.Field:
@@ -350,7 +353,7 @@ class YlmMapper:
     dino_grid = self.dinosaur_grid(ylm_grid)
     return coordinates.LonLatGrid.from_dinosaur_grid(dino_grid)
 
-  def ylm_transform(
+  def ylm_map(
       self, grid: coordinates.SphericalHarmonicGrid | coordinates.LonLatGrid
   ) -> FixedYlmMapping:
     if isinstance(grid, coordinates.SphericalHarmonicGrid):
@@ -387,7 +390,7 @@ class YlmMapper:
     if isinstance(x, dict):
       return {k: self.to_modal(v) for k, v in x.items()}
 
-    return self.ylm_transform(self._extract_nodal_grid(x)).to_modal(x)
+    return self.ylm_map(self._extract_nodal_grid(x)).to_modal(x)
 
   @overload
   def to_nodal(self, x: cx.Field) -> cx.Field:
@@ -404,7 +407,7 @@ class YlmMapper:
     if isinstance(x, dict):
       return {k: self.to_nodal(v) for k, v in x.items()}
 
-    return self.ylm_transform(self._extract_modal_grid(x)).to_nodal(x)
+    return self.ylm_map(self._extract_modal_grid(x)).to_nodal(x)
 
   def _extract_nodal_grid(self, x: cx.Field) -> coordinates.LonLatGrid:
     """Returns LonLatGrid from coordinates of `x`."""
@@ -430,63 +433,63 @@ class YlmMapper:
 
   def laplacian(self, x: cx.Field) -> cx.Field:
     """Returns the Laplacian of `x`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(x))
     return ylm_mapping.laplacian(x)
 
   def inverse_laplacian(self, x: cx.Field) -> cx.Field:
     """Returns the inverse Laplacian of `x`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(x))
     return ylm_mapping.inverse_laplacian(x)
 
   def d_dlon(self, x: cx.Field) -> cx.Field:
     """Returns the longitudinal derivative of `x`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(x))
     return ylm_mapping.d_dlon(x)
 
   def cos_lat_d_dlat(self, x: cx.Field) -> cx.Field:
     """Returns the cos(lat)-weighted latitudinal derivative of `x`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(x))
     return ylm_mapping.cos_lat_d_dlat(x)
 
   def sec_lat_d_dlat_cos2(self, x: cx.Field) -> cx.Field:
     """Returns `secθ ∂/∂θ(cos²θ x)`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(x))
     return ylm_mapping.sec_lat_d_dlat_cos2(x)
 
   def clip_wavenumbers(self, x: cx.Field, n: int = 1) -> cx.Field:
     """Zeros out the highest `n` total wavenumbers."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(x))
     return ylm_mapping.clip_wavenumbers(x, n)
 
   def cos_lat_grad(
       self, x: cx.Field, clip: bool = True
   ) -> tuple[cx.Field, cx.Field]:
     """Returns the cos(lat) gradient of `x`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(x))
     return ylm_mapping.cos_lat_grad(x, clip=clip)
 
   def k_cross(self, u: cx.Field, v: cx.Field) -> tuple[cx.Field, cx.Field]:
     """Returns the k-cross of `(u, v)`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(u))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(u))
     return ylm_mapping.k_cross(u, v)
 
   def div_cos_lat(
       self, u: cx.Field, v: cx.Field, clip: bool = True
   ) -> cx.Field:
     """Returns the cos(lat)-weighted divergence of `(u, v)`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(u))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(u))
     return ylm_mapping.div_cos_lat(u, v, clip=clip)
 
   def curl_cos_lat(
       self, u: cx.Field, v: cx.Field, clip: bool = True
   ) -> cx.Field:
     """Returns the cos(lat)-weighted curl of `(u, v)`."""
-    ylm_mapping = self.ylm_transform(self._extract_modal_grid(u))
+    ylm_mapping = self.ylm_map(self._extract_modal_grid(u))
     return ylm_mapping.curl_cos_lat(u, v, clip=clip)
 
   def integrate(self, x: cx.Field) -> cx.Field:
     """Returns the integral of `x` over the sphere."""
-    ylm_mapping = self.ylm_transform(self._extract_nodal_grid(x))
+    ylm_mapping = self.ylm_map(self._extract_nodal_grid(x))
     return ylm_mapping.integrate(x)
 
 

@@ -24,7 +24,7 @@ import jax.numpy as jnp
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import towers
 from neuralgcm.experimental.core import transformer_layers
@@ -310,7 +310,7 @@ class TransformerTowerTest(parameterized.TestCase):
     dense_factory = functools.partial(
         standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=8
     )
-    ylm_mapper = spherical_transforms.YlmMapper(
+    ylm_mapper = spherical_harmonics.YlmMapper(
         mesh=parallelism.Mesh(), partition_schema_key=None
     )
     lmax = 4

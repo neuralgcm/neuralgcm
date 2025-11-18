@@ -23,7 +23,7 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spatial_filters
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 
@@ -37,7 +37,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
   def __init__(
       self,
       *,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       sigma: coordinates.SigmaLevels,
       surface_field_names: tuple[str, ...],
       volume_field_names: tuple[str, ...],
@@ -57,7 +57,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     if len(div_curl_fields.intersection(volume_field_names)) != 2:
       raise ValueError('Volume fields must contain `divergence & vorticity`.')
 
-    grid = ylm_transform.nodal_grid
+    grid = ylm_map.nodal_grid
     for name in (set(volume_field_names) | uv_fields) - div_curl_fields:
       output_coords[name] = cx.compose_coordinates(sigma, grid)
     for name in set(surface_field_names):
@@ -72,7 +72,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
     self.mesh = mesh
     self.features_module = features_module
     self.tendency_transform = tendency_transform
-    self.to_div_curl = atm_transforms.ToModalWithDivCurl(ylm_transform)
+    self.to_div_curl = atm_transforms.ToModalWithDivCurl(ylm_map)
     self.filter = modal_filter
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:

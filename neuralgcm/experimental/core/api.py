@@ -606,10 +606,45 @@ class InferenceModel:
     return self._dummy_model().inputs_spec
 
 
-jax.tree_util.register_dataclass(
+def _inference_model_flatten(model: InferenceModel):
+  """Flattens InferenceModel."""
+  children = (model.model_state,)
+  dummy_simulation_state_coords = jax.tree.map(
+      lambda x: x.coordinate,
+      model.dummy_simulation_state,
+      is_leaf=cx.is_field,
+  )
+  aux_data = (
+      model.model_graph_def,
+      dummy_simulation_state_coords,
+      model.fiddle_config,
+  )
+  return children, aux_data
+
+
+def _inference_model_unflatten(
+    aux_data: tuple[Any, ...], children: tuple[Any, ...]
+) -> InferenceModel:
+  """Unflattens InferenceModel."""
+  (model_graph_def, dummy_simulation_state_coords, fiddle_config) = aux_data
+  (model_state,) = children
+  dummy_simulation_state = jax.tree.map(
+      cx.shape_struct_field,
+      dummy_simulation_state_coords,
+      is_leaf=lambda x: isinstance(x, cx.Coordinate),
+  )
+  return InferenceModel(
+      model_graph_def=model_graph_def,
+      model_state=model_state,
+      dummy_simulation_state=dummy_simulation_state,
+      fiddle_config=fiddle_config,
+  )
+
+
+jax.tree_util.register_pytree_node(
     InferenceModel,
-    data_fields=['model_state'],
-    meta_fields=['model_graph_def', 'dummy_simulation_state', 'fiddle_config'],
+    _inference_model_flatten,
+    _inference_model_unflatten,
 )
 
 

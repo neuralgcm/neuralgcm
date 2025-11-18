@@ -28,7 +28,7 @@ from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import random_processes
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
@@ -66,14 +66,14 @@ class FeatureTransformsTest(parameterized.TestCase):
     self._test_feature_module(latitude_features, None)
 
   def test_orography_features(self):
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
         mesh=parallelism.Mesh(),
     )
     orography = orographies.ModalOrography(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         rngs=None,
     )
     orography_features = feature_transforms.OrographyFeatures(
@@ -82,20 +82,20 @@ class FeatureTransformsTest(parameterized.TestCase):
     self._test_feature_module(orography_features, None)
 
   def test_orography_with_grads_features(self):
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
         mesh=parallelism.Mesh(),
     )
     orography = orographies.ModalOrography(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         rngs=None,
     )
     orography_features = feature_transforms.OrographyWithGradsFeatures(
         orography_module=orography,
         compute_gradients_transform=transforms.ToModalWithFilteredGradients(
-            ylm_transform,
+            ylm_map,
             filter_attenuations=[2.0],
         ),
     )
@@ -181,7 +181,7 @@ class FeatureTransformsTest(parameterized.TestCase):
   @parameterized.named_parameters(
       dict(
           testcase_name='T21_grid',
-          ylm_transform=spherical_transforms.FixedYlmMapping(
+          ylm_map=spherical_harmonics.FixedYlmMapping(
               lon_lat_grid=coordinates.LonLatGrid.T21(),
               ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
               partition_schema_key=None,
@@ -189,10 +189,10 @@ class FeatureTransformsTest(parameterized.TestCase):
           ),
       ),
   )
-  def test_randomness_features(self, ylm_transform):
+  def test_randomness_features(self, ylm_map):
     with self.subTest('gaussian_random_field'):
       random_process = random_processes.GaussianRandomField(
-          ylm_transform=ylm_transform,
+          ylm_map=ylm_map,
           dt=1.0,
           sim_units=units.DEFAULT_UNITS,
           correlation_time=1.0,
@@ -203,13 +203,13 @@ class FeatureTransformsTest(parameterized.TestCase):
       random_process.unconditional_sample(jax.random.key(0))
       randomness_features = feature_transforms.RandomnessFeatures(
           random_process=random_process,
-          grid=ylm_transform.nodal_grid,
+          grid=ylm_map.nodal_grid,
       )
       self._test_feature_module(randomness_features, None)
 
     with self.subTest('batched_gaussian_random_fields'):
       random_process = random_processes.VectorizedGaussianRandomField(
-          ylm_transform=ylm_transform,
+          ylm_map=ylm_map,
           dt=1.0,
           sim_units=units.DEFAULT_UNITS,
           axis=cx.SizedAxis('grf', 2),
@@ -221,7 +221,7 @@ class FeatureTransformsTest(parameterized.TestCase):
       random_process.unconditional_sample(jax.random.key(0))
       randomness_features = feature_transforms.RandomnessFeatures(
           random_process=random_process,
-          grid=ylm_transform.nodal_grid,
+          grid=ylm_map.nodal_grid,
       )
       self._test_feature_module(randomness_features, None)
 

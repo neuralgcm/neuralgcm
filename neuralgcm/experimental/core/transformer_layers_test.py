@@ -22,7 +22,7 @@ import jax
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import transformer_layers
 import numpy as np
@@ -194,12 +194,12 @@ class TransformerLayersTest(parameterized.TestCase):
       gating: transformer_layers.Gating,
   ):
     """Tests output_shape of TransformerBlocks."""
-    ylm_mapper = spherical_transforms.YlmMapper(
+    ylm_mapper = spherical_harmonics.YlmMapper(
         mesh=parallelism.Mesh(),
         partition_schema_key=None,
     )
     ylm_pe = transformer_layers.spherical_harmonic_lon_lat_encodings(
-        ylm_mapper.ylm_transform(self.grid), 4
+        ylm_mapper.ylm_map(self.grid), 4
     )
     rngs = nnx.Rngs(0)
     relative_bias_net = nnx.Linear(ylm_pe.shape[0], num_heads, rngs=rngs)
@@ -224,7 +224,7 @@ class TransformerLayersTest(parameterized.TestCase):
 
   def test_spherical_positional_encoder(self):
     """Tests output_shape of SphericalPositionalEncoder."""
-    ylm_mapper = spherical_transforms.YlmMapper(
+    ylm_mapper = spherical_harmonics.YlmMapper(
         mesh=parallelism.Mesh(),
         partition_schema_key=None,
     )

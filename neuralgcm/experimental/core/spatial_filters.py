@@ -20,7 +20,7 @@ from typing import Sequence
 from dinosaur import filtering
 from flax import nnx
 from neuralgcm.experimental.core import nnx_compat
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
@@ -45,14 +45,14 @@ class ModalSpatialFilter(SpatialFilter):
 class ExponentialModalFilter(ModalSpatialFilter):
   """Modal filter that removes high frequency components."""
 
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   attenuation: float = 16.0
   order: int = 18
   cutoff: float = 0.0
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:
     filter_fn = filtering.exponential_filter(
-        grid=self.ylm_transform.dinosaur_grid,
+        grid=self.ylm_map.dinosaur_grid,
         attenuation=self.attenuation,
         order=self.order,
         cutoff=self.cutoff,
@@ -60,14 +60,14 @@ class ExponentialModalFilter(ModalSpatialFilter):
     return filter_fn(inputs)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    return self.ylm_transform.dinosaur_grid.to_nodal(
-        self.filter_modal(self.ylm_transform.dinosaur_grid.to_modal(inputs))
+    return self.ylm_map.dinosaur_grid.to_nodal(
+        self.filter_modal(self.ylm_map.dinosaur_grid.to_modal(inputs))
     )
 
   @classmethod
   def from_timescale(
       cls,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       dt: float | typing.Quantity | typing.Numeric,
       timescale: float | typing.Quantity | typing.Numeric,
       order: int = 18,
@@ -85,7 +85,7 @@ class ExponentialModalFilter(ModalSpatialFilter):
     else:
       timescale = units.maybe_nondimensionalize(timescale, sim_units)
     return cls(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         attenuation=(dt / timescale),
         order=order,
         cutoff=cutoff,
@@ -97,7 +97,7 @@ class SequentialModalFilter(ModalSpatialFilter):
   """Modal filter that applies multiple filters sequentially."""
 
   filters: Sequence[ModalSpatialFilter]
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:
     for modal_filter in self.filters:
@@ -105,6 +105,6 @@ class SequentialModalFilter(ModalSpatialFilter):
     return inputs
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    modal_inputs = self.ylm_transform.dinosaur_grid.to_modal(inputs)
+    modal_inputs = self.ylm_map.dinosaur_grid.to_modal(inputs)
     modal_outputs = self.filter_modal(modal_inputs)
-    return self.ylm_transform.dinosaur_grid.to_nodal(modal_outputs)
+    return self.ylm_map.dinosaur_grid.to_nodal(modal_outputs)

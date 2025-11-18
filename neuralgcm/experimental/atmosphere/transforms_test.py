@@ -24,7 +24,7 @@ from neuralgcm.experimental.atmosphere import transforms as atmos_transforms
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 import numpy as np
@@ -46,18 +46,18 @@ class AtmosphereTransformsTest(parameterized.TestCase):
 
   def test_velocity_and_prognostics_with_modal_gradients(self):
     sigma = coordinates.SigmaLevels.equidistant(4)
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
         mesh=parallelism.Mesh(),
     )
     with_gradients_transform = transforms.ToModalWithFilteredGradients(
-        ylm_transform,
+        ylm_map,
         filter_attenuations=[2.0],
     )
     features_grads = atmos_transforms.VelocityAndPrognosticsWithModalGradients(
-        ylm_transform,
+        ylm_map,
         volume_field_names=(
             'u',
             'v',
@@ -66,7 +66,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         surface_field_names=('lsp',),
         compute_gradients_transform=with_gradients_transform,
     )
-    modal_grid = ylm_transform.modal_grid
+    modal_grid = ylm_map.modal_grid
     shape_3d = sigma.shape + modal_grid.shape
     inputs = {
         'u': cx.wrap(np.ones(shape_3d), sigma, modal_grid),
@@ -81,14 +81,14 @@ class AtmosphereTransformsTest(parameterized.TestCase):
   def test_pressure_features(self):
     sigma = coordinates.SigmaLevels.equidistant(8)
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=ylm_grid,
         partition_schema_key=None,
         mesh=parallelism.Mesh(None),
     )
     pressure_features = atmos_transforms.PressureOnSigmaFeatures(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         sigma=sigma,
     )
     inputs = {

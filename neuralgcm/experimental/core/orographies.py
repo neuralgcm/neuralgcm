@@ -20,7 +20,7 @@ import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import spatial_filters
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 from neuralgcm.experimental.core import xarray_utils
@@ -37,29 +37,29 @@ class ModalOrography(nnx.Module):
   def __init__(
       self,
       *,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       initializer: nnx.initializers.Initializer = nnx.initializers.zeros_init(),
       rngs: nnx.Rngs,
   ):
-    self.ylm_transform = ylm_transform
-    modal_shape_1d = (ylm_transform.ylm_grid.fields['mask'].data.sum(),)
+    self.ylm_map = ylm_map
+    modal_shape_1d = (ylm_map.ylm_grid.fields['mask'].data.sum(),)
     self.orography = OrographyVariable(initializer(rngs, modal_shape_1d))
 
   @property
   def nodal_orography(self) -> typing.Array:
-    return self.ylm_transform.to_nodal_array(self.modal_orography)
+    return self.ylm_map.to_nodal_array(self.modal_orography)
 
   @property
   def modal_orography(self) -> typing.Array:
     """Returns orography converted to modal representation with filtering."""
-    mask = self.ylm_transform.modal_grid.fields['mask']
-    modal_orography_2d = jnp.zeros(self.ylm_transform.modal_grid.shape)
+    mask = self.ylm_map.modal_grid.fields['mask']
+    modal_orography_2d = jnp.zeros(self.ylm_map.modal_grid.shape)
     return modal_orography_2d.at[mask.data].set(self.orography.value)
 
   def update_orography_from_data(
       self,
       dataset: xarray.Dataset,
-      data_ylm_transform: spherical_transforms.FixedYlmMapping,
+      data_ylm_map: spherical_harmonics.FixedYlmMapping,
       sim_units: units.SimUnits,
       spatial_filter=None,
   ):
@@ -72,21 +72,21 @@ class ModalOrography(nnx.Module):
         nodal_orography, sim_units
     )
     nodal_orography = xarray_utils.field_from_xarray(nodal_orography)
-    nodal_orography = nodal_orography.unwrap(data_ylm_transform.nodal_grid)
+    nodal_orography = nodal_orography.unwrap(data_ylm_map.nodal_grid)
     if not isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       nodal_orography = spatial_filter(nodal_orography)
-    modal_orography = data_ylm_transform.to_modal_array(nodal_orography)
+    modal_orography = data_ylm_map.to_modal_array(nodal_orography)
     interpolator = interpolators.SpectralRegridder(
-        self.ylm_transform.modal_grid
+        self.ylm_map.modal_grid
     )
     modal_orography = interpolator(
-        cx.wrap(modal_orography, data_ylm_transform.modal_grid)
+        cx.wrap(modal_orography, data_ylm_map.modal_grid)
     )
-    modal_orography = modal_orography.unwrap(self.ylm_transform.modal_grid)
+    modal_orography = modal_orography.unwrap(self.ylm_map.modal_grid)
     if isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       modal_orography = spatial_filter.filter_modal(modal_orography)
     self.orography.value = modal_orography[
-        self.ylm_transform.modal_grid.fields['mask'].data
+        self.ylm_map.modal_grid.fields['mask'].data
     ]
 
 
@@ -96,7 +96,7 @@ class ModalOrographyWithCorrection(ModalOrography):
   def __init__(
       self,
       *,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       initializer: nnx.initializers.Initializer = nnx.initializers.zeros_init(),
       correction_scale: float,
       correction_param_type: nnx.Param = nnx.Param,
@@ -106,7 +106,7 @@ class ModalOrographyWithCorrection(ModalOrography):
       rngs: nnx.Rngs,
   ):
     super().__init__(
-        ylm_transform=ylm_transform, initializer=initializer, rngs=rngs
+        ylm_map=ylm_map, initializer=initializer, rngs=rngs
     )
     self.correction_scale = correction_scale
     self.correction = correction_param_type(
@@ -116,7 +116,7 @@ class ModalOrographyWithCorrection(ModalOrography):
   @property
   def modal_orography(self) -> typing.Array:
     """Returns orography converted to modal representation with filtering."""
-    mask = self.ylm_transform.modal_grid.fields['mask'].data
+    mask = self.ylm_map.modal_grid.fields['mask'].data
     modal_orography_2d = jnp.zeros(mask.shape)
     modal_orography_1d = (
         self.orography.value + self.correction.value * self.correction_scale

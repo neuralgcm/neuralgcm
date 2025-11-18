@@ -22,7 +22,7 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
@@ -208,7 +208,7 @@ class GaussianRandomFieldCore(nnx.Module):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       dt: float,
       sim_units: units.SimUnits,
       correlation_time: typing.Numeric | typing.Quantity,
@@ -222,7 +222,7 @@ class GaussianRandomFieldCore(nnx.Module):
     """Constructs a core of a Gaussian Random Field.
 
     Args:
-      ylm_transform: spherical harmonic transform defining the default basis for
+      ylm_map: spherical harmonic transform defining the default basis for
         the random process.
       dt: time step of the random process.
       sim_units: object defining nondimensionalization and physical constants.
@@ -244,7 +244,7 @@ class GaussianRandomFieldCore(nnx.Module):
     variance = nondimensionalize(variance)
     # we make parameters 1d to streamline broadcasting when code is vmapped.
     as_1d_param = lambda x, t: t(jnp.array([x]))
-    self.ylm_transform = ylm_transform
+    self.ylm_map = ylm_map
     self.dt = dt
     self.corr_time = as_1d_param(correlation_time, correlation_time_type)
     self.corr_length = as_1d_param(correlation_length, correlation_length_type)
@@ -254,7 +254,7 @@ class GaussianRandomFieldCore(nnx.Module):
   @property
   def _surf_area(self) -> jax.Array | float:
     """Surface area of the sphere used by self.grid."""
-    return 4 * jnp.pi * self.ylm_transform.radius**2
+    return 4 * jnp.pi * self.ylm_map.radius**2
 
   @property
   def variance(self):
@@ -288,7 +288,7 @@ class GaussianRandomFieldCore(nnx.Module):
   @property
   def relative_corr_len(self):
     """Correlation length of the random process relative to the radius."""
-    return self.corr_length.value / self.ylm_transform.radius
+    return self.corr_length.value / self.ylm_map.radius
 
   def _integrated_grf_variance(self):
     """Integral of the GRF's variance over the earth's surface."""
@@ -296,7 +296,7 @@ class GaussianRandomFieldCore(nnx.Module):
 
   def _sigma_array(self) -> jax.Array:
     """Array of σₙ from Appendix 8 in [Palmer] http://shortn/_56HCcQwmSS."""
-    dinosaur_grid = self.ylm_transform.dinosaur_grid
+    dinosaur_grid = self.ylm_map.dinosaur_grid
     # n = [0, 1, ..., N]
     n = dinosaur_grid.modal_axes[1]  # total wavenumbers.
     # Number of longitudinal wavenumbers at each total wavenumber n.
@@ -327,7 +327,7 @@ class GaussianRandomFieldCore(nnx.Module):
 
   def sample_core(self, rng: typing.PRNGKeyArray) -> jax.Array:
     """Helper method for sampling the core of the gaussian random field."""
-    dinosaur_grid = self.ylm_transform.dinosaur_grid
+    dinosaur_grid = self.ylm_map.dinosaur_grid
     modal_shape = dinosaur_grid.modal_shape
     sigmas = self._sigma_array()
     weights = jnp.where(
@@ -342,7 +342,7 @@ class GaussianRandomFieldCore(nnx.Module):
       self, state_core: jax.Array, state_key: jax.Array, state_step: int
   ) -> jax.Array:
     """Helper method for advancing the core of the gaussian random field."""
-    dinosaur_grid = self.ylm_transform.dinosaur_grid
+    dinosaur_grid = self.ylm_map.dinosaur_grid
     modal_shape = dinosaur_grid.modal_shape
     rng = _advance_prng_key(state_key, state_step)
     eta = jax.random.truncated_normal(rng, -self.clip, self.clip, modal_shape)
@@ -352,7 +352,7 @@ class GaussianRandomFieldCore(nnx.Module):
 
   @property
   def core_grid(self) -> coordinates.SphericalHarmonicGrid:
-    return self.ylm_transform.modal_grid
+    return self.ylm_map.modal_grid
 
 
 class GaussianRandomField(RandomProcessModule):
@@ -360,7 +360,7 @@ class GaussianRandomField(RandomProcessModule):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       dt: float,
       sim_units: units.SimUnits,
       correlation_time: typing.Numeric | typing.Quantity,
@@ -375,7 +375,7 @@ class GaussianRandomField(RandomProcessModule):
   ):
     """Initializes a Gaussian Random Field."""
     self.grf = GaussianRandomFieldCore(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         dt=dt,
         sim_units=sim_units,
         correlation_time=correlation_time,
@@ -386,7 +386,7 @@ class GaussianRandomField(RandomProcessModule):
         variance_type=variance_type,
         clip=clip,
     )
-    self.ylm_transform = ylm_transform
+    self.ylm_map = ylm_map
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
     self.rng_step = Randomness(cx.wrap(0))
@@ -415,13 +415,13 @@ class GaussianRandomField(RandomProcessModule):
       coords: cx.Coordinate | None = None,
   ) -> cx.Field:
     if coords is None:
-      coords = self.ylm_transform.nodal_grid
-    if coords != self.ylm_transform.nodal_grid:
+      coords = self.ylm_map.nodal_grid
+    if coords != self.ylm_map.nodal_grid:
       raise ValueError(
           f'Interpolation is not supported yet, requested {coords=} '
-          f'but the process is defined on {self.ylm_transform.nodal_grid=}'
+          f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
-    return self.ylm_transform.to_nodal(self.core.value)
+    return self.ylm_map.to_nodal(self.core.value)
 
 
 class VectorizedGaussianRandomField(RandomProcessModule):
@@ -429,7 +429,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       dt: float,
       sim_units: units.SimUnits,
       axis: cx.Coordinate,
@@ -464,7 +464,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
         [nondimensionalize(variance) for variance in variances]
     )
     make_grf = lambda length, tau, variance: GaussianRandomFieldCore(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         dt=dt,
         sim_units=sim_units,
         correlation_time=tau,
@@ -477,7 +477,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     )
     self.n_fields = n_fields
     self.axis = axis
-    self.ylm_transform = ylm_transform
+    self.ylm_map = ylm_map
     self.batch_grf_core = nnx.vmap(make_grf, axis_size=self.n_fields)(
         correlation_lengths, correlation_times, variances
     )
@@ -528,10 +528,10 @@ class VectorizedGaussianRandomField(RandomProcessModule):
       coords: cx.Coordinate | None = None,
   ) -> cx.Field:
     if coords is None:
-      coords = self.ylm_transform.nodal_grid
-    if coords != self.ylm_transform.nodal_grid:
+      coords = self.ylm_map.nodal_grid
+    if coords != self.ylm_map.nodal_grid:
       raise ValueError(
           f'Interpolation is not supported yet, requested {coords=} '
-          f'but the process is defined on {self.ylm_transform.nodal_grid=}'
+          f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
-    return self.ylm_transform.to_nodal(self.core.value)
+    return self.ylm_map.to_nodal(self.core.value)

@@ -30,7 +30,7 @@ import jax.numpy as jnp
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import typing
 import numpy as np
@@ -1234,17 +1234,17 @@ class WindowTransformerBlocks(TransformerBase):
 
 
 def spherical_harmonic_lon_lat_encodings(
-    ylm_transform: spherical_transforms.FixedYlmMapping,
+    ylm_map: spherical_harmonics.FixedYlmMapping,
     l_max: int,
     l_min: int = 0,
 ):
   """Spherical harmonic positional encodings for lon-lat grids."""
 
   def _get_ylm(l, m):
-    zeros = np.zeros(ylm_transform.modal_grid.shape)
+    zeros = np.zeros(ylm_map.modal_grid.shape)
     # TODO(dkochkov): use sel semantic once it is added to coordax.
     zeros[2 * abs(m) + int(m < 0), l] = 1
-    return ylm_transform.to_nodal_array(zeros)
+    return ylm_map.to_nodal_array(zeros)
 
   pe_maps = []
   for l in range(l_min, l_max):
@@ -1276,7 +1276,7 @@ def _dim_names(*dims: str | cx.Coordinate) -> tuple[str, ...]:
 class SphericalPositionalEncoder(nnx.Module):
   """Module that generates spherical positional encodings."""
 
-  ylm_mapper: spherical_transforms.YlmMapper
+  ylm_mapper: spherical_harmonics.YlmMapper
   l_max: int
   l_min: int = 0
 
@@ -1295,6 +1295,6 @@ class SphericalPositionalEncoder(nnx.Module):
           f'but inputs has coordinates {grid=}'
       )
     l_max, l_min = self.l_max, self.l_min
-    ylm_transform = self.ylm_mapper.ylm_transform(grid)
-    pe = spherical_harmonic_lon_lat_encodings(ylm_transform, l_max, l_min)
+    ylm_map = self.ylm_mapper.ylm_map(grid)
+    pe = spherical_harmonic_lon_lat_encodings(ylm_map, l_max, l_min)
     return cx.wrap(pe, encoding_dim_tag, grid)

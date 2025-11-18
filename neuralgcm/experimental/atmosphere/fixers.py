@@ -21,7 +21,7 @@ from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import units
 
@@ -51,7 +51,7 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
   This adjustment is added to `tendencies['temperature_variation']`.
   """
 
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
   transform: transforms.TransformABC | None = None
@@ -89,12 +89,12 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
     # integral(Cp * dTemp_tend) dp / g = Cp * dTemp_tend / g * p_surface
     # so: Cp * dTemp_tend / g * p_surface = imbalance
     # dTemp_tend = imbalance * g / (Cp * p_surface)
-    to_nodal = self.ylm_transform.to_nodal
+    to_nodal = self.ylm_map.to_nodal
     p_surface = cx.cmap(jnp.exp)(to_nodal(prognostics['log_surface_pressure']))
     cp = self.sim_units.Cp
     g = self.sim_units.gravity_acceleration
     delta_t_tendency = imbalance['imbalance'] * g / (cp * p_surface)
 
-    delta_t_tendency_modal = self.ylm_transform.to_modal(delta_t_tendency)
+    delta_t_tendency_modal = self.ylm_map.to_modal(delta_t_tendency)
     tendencies['temperature_variation'] += delta_t_tendency_modal
     return tendencies

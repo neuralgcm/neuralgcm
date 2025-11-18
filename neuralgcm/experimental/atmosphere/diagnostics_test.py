@@ -30,7 +30,7 @@ from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import towers
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import units
@@ -71,7 +71,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     self.tendencies = {k: 0.1 * v for k, v in self.prognostics.items()}
 
   def test_extract_precipitation_plus_evaporation(self):
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
@@ -80,7 +80,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     grid = coordinates.LonLatGrid.T21()
     sigma = coordinates.SigmaLevels.equidistant(layers=8)
     precip_plus_evap = atmos_diagnostics.ExtractPrecipitationPlusEvaporation(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         levels=sigma,
         sim_units=self.sim_units,
     )
@@ -91,7 +91,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
 
   def test_extract_precipitation_and_evaporation(self):
     mesh = parallelism.Mesh()
-    ylm_transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
@@ -113,7 +113,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
             targets={'evaporation': grid},
             tower_factory=tower_factory,
             dims_to_align=(grid,),
-            in_transform=transforms.ToNodal(ylm_transform),
+            in_transform=transforms.ToNodal(ylm_map),
             feature_sharding_schema=None,
             result_sharding_schema=None,
             mesh=mesh,
@@ -124,13 +124,13 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
         surface_observation_operator_transform
     )
     precip_plus_evap = atmos_diagnostics.ExtractPrecipitationPlusEvaporation(
-        ylm_transform=ylm_transform,
+        ylm_map=ylm_map,
         levels=sigma,
         sim_units=self.sim_units,
     )
     precip_and_evap = atmos_diagnostics.ExtractPrecipitationAndEvaporation(
         observation_operator=operator,
-        operator_query={'evaporation': ylm_transform.lon_lat_grid},
+        operator_query={'evaporation': ylm_map.lon_lat_grid},
         extract_p_plus_e=precip_plus_evap,
         prognostics_arg_key='prognostics',
         sim_units=self.sim_units,
@@ -153,7 +153,7 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
     self.lon_lat_grid = coordinates.LonLatGrid.T21()
     self.sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
     self.mesh = parallelism.Mesh()
-    self.ylm_transform = spherical_transforms.FixedYlmMapping(
+    self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=self.lon_lat_grid,
         ylm_grid=self.ylm_grid,
         partition_schema_key=None,
@@ -175,7 +175,7 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
         300, 200, self.sigma_levels.shape[0]
     )
     self.model_orography = orographies.ModalOrography(
-        ylm_transform=self.ylm_transform, rngs=nnx.Rngs(0)
+        ylm_map=self.ylm_map, rngs=nnx.Rngs(0)
     )
 
     self.energy_query = {
@@ -197,7 +197,7 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
 
   def test_energy_residuals_shape_and_dtype(self):
     energy_residuals = atmos_diagnostics.ExtractEnergyResiduals(
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         levels=self.sigma_levels,
         sim_units=self.sim_units,
         model_orography=self.model_orography,

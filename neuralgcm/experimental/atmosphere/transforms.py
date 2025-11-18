@@ -24,7 +24,7 @@ import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 
@@ -33,15 +33,15 @@ from neuralgcm.experimental.core import typing
 class ToModalWithDivCurl(transforms.TransformABC):
   """Module that converts inputs to modal replacing velocity with div/curl."""
 
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   u_key: str = 'u_component_of_wind'
   v_key: str = 'v_component_of_wind'
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    grid = self.ylm_transform.nodal_grid
+    grid = self.ylm_map.nodal_grid
     # TODO(dkochkov): Consider doing a strict check rather than filtering.
     inputs = transforms.filter_fields_by_coordinate(inputs, grid)
-    mesh = self.ylm_transform.mesh
+    mesh = self.ylm_map.mesh
     if self.u_key not in inputs or self.v_key not in inputs:
       raise ValueError(
           f'{(self.u_key, self.v_key)=} not found in {inputs.keys()=}'
@@ -54,14 +54,14 @@ class ToModalWithDivCurl(transforms.TransformABC):
     inputs[self.u_key] = u * sec_lat
     inputs[self.v_key] = v * sec_lat
     inputs = parallelism.with_dycore_sharding(mesh, inputs)
-    modal_outputs = self.ylm_transform.to_modal(inputs)
+    modal_outputs = self.ylm_map.to_modal(inputs)
     modal_outputs = parallelism.with_dycore_sharding(mesh, modal_outputs)
     u, v = modal_outputs.pop(self.u_key), modal_outputs.pop(self.v_key)
     modal_outputs['divergence'] = parallelism.with_dycore_sharding(
-        mesh, self.ylm_transform.div_cos_lat(u, v)
+        mesh, self.ylm_map.div_cos_lat(u, v)
     )
     modal_outputs['vorticity'] = parallelism.with_dycore_sharding(
-        mesh, self.ylm_transform.curl_cos_lat(u, v)
+        mesh, self.ylm_map.curl_cos_lat(u, v)
     )
     return modal_outputs
 
@@ -70,12 +70,12 @@ class ToModalWithDivCurl(transforms.TransformABC):
 class PressureOnSigmaFeatures(transforms.TransformABC):
   """Feature module that computes pressure."""
 
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   sigma: coordinates.SigmaLevels
   feature_name: str = 'pressure'
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    log_surface_p = self.ylm_transform.to_nodal(inputs['log_surface_pressure'])
+    log_surface_p = self.ylm_map.to_nodal(inputs['log_surface_pressure'])
     sigma = self.sigma.fields['sigma']
     surface_p = cx.cmap(jnp.exp)(log_surface_p)
     pressure = sigma * surface_p  # order matters here to put sigma upfront.
@@ -87,7 +87,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       surface_field_names: tuple[str, ...] = tuple(),
       volume_field_names: tuple[str, ...] = tuple(),
       compute_gradients_transform: (
@@ -99,7 +99,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
   ):
     if compute_gradients_transform is None:
       compute_gradients_transform = lambda x: {}
-    self.ylm_transform = ylm_transform
+    self.ylm_map = ylm_map
     self.surface_field_names = surface_field_names
     self.volume_field_names = volume_field_names
     self.fields_to_include = surface_field_names + volume_field_names
@@ -109,7 +109,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
     if inputs_are_modal:
       self.pre_process = lambda x: x
     else:
-      self.pre_process = transforms.ToModal(ylm_transform)
+      self.pre_process = transforms.ToModal(ylm_map)
 
   def _extract_features(
       self,
@@ -123,8 +123,8 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
     if set(['vorticity', 'divergence']).issubset(inputs.keys()) and (
         not set([self.u_key, self.v_key]).intersection(inputs.keys())
     ):
-      cos_lat_u, cos_lat_v = spherical_transforms.get_cos_lat_vector(
-          inputs['vorticity'], inputs['divergence'], self.ylm_transform
+      cos_lat_u, cos_lat_v = spherical_harmonics.get_cos_lat_vector(
+          inputs['vorticity'], inputs['divergence'], self.ylm_map
       )
       modal_features = {}
       if self.u_key in self.fields_to_include:
@@ -154,24 +154,24 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
 
     # Computing gradient features and adjusting cos_lat factors.
     modal_features = parallelism.with_dycore_sharding(
-        self.ylm_transform.mesh, modal_features
+        self.ylm_map.mesh, modal_features
     )
     diff_operator_features = self.compute_gradients_transform(modal_features)
     # Computing all features in nodal space.
     features = {}
     for k, v in (diff_operator_features | modal_features).items():
-      value = self.ylm_transform.to_nodal(v)
+      value = self.ylm_map.to_nodal(v)
       lat_power = k.factor_order
-      sec_lat_scale = (1 / self.ylm_transform.cos_lat(value) ** lat_power)
+      sec_lat_scale = (1 / self.ylm_map.cos_lat(value) ** lat_power)
       features[k.name] = value * sec_lat_scale
     features = parallelism.with_dycore_sharding(
-        self.ylm_transform.mesh, features
+        self.ylm_map.mesh, features
     )
     return features
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     inputs = self.pre_process(inputs)
-    ylm_grid = self.ylm_transform.modal_grid
+    ylm_grid = self.ylm_map.modal_grid
     # TODO(dkochkov): Consider doing a strict check rather than filtering.
     filtered_inputs = transforms.filter_fields_by_coordinate(inputs, ylm_grid)
     nodal_features = self._extract_features(filtered_inputs)

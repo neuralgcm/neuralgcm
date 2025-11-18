@@ -26,7 +26,7 @@ from neuralgcm.experimental.atmosphere import observation_operators
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
 import numpy as np
 
@@ -36,7 +36,7 @@ class ObservationOperatorsTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     n_sigma = 12
-    self.ylm_transform = spherical_transforms.FixedYlmMapping(
+    self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
         partition_schema_key=None,
@@ -51,12 +51,12 @@ class ObservationOperatorsTest(parameterized.TestCase):
     self.sim_units = units.DEFAULT_UNITS
     self.mesh = parallelism.Mesh(None)
     self.orography_module = orographies.ModalOrography(
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         rngs=nnx.Rngs(0),
     )
     self.ref_temperatures = np.linspace(220, 250, num=n_sigma)
     self.primitive_equations = equations.PrimitiveEquations(
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         sigma_levels=self.input_sigma_levels,
         sim_units=self.sim_units,
         reference_temperatures=self.ref_temperatures,
@@ -79,7 +79,7 @@ class ObservationOperatorsTest(parameterized.TestCase):
         horizontal=self.grid, vertical=pressure_levels
     )
     operator = observation_operators.PressureLevelObservationOperator(
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         sigma_levels=self.input_sigma_levels,
         primitive_equation=self.primitive_equations,
         orography=self.orography_module,
@@ -105,7 +105,7 @@ class ObservationOperatorsTest(parameterized.TestCase):
     )
     operator = observation_operators.SigmaLevelObservationOperator(
         primitive_equation=self.primitive_equations,
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         sigma_levels=self.input_sigma_levels,
         orography=self.orography_module,
         target_sigma_levels=target_sigma_levels,

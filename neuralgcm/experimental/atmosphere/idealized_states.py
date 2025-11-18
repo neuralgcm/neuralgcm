@@ -24,7 +24,7 @@ from dinosaur import spherical_harmonic as dino_spherical_harmonic
 from dinosaur import typing as dino_typing
 import jax
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
@@ -63,7 +63,7 @@ def _get_dino_specs(
 
 def _dino_state_to_neuralgcm_dict(
     state: dinosaur_primitive_equations.State,
-    ylm_map: spherical_transforms.FixedYlmMapping,
+    ylm_map: spherical_harmonics.FixedYlmMapping,
     sigma: coordinates.SigmaLevels,
     aux_features: dict[str, Any] | None,
     as_nodal: bool = False,
@@ -97,7 +97,7 @@ def _dino_state_to_neuralgcm_dict(
 
 
 def isothermal_rest_atmosphere(
-    ylm_map: spherical_transforms.FixedYlmMapping,
+    ylm_map: spherical_harmonics.FixedYlmMapping,
     sigma: coordinates.SigmaLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
@@ -128,7 +128,7 @@ def isothermal_rest_atmosphere(
 
 
 def steady_state_jw(
-    ylm_map: spherical_transforms.FixedYlmMapping,
+    ylm_map: spherical_harmonics.FixedYlmMapping,
     sigma: coordinates.SigmaLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
@@ -165,7 +165,7 @@ def steady_state_jw(
 
 
 def perturbed_jw(
-    ylm_map: spherical_transforms.FixedYlmMapping,
+    ylm_map: spherical_harmonics.FixedYlmMapping,
     sigma: coordinates.SigmaLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,

@@ -21,7 +21,7 @@ import jax
 from jax import config  # pylint: disable=g-importing-member
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -56,7 +56,7 @@ class SphericalTransformsTest(parameterized.TestCase):
   ):
     """Tests that SphericalHarmonicsTransform is equivalent to dinosaur."""
     mesh = parallelism.Mesh(spmd_mesh=None)
-    transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=lon_lat_grid,
         ylm_grid=ylm_grid,
         mesh=mesh,
@@ -76,11 +76,11 @@ class SphericalTransformsTest(parameterized.TestCase):
         spherical_harmonics_impl=method,
         spmd_mesh=None,
     )
-    nodal_array = transform.to_nodal_array(modal_input_array)
+    nodal_array = ylm_map.to_nodal_array(modal_input_array)
     expected_nodal_array = dinosaur_grid.to_nodal(modal_input_array)
     np.testing.assert_allclose(nodal_array, expected_nodal_array)
     # back to modal transform.
-    modal_array = transform.to_modal_array(nodal_array)
+    modal_array = ylm_map.to_modal_array(nodal_array)
     expected_modal_array = dinosaur_grid.to_modal(expected_nodal_array)
     np.testing.assert_allclose(modal_array, expected_modal_array)
 
@@ -95,16 +95,16 @@ class SphericalTransformsTest(parameterized.TestCase):
         spmd_mesh=spmd_mesh,
         field_partitions={'spatial': {'longitude': 'x', 'latitude': 'y'}},
     )
-    transform = spherical_transforms.FixedYlmMapping(
+    ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=lon_lat_grid,
         ylm_grid=ylm_grid,
         mesh=mesh,
         partition_schema_key='spatial',
     )
-    padded_modal_grid = transform.modal_grid
+    padded_modal_grid = ylm_map.modal_grid
     self.assertIsInstance(padded_modal_grid, coordinates.SphericalHarmonicGrid)
-    self.assertEqual(transform.modal_grid.total_wavenumbers, 23)
-    self.assertEqual(transform.modal_grid.shape, (64, 32))
+    self.assertEqual(ylm_map.modal_grid.total_wavenumbers, 23)
+    self.assertEqual(ylm_map.modal_grid.shape, (64, 32))
 
   @parameterized.parameters(
       dict(
@@ -132,12 +132,12 @@ class SphericalTransformsTest(parameterized.TestCase):
   def test_ylm_mapper(
       self,
       f: cx.Field,
-      truncation_rule: spherical_transforms.TruncationRules,
-      spherical_harmonics_method: spherical_transforms.SphericalHarmonicMethods,
+      truncation_rule: spherical_harmonics.TruncationRules,
+      spherical_harmonics_method: spherical_harmonics.SphericalHarmonicMethods,
       expected_modal_shape: tuple[int, ...],
       expected_nodal_shape: tuple[int, ...],
   ):
-    ylm_mapper = spherical_transforms.YlmMapper(
+    ylm_mapper = spherical_harmonics.YlmMapper(
         truncation_rule=truncation_rule,
         spherical_harmonics_method=spherical_harmonics_method,
         partition_schema_key=None,
@@ -164,7 +164,7 @@ class SphericalTransformsTest(parameterized.TestCase):
     }
     mesh = parallelism.Mesh(spmd_mesh, field_partitions=field_partitions)
     with self.subTest('cubic_truncation'):
-      ylm_mapper = spherical_transforms.YlmMapper(
+      ylm_mapper = spherical_harmonics.YlmMapper(
           truncation_rule='cubic',
           partition_schema_key='spatial',
           mesh=mesh,
@@ -182,7 +182,7 @@ class SphericalTransformsTest(parameterized.TestCase):
       self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
 
     with self.subTest('linear_truncation'):
-      ylm_mapper = spherical_transforms.YlmMapper(
+      ylm_mapper = spherical_harmonics.YlmMapper(
           truncation_rule='linear',
           partition_schema_key='spatial',
           mesh=mesh,
@@ -212,13 +212,13 @@ class GeometryMethodsTest(chex.TestCase):
         spherical_harmonics_impl=spherical_harmonics_impl
     )
     mesh = parallelism.Mesh(spmd_mesh=None)
-    self.fixed_ylm_mapping = spherical_transforms.FixedYlmMapping(
+    self.fixed_ylm_mapping = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=self.lon_lat_grid,
         ylm_grid=self.ylm_grid,
         mesh=mesh,
         partition_schema_key=None,
     )
-    self.ylm_mapper = spherical_transforms.YlmMapper(
+    self.ylm_mapper = spherical_harmonics.YlmMapper(
         truncation_rule='cubic',
         partition_schema_key=None,
         mesh=mesh,
@@ -356,7 +356,7 @@ class GeometryMethodsTest(chex.TestCase):
     # With FixedYlmMapping
     actual_u, actual_v = (
         x.data
-        for x in spherical_transforms.get_cos_lat_vector(
+        for x in spherical_harmonics.get_cos_lat_vector(
             self.modal_field_u, self.modal_field_v, self.fixed_ylm_mapping
         )
     )
@@ -365,7 +365,7 @@ class GeometryMethodsTest(chex.TestCase):
     # With YlmMapper
     actual_u, actual_v = (
         x.data
-        for x in spherical_transforms.get_cos_lat_vector(
+        for x in spherical_harmonics.get_cos_lat_vector(
             self.modal_field_u, self.modal_field_v, self.ylm_mapper
         )
     )
@@ -379,7 +379,7 @@ class GeometryMethodsTest(chex.TestCase):
     # With FixedYlmMapping
     actual_vort, actual_div = (
         x.data
-        for x in spherical_transforms.uv_nodal_to_vor_div_modal(
+        for x in spherical_harmonics.uv_nodal_to_vor_div_modal(
             self.nodal_field_u, self.nodal_field_v, self.fixed_ylm_mapping
         )
     )
@@ -388,7 +388,7 @@ class GeometryMethodsTest(chex.TestCase):
     # With YlmMapper
     actual_vort, actual_div = (
         x.data
-        for x in spherical_transforms.uv_nodal_to_vor_div_modal(
+        for x in spherical_harmonics.uv_nodal_to_vor_div_modal(
             self.nodal_field_u, self.nodal_field_v, self.ylm_mapper
         )
     )
@@ -402,7 +402,7 @@ class GeometryMethodsTest(chex.TestCase):
     # With FixedYlmMapping
     actual_u, actual_v = (
         x.data
-        for x in spherical_transforms.vor_div_to_uv_nodal(
+        for x in spherical_harmonics.vor_div_to_uv_nodal(
             self.modal_field_u, self.modal_field_v, self.fixed_ylm_mapping
         )
     )
@@ -411,7 +411,7 @@ class GeometryMethodsTest(chex.TestCase):
     # With YlmMapper
     actual_u, actual_v = (
         x.data
-        for x in spherical_transforms.vor_div_to_uv_nodal(
+        for x in spherical_harmonics.vor_div_to_uv_nodal(
             self.modal_field_u, self.modal_field_v, self.ylm_mapper
         )
     )

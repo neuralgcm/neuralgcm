@@ -23,7 +23,7 @@ from dinosaur import sigma_coordinates
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import time_integrators
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
@@ -35,7 +35,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       sigma_levels: coordinates.SigmaLevels,
       sim_units: units.SimUnits,
       reference_temperatures: Sequence[float],
@@ -47,7 +47,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
       equation_cls=primitive_equations.MoistPrimitiveEquationsWithCloudMoisture,
       include_vertical_advection: bool = True,
   ):
-    self.ylm_transform = ylm_transform
+    self.ylm_map = ylm_map
     self.sigma_levels = sigma_levels
     self.orography_module = orography_module
     self.sim_units = sim_units
@@ -61,9 +61,9 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
   @property
   def primitive_equation(self):
     dinosaur_coords = coordinate_systems.CoordinateSystem(
-        horizontal=self.ylm_transform.dinosaur_grid,
+        horizontal=self.ylm_map.dinosaur_grid,
         vertical=self.sigma_levels.sigma_levels,
-        spmd_mesh=self.ylm_transform.dinosaur_spmd_mesh,
+        spmd_mesh=self.ylm_map.dinosaur_spmd_mesh,
     )
     return self.equation_cls(
         coords=dinosaur_coords,
@@ -95,7 +95,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
   def _from_primitive_equations_state(
       self, state: primitive_equations.State
   ) -> dict[str, cx.Field]:
-    sigma_levels, ylm_grid = self.sigma_levels, self.ylm_transform.modal_grid
+    sigma_levels, ylm_grid = self.sigma_levels, self.ylm_map.modal_grid
     tracers = {
         k: cx.wrap(state.tracers[k], sigma_levels, ylm_grid)
         for k in self.tracer_names

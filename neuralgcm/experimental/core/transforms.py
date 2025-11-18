@@ -41,7 +41,7 @@ from neuralgcm.experimental.core import normalizations
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spatial_filters
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
@@ -759,14 +759,14 @@ class StreamingStatsNormalization(TransformABC):
 class ToModal(TransformABC):
   """Transforms inputs from nodal to modal space."""
 
-  ylm_transform: (
-      spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  ylm_map: (
+      spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
   )
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     modal_outputs = {}
     for k, v in inputs.items():
-      modal_outputs[k] = self.ylm_transform.to_modal(v)
+      modal_outputs[k] = self.ylm_map.to_modal(v)
     return modal_outputs
 
 
@@ -774,14 +774,14 @@ class ToModal(TransformABC):
 class ToNodal(TransformABC):
   """Transforms inputs from modal to nodal space."""
 
-  ylm_transform: (
-      spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  ylm_map: (
+      spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
   )
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     nodal_outputs = {}
     for k, v in inputs.items():
-      nodal_outputs[k] = self.ylm_transform.to_nodal(v)
+      nodal_outputs[k] = self.ylm_map.to_nodal(v)
     return nodal_outputs
 
 
@@ -797,14 +797,14 @@ class ToModalWithFilteredGradients:
 
   def __init__(
       self,
-      ylm_transform: spherical_transforms.FixedYlmMapping,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
       filter_attenuations: tuple[float, ...] = tuple(),
   ):
-    self.ylm_transform = ylm_transform
+    self.ylm_map = ylm_map
     self.attenuations = filter_attenuations
     modal_filters = [
         spatial_filters.ExponentialModalFilter(
-            ylm_transform,
+            ylm_map,
             attenuation=a,
             order=1,
         )
@@ -819,10 +819,10 @@ class ToModalWithFilteredGradients:
     features = {}
     for k, x in inputs.items():
       name, cos_lat_order = k.name, k.factor_order
-      r = self.ylm_transform.radius
+      r = self.ylm_map.radius
       for filter_module, att in zip(self.modal_filters, self.attenuations):
-        d_x_dlon, d_x_dlat = self.ylm_transform.cos_lat_grad(x)
-        laplacian = self.ylm_transform.laplacian(x)
+        d_x_dlon, d_x_dlat = self.ylm_map.cos_lat_grad(x)
+        laplacian = self.ylm_map.laplacian(x)
         # since gradient values picked up cos_lat factor we increment the
         # corresponding key. This factor is adjusted at the caller level.
         dlon_key = typing.KeyWithCosLatFactor(
@@ -909,7 +909,7 @@ class ScaleToMatchCoarseFields(TransformABC):
 class VelocityFromModalDivCurl(TransformABC):
   """Transform divergence and vorticity in inputs to 2D velocity components."""
 
-  ylm_map: spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
   divergence_key: str = 'divergence'
   vorticity_key: str = 'vorticity'
   u_key: str = 'u_component_of_wind'
@@ -919,7 +919,7 @@ class VelocityFromModalDivCurl(TransformABC):
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     divergence = inputs[self.divergence_key]
     vorticity = inputs[self.vorticity_key]
-    u, v = spherical_transforms.vor_div_to_uv_nodal(
+    u, v = spherical_harmonics.vor_div_to_uv_nodal(
         vorticity, divergence, self.ylm_map, clip=self.clip
     )
     return {self.u_key: u, self.v_key: v}
@@ -929,7 +929,7 @@ class VelocityFromModalDivCurl(TransformABC):
 class DivCurlFromNodalVelocity(TransformABC):
   """Transform 2D velocity components to divergence and vorticity."""
 
-  ylm_map: spherical_transforms.FixedYlmMapping | spherical_transforms.YlmMapper
+  ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
   divergence_key: str = 'divergence'
   vorticity_key: str = 'vorticity'
   u_key: str = 'u_component_of_wind'
@@ -938,7 +938,7 @@ class DivCurlFromNodalVelocity(TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     u, v = inputs[self.u_key], inputs[self.v_key]
-    vorticity, div = spherical_transforms.uv_nodal_to_vor_div_modal(
+    vorticity, div = spherical_harmonics.uv_nodal_to_vor_div_modal(
         u, v, self.ylm_map, clip=self.clip
     )
     return {self.divergence_key: div, self.vorticity_key: vorticity}

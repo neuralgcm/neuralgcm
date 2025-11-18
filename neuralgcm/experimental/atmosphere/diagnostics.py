@@ -15,7 +15,6 @@
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
 import dataclasses
-import functools
 from typing import Literal, Protocol, Sequence
 
 import coordax as cx
@@ -26,9 +25,8 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
-from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
@@ -58,7 +56,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
   fluxes as positive and "upward" fluxes as negative.
   """
 
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
   moisture_species: tuple[str, ...] = (
@@ -73,7 +71,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
       tendencies: dict[str, cx.Field],
       prognostics: dict[str, cx.Field],
   ) -> dict[str, cx.Field]:
-    to_nodal = self.ylm_transform.to_nodal
+    to_nodal = self.ylm_map.to_nodal
     p_surface = cx.cmap(jnp.exp)(to_nodal(prognostics['log_surface_pressure']))
     scale = p_surface / self.sim_units.gravity_acceleration
     moisture_tendencies_nodal = [
@@ -96,7 +94,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
     else:
       prognostics = kwargs.get(self.prognostics_arg_key)
     p_plus_e_rate = self._compute_p_plus_e_rate(tendencies, prognostics)
-    p_plus_e_rate = cx.wrap(p_plus_e_rate, self.ylm_transform.nodal_grid)
+    p_plus_e_rate = cx.wrap(p_plus_e_rate, self.ylm_map.nodal_grid)
     return {'precipitation_plus_evaporation_rate': p_plus_e_rate}
 
 
@@ -283,7 +281,7 @@ class ExtractEnergyResiduals(nnx.Module):
 
   """
 
-  ylm_transform: spherical_transforms.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
   model_orography: orographies.ModalOrography
@@ -323,7 +321,7 @@ class ExtractEnergyResiduals(nnx.Module):
   ) -> tuple[cx.Field, cx.Field]:
     """Computes nodal kinetic energy and its tendency."""
     velocity_from_div_curl = transforms.VelocityFromModalDivCurl(
-        self.ylm_transform
+        self.ylm_map
     )
     winds = velocity_from_div_curl({
         'vorticity': prognostics['vorticity'],
@@ -347,7 +345,7 @@ class ExtractEnergyResiduals(nnx.Module):
       prognostics: dict[str, cx.Field],
   ) -> cx.Field:
     """Computes column energy tendency due to parameterization."""
-    to_nodal = self.ylm_transform.to_nodal
+    to_nodal = self.ylm_map.to_nodal
     p_surface_field = cx.cmap(jnp.exp)(
         to_nodal(prognostics['log_surface_pressure'])
     )
@@ -377,7 +375,7 @@ class ExtractEnergyResiduals(nnx.Module):
     hum_tend_nodal_field = to_nodal(tendencies['specific_humidity'])
 
     phi_s = cx.wrap(
-        self.model_orography.nodal_orography * g, self.ylm_transform.nodal_grid
+        self.model_orography.nodal_orography * g, self.ylm_map.nodal_grid
     )
     log_sp_tend = tendencies.get('log_surface_pressure')
     if log_sp_tend is not None:

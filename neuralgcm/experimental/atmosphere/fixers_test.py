@@ -14,7 +14,6 @@
 
 """Tests for atmosphere-specific diagnostics modules and utilities."""
 
-import functools
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -25,7 +24,7 @@ import jax.numpy as jnp
 from neuralgcm.experimental.atmosphere import fixers
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import spherical_transforms
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
 
 
@@ -38,7 +37,7 @@ class EnergyFixersTest(parameterized.TestCase):
     self.lon_lat_grid = coordinates.LonLatGrid.T21()
     self.sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
     self.mesh = parallelism.Mesh()
-    self.ylm_transform = spherical_transforms.FixedYlmMapping(
+    self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=self.lon_lat_grid,
         ylm_grid=self.ylm_grid,
         partition_schema_key=None,
@@ -59,7 +58,7 @@ class EnergyFixersTest(parameterized.TestCase):
 
   def test_temperature_energy_adjustment_shape_and_dtype(self):
     temp_adjustment = fixers.TemperatureAdjustmentForEnergyBalance(
-        ylm_transform=self.ylm_transform,
+        ylm_map=self.ylm_map,
         levels=self.sigma_levels,
         sim_units=self.sim_units,
     )

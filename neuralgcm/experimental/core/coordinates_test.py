@@ -22,6 +22,7 @@ from dinosaur import sigma_coordinates
 import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import xarray_utils
 import numpy as np
 
@@ -93,7 +94,7 @@ class CoordinatesTest(parameterized.TestCase):
           coords=parallelism.CoordinateShard(
               coordinate=coordinates.LonLatGrid.T42(),
               spmd_mesh_shape=collections.OrderedDict(x=2, y=1, z=2),
-              dimension_partitions={'longitude': None, 'latitude': None}
+              dimension_partitions={'longitude': None, 'latitude': None},
           ),
           expected_dims=('longitude', 'latitude'),
           expected_shape=(128, 64),  # unchanged.
@@ -104,7 +105,7 @@ class CoordinatesTest(parameterized.TestCase):
           coords=parallelism.CoordinateShard(
               coordinate=coordinates.LonLatGrid.T42(),
               spmd_mesh_shape=collections.OrderedDict(x=2, y=1, z=2),
-              dimension_partitions={'longitude': ('x', 'z'), 'latitude': None}
+              dimension_partitions={'longitude': ('x', 'z'), 'latitude': None},
           ),
           expected_dims=('longitude', 'latitude'),
           expected_shape=(32, 64),  # unchanged.
@@ -115,7 +116,7 @@ class CoordinatesTest(parameterized.TestCase):
           coords=parallelism.CoordinateShard(
               coordinate=coordinates.LonLatGrid.T42(),
               spmd_mesh_shape=collections.OrderedDict(x=2, y=4, z=2),
-              dimension_partitions={'longitude': 'x', 'latitude': ('y', 'z')}
+              dimension_partitions={'longitude': 'x', 'latitude': ('y', 'z')},
           ),
           expected_dims=('longitude', 'latitude'),
           expected_shape=(64, 8),  # unchanged.
@@ -170,9 +171,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
     pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
     coords = cx.compose_coordinates(*[
-        sigma_coord
-        if i == pos_sigma_axis
-        else cx.SizedAxis(f'ax{i}', shape[i])
+        sigma_coord if i == pos_sigma_axis else cx.SizedAxis(f'ax{i}', shape[i])
         for i in range(len(shape))
     ])
     data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
@@ -204,9 +203,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
     pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
     coords = cx.compose_coordinates(*[
-        sigma_coord
-        if i == pos_sigma_axis
-        else cx.SizedAxis(f'ax{i}', shape[i])
+        sigma_coord if i == pos_sigma_axis else cx.SizedAxis(f'ax{i}', shape[i])
         for i in range(len(shape))
     ])
     data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
@@ -236,7 +233,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     )
     # data that is 1 everywhere except 2 on first half of longitudes
     data = np.ones(grid.shape)
-    data[:(n_lon // 2), :] = 2
+    data[: (n_lon // 2), :] = 2
     field = cx.wrap(data, grid)
 
     field_lat = grid.integrate(field, dims='longitude')
@@ -252,6 +249,33 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     sclar_from_lat = grid.integrate(field_lat, dims='latitude')
     cx.testing.assert_fields_allclose(sclar_from_lon, scalar)
     cx.testing.assert_fields_allclose(sclar_from_lat, scalar)
+
+  @parameterized.named_parameters(
+      dict(testcase_name='float', c=2.5),
+      dict(testcase_name='array', c=np.array(2.5)),
+      dict(
+          testcase_name='field_with_named_axes',
+          c=cx.wrap(np.eye(3), cx.SizedAxis('a', 3), cx.SizedAxis('b', 3)),
+      ),
+  )
+  def test_spherical_harmonic_grid_add_constant(self, c):
+    """Tests that `add_constant` is consistent with nodal addition."""
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    x_data = np.zeros(ylm_grid.shape)
+    rng = np.random.RandomState(4)
+    x_data[0, 0] = 0.13
+    x_data[2:4, 2:6] = rng.uniform(size=(2, 4))
+    x = cx.wrap(x_data, ylm_grid)
+    grid = coordinates.LonLatGrid.T21()
+    ylm_map = spherical_harmonics.FixedYlmMapping(
+        lon_lat_grid=grid,
+        ylm_grid=ylm_grid,
+        mesh=parallelism.Mesh(),
+        partition_schema_key=None,
+    )
+    expected = ylm_map.to_modal(ylm_map.to_nodal(x) + c)
+    actual = ylm_grid.add_constant(x, c)
+    coordax_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
 
 if __name__ == '__main__':

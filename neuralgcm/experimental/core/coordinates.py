@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import functools
-from typing import Any, Iterable, Literal, Self, TYPE_CHECKING, cast, Sequence
+from typing import Any, Iterable, Literal, Self, Sequence, TYPE_CHECKING, cast
 
 import coordax as cx
 from dinosaur import coordinate_systems as dinosaur_coordinates
@@ -52,6 +52,8 @@ SPHERICAL_HARMONICS_METHODS = {
     'real': RealSphericalHarmonics,
     'fast': FastSphericalHarmonics,
 }
+# factor for globally constant conversion from real to YLM basis.
+_YLM_CONSTANT_NORMALIZATION_FACTOR = 3.5449077
 
 
 def _in_treescope_abbreviation_mode() -> bool:
@@ -264,7 +266,7 @@ class LonLatGrid(cx.Coordinate):
       return radius**2 * jnp.sum(array[: self.latitude_nodes] * lat_w)
 
     def _integrate(array):
-      unpadded = array[:self.longitude_nodes, :self.latitude_nodes]
+      unpadded = array[: self.longitude_nodes, : self.latitude_nodes]
       return radius**2 * jnp.sum(unpadded * lat_w * lon_w)
 
     dims_tuple = tuple(sorted({dims} if isinstance(dims, str) else set(dims)))
@@ -278,7 +280,7 @@ class LonLatGrid(cx.Coordinate):
         return cx.cmap(_integrate)(x.untag(self))
       case _:
         raise ValueError(
-            f'dims must be "longitude", "latitude", or a sequence '
+            'dims must be "longitude", "latitude", or a sequence '
             f'thereof, got {dims}'
         )
 
@@ -551,7 +553,31 @@ class SphericalHarmonicGrid(cx.Coordinate):
     mask_field = cx.wrap(mask, self)
     return axes_fields | {'mask': mask_field}
 
-  def clip_wavenumbers(self, inputs: Any, n: int) -> Any:
+  def add_constant(
+      self,
+      x: cx.Field,
+      c: float | jax.Array | cx.Field,
+  ) -> cx.Field:
+    """Adds the constant `c` to the field `x` in the spectral basis."""
+    if not cx.is_field(c):
+      c = cx.wrap(jnp.squeeze(c))
+    assert isinstance(c, cx.Field)  # make pytype happy.
+    if c.positional_shape:
+      raise ValueError(
+          f'Adding non-scalar constants without axes is not supported. {c=}'
+      )
+    if any(d in self.dims for d in c.dims):
+      raise ValueError(
+          f'Coordinate {c} cannot have any of the dimensions {self.dims}.'
+      )
+
+    def add_fn(x, y):
+      x = jnp.asarray(x)
+      return x.at[0, 0].add(_YLM_CONSTANT_NORMALIZATION_FACTOR * y)
+
+    return cx.cmap(add_fn)(x.untag(self), c).tag(self)
+
+  def clip_wavenumbers(self, x: cx.Field, n: int) -> cx.Field:
     if n <= 0:
       raise ValueError(f'`n` must be >= 0; got {n}.')
 
@@ -562,10 +588,11 @@ class SphericalHarmonicGrid(cx.Coordinate):
       mask = jnp.ones(self.shape[-1], x.dtype).at[-num_zeros:].set(0)
       return x * mask
 
-    return jax.tree.map(clip, inputs)
+    return cx.cpmap(clip)(x.untag(self)).tag(self)
 
   def __lt__(self, other: SphericalHarmonicGrid) -> bool:
     """Custom comparison operator for sorting SphericalHarmonicGrids."""
+
     # Implementing __lt__ enables SphericalHarmonicGrid to be keys in a dict
     # and be compatible with jax.tree. operations.
     def _to_tuple(x):
@@ -857,7 +884,9 @@ class SigmaLevels(cx.Coordinate):
     """Integrates `x` over the sigma levels."""
     sigma_integrate = functools.partial(
         sigma_coordinates.sigma_integral,
-        coordinates=self.sigma_levels, axis=0, keepdims=False
+        coordinates=self.sigma_levels,
+        axis=0,
+        keepdims=False,
     )
     return cx.cmap(sigma_integrate)(x.untag(self))
 
@@ -871,7 +900,9 @@ class SigmaLevels(cx.Coordinate):
     """Integrates `x` over the sigma levels."""
     sigma_cumulative_integrate = functools.partial(
         sigma_coordinates.cumulative_sigma_integral,
-        coordinates=self.sigma_levels, axis=0, downward=downward,
+        coordinates=self.sigma_levels,
+        axis=0,
+        downward=downward,
         cumsum_method=cumsum_method,
         sharding=sharding,
     )

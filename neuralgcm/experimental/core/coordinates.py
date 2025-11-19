@@ -885,7 +885,15 @@ class SigmaLevels(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'sigma': cx.wrap(self.sigma_levels.centers, self)}
+    boundaries, centers = self.boundaries, self.sigma_levels.centers
+    return {
+        'sigma': cx.wrap(centers, self),
+        'sigma_boundaries': cx.wrap(boundaries, SigmaBoundaries(boundaries)),
+    }
+
+  @functools.cached_property
+  def sigma_boundaries(self) -> SigmaBoundaries:
+    return SigmaBoundaries(boundaries=self.boundaries)
 
   def integrate(self, x: cx.Field) -> cx.Field:
     """Integrates `x` over the sigma levels."""
@@ -934,6 +942,13 @@ class SigmaLevels(cx.Coordinate):
   def __hash__(self) -> int:
     return hash(self._components())
 
+  def to_sigma_boundaries(self) -> SigmaBoundaries:
+    return SigmaBoundaries(boundaries=self.boundaries)
+
+  @classmethod
+  def from_sigma_boundaries(cls, sigma_boundaries: SigmaBoundaries) -> Self:
+    return cls(boundaries=sigma_boundaries.boundaries)
+
   @classmethod
   def from_dinosaur_sigma_levels(
       cls,
@@ -976,6 +991,54 @@ class SigmaLevels(cx.Coordinate):
           f' {actual_centers} vs {centers}.'
       )
     return candidate
+
+
+@jax.tree_util.register_static
+@dataclasses.dataclass(frozen=True)
+class SigmaBoundaries(SigmaLevels):
+  """Coordinate that represents boundaries of SigmaLevels."""
+
+  @property
+  def dims(self):
+    return ('sigma_boundaries',)
+
+  @property
+  def shape(self) -> tuple[int, ...]:
+    return self.boundaries.shape
+
+  @property
+  def fields(self):
+    boundaries, centers = self.boundaries, self.sigma_levels.centers
+    return {
+        'sigma_boundaries': cx.wrap(boundaries, self),
+        'sigma': cx.wrap(centers, SigmaLevels(boundaries)),
+    }
+
+  def __eq__(self, other):
+    return (
+        isinstance(other, SigmaBoundaries)
+        and self._components() == other._components()
+    )
+
+  def __hash__(self) -> int:
+    return hash((self._components(), 'boundaries'))
+
+  def to_sigma_levels(self) -> SigmaLevels:
+    return SigmaLevels(boundaries=self.boundaries)
+
+  @classmethod
+  def from_sigma_levels(cls, sigma_levels: SigmaLevels) -> Self:
+    return cls(boundaries=sigma_levels.boundaries)
+
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self | cx.NoCoordinateMatch:
+    dim = dims[0]
+    if dim != 'sigma_boundaries':
+      return cx.NoCoordinateMatch(f'dimension {dim!r} != "sigma_boundaries"')
+    sigma_dim = dim.removesuffix('_boundaries')
+    return cls.from_sigma_levels(SigmaLevels.from_xarray((sigma_dim,), coords))
 
 
 @jax.tree_util.register_static

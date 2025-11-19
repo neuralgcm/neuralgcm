@@ -54,6 +54,15 @@ class CoordinatesTest(parameterized.TestCase):
           expected_shape=(4, 5, 3),
       ),
       dict(
+          testcase_name='sigma_and_sigma_boundaries',
+          coords=cx.compose_coordinates(
+              coordinates.SigmaLevels.equidistant(4),
+              coordinates.SigmaBoundaries.equidistant(4),
+          ),
+          expected_dims=('sigma', 'sigma_boundaries'),
+          expected_shape=(4, 5),
+      ),
+      dict(
           testcase_name='sigma_spherical_harmonic_product',
           coords=cx.compose_coordinates(
               coordinates.SigmaLevels.equidistant(4),

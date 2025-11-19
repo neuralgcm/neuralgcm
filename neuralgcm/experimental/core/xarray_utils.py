@@ -162,6 +162,7 @@ def field_from_xarray(
       coordinates.SphericalHarmonicGrid,
       coordinates.PressureLevels,
       coordinates.SigmaLevels,
+      coordinates.SigmaBoundaries,
       coordinates.LayerLevels,
       cx.DummyAxis,
   )

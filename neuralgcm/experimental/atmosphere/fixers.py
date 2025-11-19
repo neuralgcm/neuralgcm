@@ -56,6 +56,11 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
   sim_units: units.SimUnits
   transform: transforms.TransformABC | None = None
   prognostics_arg_key: str | int = 'prognostics'
+  imbalance_diagnostic_key: str = 'imbalance'
+
+  @property
+  def imbalance_query(self) -> dict[str, cx.Coordinate]:
+    return {self.imbalance_diagnostic_key: self.ylm_map.nodal_grid}
 
   def __call__(
       self,

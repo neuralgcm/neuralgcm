@@ -570,12 +570,19 @@ class SphericalHarmonicGrid(cx.Coordinate):
       raise ValueError(
           f'Coordinate {c} cannot have any of the dimensions {self.dims}.'
       )
+    if not set(c.dims).issubset(x.dims):
+      raise ValueError(
+          'Introduction of new axes via add_constant is not supported. For'
+          f' that coordinate {c} must have dimensions that are subset of the'
+          f' dimensions {x.dims=} but it is not.'
+      )
 
     def add_fn(x, y):
       x = jnp.asarray(x)
       return x.at[0, 0].add(_YLM_CONSTANT_NORMALIZATION_FACTOR * y)
 
-    return cx.cmap(add_fn)(x.untag(self), c).tag(self)
+    x = x.untag(self)
+    return cx.cmap(add_fn, x.named_axes)(x, c).tag(self)
 
   def clip_wavenumbers(self, x: cx.Field, n: int) -> cx.Field:
     if n <= 0:

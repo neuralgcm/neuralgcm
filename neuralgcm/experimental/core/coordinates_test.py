@@ -261,11 +261,14 @@ class CoordinatesMethodsTest(parameterized.TestCase):
   def test_spherical_harmonic_grid_add_constant(self, c):
     """Tests that `add_constant` is consistent with nodal addition."""
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    x_data = np.zeros(ylm_grid.shape)
+    a, b = cx.SizedAxis('a', 3), cx.SizedAxis('b', 3)
+    levels = coordinates.SigmaLevels.equidistant(4)
+    coords = cx.compose_coordinates(a, levels, b, ylm_grid)
+    x_data = np.zeros(coords.shape)
     rng = np.random.RandomState(4)
-    x_data[0, 0] = 0.13
-    x_data[2:4, 2:6] = rng.uniform(size=(2, 4))
-    x = cx.wrap(x_data, ylm_grid)
+    x_data[:, :, :, 0, 0] = 0.13
+    x_data[:, :, :, 2:4, 2:6] = rng.uniform(size=(2, 4))
+    x = cx.wrap(x_data, coords)
     grid = coordinates.LonLatGrid.T21()
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=grid,
@@ -276,6 +279,39 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     expected = ylm_map.to_modal(ylm_map.to_nodal(x) + c)
     actual = ylm_grid.add_constant(x, c)
     coordax_testing.assert_fields_allclose(actual, expected, atol=1e-5)
+
+  def test_spherical_harmonic_grid_add_constant_raises_with_positional_axes(
+      self,
+  ):
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    x = cx.wrap(np.zeros(ylm_grid.shape), ylm_grid)
+    c = cx.wrap(np.arange(3.0))
+    with self.assertRaisesRegex(
+        ValueError, 'Adding non-scalar constants without axes is not supported'
+    ):
+      ylm_grid.add_constant(x, c)
+
+  def test_spherical_harmonic_grid_add_constant_raises_with_conflicting_axes(
+      self,
+  ):
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    x = cx.wrap(np.zeros(ylm_grid.shape), ylm_grid)
+    conflicting_axis = cx.SizedAxis('total_wavenumber', ylm_grid.shape[-1])
+    c = cx.wrap(np.zeros(ylm_grid.shape[-1]), conflicting_axis)
+    with self.assertRaisesRegex(
+        ValueError, 'cannot have any of the dimensions'
+    ):
+      ylm_grid.add_constant(x, c)
+
+  def test_spherical_harmonic_grid_add_constant_raises_with_new_axes(self):
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    levels = coordinates.SigmaLevels.equidistant(4)
+    x = cx.wrap(np.zeros(levels.shape + ylm_grid.shape), levels, ylm_grid)
+    c = cx.wrap(np.arange(5), cx.SizedAxis('new_dim', 5))
+    with self.assertRaisesRegex(
+        ValueError, 'Introduction of new axes via add_constant is not supported'
+    ):
+      ylm_grid.add_constant(x, c)
 
 
 if __name__ == '__main__':

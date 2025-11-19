@@ -25,9 +25,99 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import time_integrators
+from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
+
+
+def get_temperature_linearization_transform(
+    ref_temperatures: Sequence[float] | cx.Field,
+    levels: coordinates.SigmaLevels | None,
+    abs_temperature_key: str = 'temperature',
+    del_temperature_key: str = 'temperature_variation',
+) -> transforms.Transform:
+  """Constructs transform for linearizing temperature around `ref_temperature`."""
+  if isinstance(ref_temperatures, cx.Field):
+    if levels is not None and cx.get_coordinate(ref_temperatures) != levels:
+      raise ValueError(
+          f'ref_temperatures coordinate {cx.get_coordinate(ref_temperatures)}'
+          f' does not match levels coordinate {levels}.'
+      )
+    ref_temp_field = ref_temperatures
+  else:  # Sequence[float]
+    if levels is None:
+      raise ValueError(
+          '`levels` must be provided for sequence `ref_temperatures`'
+      )
+    ref_temp_field = cx.wrap(np.array(ref_temperatures), levels)
+
+  def linearize_fn(abs_temp: cx.Field) -> cx.Field:
+    canonical = cx.canonicalize_coordinates(abs_temp.coordinate)
+    ylm_set = set(
+        c for c in canonical if isinstance(c, coordinates.SphericalHarmonicGrid)
+    )
+    if ylm_set:
+      assert len(ylm_set) == 1  # cannot have multiple ylm grids.
+      [ylm_grid] = list(ylm_set)
+      del_temp = ylm_grid.add_constant(abs_temp, -ref_temp_field)
+    else:
+      del_temp = abs_temp - ref_temp_field
+    return del_temp
+
+  return transforms.Sequential([
+      transforms.ApplyFnToKeys(
+          fn=linearize_fn,
+          keys=[abs_temperature_key],
+          include_remaining=True,
+      ),
+      transforms.Rename(rename_dict={abs_temperature_key: del_temperature_key}),
+  ])
+
+
+def get_temperature_delinearization_transform(
+    ref_temperatures: Sequence[float] | cx.Field,
+    levels: coordinates.SigmaLevels | None,
+    abs_temperature_key: str = 'temperature',
+    del_temperature_key: str = 'temperature_variation',
+) -> transforms.Transform:
+  """Constructs transform for reversing temperature linearization."""
+  if isinstance(ref_temperatures, cx.Field):
+    if levels is not None and cx.get_coordinate(ref_temperatures) != levels:
+      raise ValueError(
+          f'ref_temperatures coordinate {cx.get_coordinate(ref_temperatures)}'
+          f' does not match levels coordinate {levels}.'
+      )
+    ref_temp_field = ref_temperatures
+  else:  # Sequence[float]
+    if levels is None:
+      raise ValueError(
+          '`levels` must be provided for sequence `ref_temperatures`'
+      )
+    ref_temp_field = cx.wrap(np.array(ref_temperatures), levels)
+
+  def delinearize_fn(del_temp: cx.Field) -> cx.Field:
+    """Applies delinearization to `del_temp` field."""
+    canonical = cx.canonicalize_coordinates(del_temp.coordinate)
+    ylm_set = set(
+        c for c in canonical if isinstance(c, coordinates.SphericalHarmonicGrid)
+    )
+    if ylm_set:
+      assert len(ylm_set) == 1  # impossible to have multiple ylm grids.
+      [ylm_grid] = list(ylm_set)
+      abs_temp = ylm_grid.add_constant(del_temp, ref_temp_field)
+    else:
+      abs_temp = del_temp + ref_temp_field
+    return abs_temp
+
+  return transforms.Sequential([
+      transforms.ApplyFnToKeys(
+          fn=delinearize_fn,
+          keys=[del_temperature_key],
+          include_remaining=True,
+      ),
+      transforms.Rename(rename_dict={del_temperature_key: abs_temperature_key}),
+  ])
 
 
 class PrimitiveEquations(time_integrators.ImplicitExplicitODE):

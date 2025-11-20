@@ -15,7 +15,7 @@
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
 import dataclasses
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Protocol
 
 import coordax as cx
 from dinosaur import sigma_coordinates
@@ -271,14 +271,15 @@ class ExtractEnergyResiduals(nnx.Module):
   The module returns the imbalance: (RT - FS) - dE/dt|_NN
   where RT and FS are TOA and surface fluxes obtained from
   observation_operator.
+
   If use_evaporation_for_latent_heat is True, FS uses latent heat flux
   derived from mean_evaporation_rate (by multiplying by Lv which is inaccurate
   in ice covered regions), otherwise it uses surface_latent_heat_flux
   from net_energy_terms.
+
   If use_liquid_ice_moist_static_energy is True, qi is included in the
   column energy integral and we need to predict also snowfall to close budget,
   otherwise it is excluded.
-
   """
 
   ylm_map: spherical_harmonics.FixedYlmMapping
@@ -287,7 +288,6 @@ class ExtractEnergyResiduals(nnx.Module):
   model_orography: orographies.ModalOrography
   observation_operator: observation_operators.ObservationOperator
   in_out_fluxes_query: dict[str, cx.Coordinate]
-  reference_temperature: Sequence[float]
   prognostics_arg_key: str | int = 'prognostics'
   use_evaporation_for_latent_heat: bool = False
   use_liquid_ice_moist_static_energy: bool = False
@@ -354,9 +354,7 @@ class ExtractEnergyResiduals(nnx.Module):
     g = self.sim_units.gravity_acceleration
     lf = self.sim_units.Lf
 
-    t_nodal_field = to_nodal(prognostics['temperature_variation']) + cx.wrap(
-        jnp.asarray(self.reference_temperature), self.levels
-    )
+    t_nodal_field = to_nodal(prognostics['temperature'])
     q_nodal_field = to_nodal(prognostics['specific_humidity'])
 
     if self.use_liquid_ice_moist_static_energy:
@@ -371,12 +369,10 @@ class ExtractEnergyResiduals(nnx.Module):
     k_nodal_field, dk_dt_nodal_field = self._compute_ke_and_tendency(
         tendencies, prognostics
     )
-    temp_tend_nodal_field = to_nodal(tendencies['temperature_variation'])
+    temp_tend_nodal_field = to_nodal(tendencies['temperature'])
     hum_tend_nodal_field = to_nodal(tendencies['specific_humidity'])
 
-    phi_s = cx.wrap(
-        self.model_orography.nodal_orography * g, self.ylm_map.nodal_grid
-    )
+    phi_s = self.model_orography.nodal_orography * g
     log_sp_tend = tendencies.get('log_surface_pressure')
     if log_sp_tend is not None:
       log_sp_tend_nodal_field = to_nodal(log_sp_tend)

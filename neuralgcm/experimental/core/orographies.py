@@ -21,7 +21,6 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
-from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 from neuralgcm.experimental.core import xarray_utils
 import xarray
@@ -46,15 +45,18 @@ class ModalOrography(nnx.Module):
     self.orography = OrographyVariable(initializer(rngs, modal_shape_1d))
 
   @property
-  def nodal_orography(self) -> typing.Array:
-    return self.ylm_map.to_nodal_array(self.modal_orography)
+  def nodal_orography(self) -> cx.Field:
+    return self.ylm_map.to_nodal(self.modal_orography)
 
   @property
-  def modal_orography(self) -> typing.Array:
+  def modal_orography(self) -> cx.Field:
     """Returns orography converted to modal representation with filtering."""
-    mask = self.ylm_map.modal_grid.fields['mask']
-    modal_orography_2d = jnp.zeros(self.ylm_map.modal_grid.shape)
-    return modal_orography_2d.at[mask.data].set(self.orography.value)
+    ylm_grid = self.ylm_map.modal_grid
+    mask = ylm_grid.fields['mask']
+    modal_orography_2d = jnp.zeros(ylm_grid.shape)
+    return cx.wrap(
+        modal_orography_2d.at[mask.data].set(self.orography.value), ylm_grid
+    )
 
   def update_orography_from_data(
       self,
@@ -76,9 +78,7 @@ class ModalOrography(nnx.Module):
     if not isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       nodal_orography = spatial_filter(nodal_orography)
     modal_orography = data_ylm_map.to_modal_array(nodal_orography)
-    interpolator = interpolators.SpectralRegridder(
-        self.ylm_map.modal_grid
-    )
+    interpolator = interpolators.SpectralRegridder(self.ylm_map.modal_grid)
     modal_orography = interpolator(
         cx.wrap(modal_orography, data_ylm_map.modal_grid)
     )
@@ -105,23 +105,24 @@ class ModalOrographyWithCorrection(ModalOrography):
       ),
       rngs: nnx.Rngs,
   ):
-    super().__init__(
-        ylm_map=ylm_map, initializer=initializer, rngs=rngs
-    )
+    super().__init__(ylm_map=ylm_map, initializer=initializer, rngs=rngs)
     self.correction_scale = correction_scale
     self.correction = correction_param_type(
         correction_initializer(rngs.params(), self.orography.shape)
     )
 
   @property
-  def modal_orography(self) -> typing.Array:
+  def modal_orography(self) -> cx.Field:
     """Returns orography converted to modal representation with filtering."""
-    mask = self.ylm_map.modal_grid.fields['mask'].data
+    ylm_grid = self.ylm_map.modal_grid
+    mask = ylm_grid.fields['mask']
     modal_orography_2d = jnp.zeros(mask.shape)
     modal_orography_1d = (
         self.orography.value + self.correction.value * self.correction_scale
     )
-    return modal_orography_2d.at[mask].set(modal_orography_1d)
+    return cx.wrap(
+        modal_orography_2d.at[mask.data].set(modal_orography_1d), ylm_grid
+    )
 
 
 class Orography(nnx.Module):
@@ -138,8 +139,8 @@ class Orography(nnx.Module):
     self.orography = OrographyVariable(initializer(rngs, grid.shape))
 
   @property
-  def nodal_orography(self) -> typing.Array:
-    return self.orography.value
+  def nodal_orography(self) -> cx.Field:
+    return cx.wrap(self.orography.value, self.grid)
 
   def update_orography_from_data(
       self,

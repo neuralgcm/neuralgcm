@@ -48,7 +48,7 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
   that this should be equal to `imbalance`.
   The adjustment delta_T is computed as:
   delta_T = imbalance * g / (p_s * Cp)
-  This adjustment is added to `tendencies['temperature_variation']`.
+  This adjustment is added to `tendencies['temperature']`.
   """
 
   ylm_map: spherical_harmonics.FixedYlmMapping
@@ -101,5 +101,5 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
     delta_t_tendency = imbalance['imbalance'] * g / (cp * p_surface)
 
     delta_t_tendency_modal = self.ylm_map.to_modal(delta_t_tendency)
-    tendencies['temperature_variation'] += delta_t_tendency_modal
+    tendencies['temperature'] += delta_t_tendency_modal
     return tendencies

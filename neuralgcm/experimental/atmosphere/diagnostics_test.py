@@ -62,7 +62,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     self.prognostics = {
         'divergence': ones_like(full_modal),
         'vorticity': ones_like(full_modal),
-        'temperature_variation': ones_like(full_modal),
+        'temperature': ones_like(full_modal),
         'specific_humidity': ones_like(full_modal),
         'specific_cloud_ice_water_content': ones_like(full_modal),
         'specific_cloud_liquid_water_content': ones_like(full_modal),
@@ -164,16 +164,13 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
     self.prognostics = {
         'divergence': ones_like(full_modal),
         'vorticity': ones_like(full_modal),
-        'temperature_variation': ones_like(full_modal),
+        'temperature': ones_like(full_modal),
         'specific_humidity': ones_like(full_modal),
         'specific_cloud_ice_water_content': ones_like(full_modal),
         'specific_cloud_liquid_water_content': ones_like(full_modal),
         'log_surface_pressure': ones_like(self.ylm_grid),
     }
     self.tendencies = {k: 0.1 * v for k, v in self.prognostics.items()}
-    self.reference_temperatures = jnp.linspace(
-        300, 200, self.sigma_levels.shape[0]
-    )
     self.model_orography = orographies.ModalOrography(
         ylm_map=self.ylm_map, rngs=nnx.Rngs(0)
     )
@@ -203,7 +200,6 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
         model_orography=self.model_orography,
         observation_operator=self.observation_operator,
         in_out_fluxes_query=self.energy_query,
-        reference_temperature=self.reference_temperatures,
     )
     imbalance = energy_residuals(
         self.tendencies, prognostics=self.prognostics

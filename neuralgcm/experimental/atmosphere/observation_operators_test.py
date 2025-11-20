@@ -68,7 +68,7 @@ class ObservationOperatorsTest(parameterized.TestCase):
         'divergence': zero_like(self.source_coords),
         'vorticity': zero_like(self.source_coords),
         'specific_humidity': zero_like(self.source_coords),
-        'temperature_variation': zero_like(self.source_coords),
+        'temperature': zero_like(self.source_coords),
         'log_surface_pressure': zero_like(self.sh_grid),
         'time': cx.wrap(jdt.to_datetime('2001-01-01')),
     }
@@ -78,15 +78,12 @@ class ObservationOperatorsTest(parameterized.TestCase):
     target_coords = coordinates.DinosaurCoordinates(
         horizontal=self.grid, vertical=pressure_levels
     )
-    operator = observation_operators.PressureLevelObservationOperator(
+    operator = observation_operators.StandardVariablesObservationOperator(
         ylm_map=self.ylm_map,
-        sigma_levels=self.input_sigma_levels,
-        primitive_equation=self.primitive_equations,
         orography=self.orography_module,
-        pressure_levels=pressure_levels,
+        levels=pressure_levels,
         sim_units=self.sim_units,
         observation_correction=None,
-        tracer_names=['specific_humidity'],
         mesh=self.mesh,
     )
     query = {
@@ -103,15 +100,12 @@ class ObservationOperatorsTest(parameterized.TestCase):
     target_coords = coordinates.DinosaurCoordinates(
         horizontal=self.grid, vertical=target_sigma_levels
     )
-    operator = observation_operators.SigmaLevelObservationOperator(
-        primitive_equation=self.primitive_equations,
+    operator = observation_operators.StandardVariablesObservationOperator(
         ylm_map=self.ylm_map,
-        sigma_levels=self.input_sigma_levels,
         orography=self.orography_module,
-        target_sigma_levels=target_sigma_levels,
+        levels=target_sigma_levels,
         sim_units=self.sim_units,
         observation_correction=None,
-        tracer_names=['specific_humidity'],
         mesh=self.mesh,
     )
     query = {

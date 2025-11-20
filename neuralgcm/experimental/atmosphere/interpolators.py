@@ -15,7 +15,7 @@
 """Modules for interpolating between atmosphere specific coordinates."""
 
 import dataclasses
-from typing import Literal, Sequence, Type
+from typing import Literal, Sequence
 import coordax as cx
 from flax import nnx
 import jax

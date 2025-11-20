@@ -127,17 +127,7 @@ class OrographyFeatures(transforms.TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
-    # TODO(dkochkov): update orographies to return fields.
-    if isinstance(self.orography_module, orographies.ModalOrography):
-      grid = self.orography_module.ylm_map.nodal_grid
-    elif isinstance(self.orography_module, orographies.Orography):
-      grid = self.orography_module.grid
-    else:
-      raise ValueError(
-          'orography_module must be either ModalOrography or Orography, but'
-          f' got {type(self.orography_module)}'
-      )
-    return {'orography': cx.wrap(self.orography_module.nodal_orography, grid)}
+    return {'orography': self.orography_module.nodal_orography}
 
 
 @nnx_compat.dataclass
@@ -151,11 +141,8 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
     ylm_map = self.orography_module.ylm_map
-    ylm_grid = ylm_map.modal_grid
     grid = ylm_map.nodal_grid
-    modal_features = {
-        'orography': cx.wrap(self.orography_module.modal_orography, ylm_grid)
-    }
+    modal_features = {'orography': self.orography_module.modal_orography}
     modal_features = {
         typing.KeyWithCosLatFactor(k, 0): v for k, v in modal_features.items()
     }

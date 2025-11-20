@@ -147,6 +147,15 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     self.vertical_advection = vertical_advection
     self.include_vertical_advection = include_vertical_advection
     self.equation_cls = equation_cls
+    self.linearize_transform = get_temperature_linearization_transform(
+        ref_temperatures=reference_temperatures, levels=sigma_levels
+    )
+    self.delinearize_transform = get_temperature_delinearization_transform(
+        ref_temperatures=reference_temperatures, levels=sigma_levels
+    )
+    self.linear_to_absolute_rename = transforms.Rename(
+        rename_dict={'temperature_variation': 'temperature'}
+    )
 
   @property
   def primitive_equation(self):
@@ -159,7 +168,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
         coords=dinosaur_coords,
         physics_specs=self.sim_units,
         reference_temperature=np.asarray(self.reference_temperatures),
-        orography=self.orography_module.modal_orography,
+        orography=self.orography_module.modal_orography.data,
         vertical_advection=self.vertical_advection,
         include_vertical_advection=self.include_vertical_advection,
     )
@@ -172,6 +181,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
       self, inputs: dict[str, cx.Field]
   ) -> primitive_equations.State:
     """Converts a dict of fields to a primitive equations state."""
+    inputs = self.linearize_transform(inputs)
     tracers_dict = {k: inputs[k].data for k in self.tracer_names}
     log_surface_pressure = inputs['log_surface_pressure'].data[np.newaxis]
     return primitive_equations.State(
@@ -183,7 +193,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     )
 
   def _from_primitive_equations_state(
-      self, state: primitive_equations.State
+      self, state: primitive_equations.State, is_tendency: bool = True
   ) -> dict[str, cx.Field]:
     sigma_levels, ylm_grid = self.sigma_levels, self.ylm_map.modal_grid
     tracers = {
@@ -195,21 +205,21 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
         k: cx.wrap(getattr(state, k), sigma_levels, ylm_grid)
         for k in volume_field_names
     }
+    if is_tendency:
+      volume_fields = self.linear_to_absolute_rename(volume_fields)
+    else:
+      volume_fields = self.delinearize_transform(volume_fields)
     lsp = cx.wrap(jnp.squeeze(state.log_surface_pressure, axis=0), ylm_grid)
     return volume_fields | tracers | {'log_surface_pressure': lsp}
 
-  def explicit_terms(
-      self, state: primitive_equations.StateWithTime
-  ) -> primitive_equations.StateWithTime:
+  def explicit_terms(self, state: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return self._from_primitive_equations_state(
         self.primitive_equation.explicit_terms(
             self._to_primitive_equations_state(state)
         )
     )
 
-  def implicit_terms(
-      self, state: primitive_equations.StateWithTime
-  ) -> primitive_equations.StateWithTime:
+  def implicit_terms(self, state: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return self._from_primitive_equations_state(
         self.primitive_equation.implicit_terms(
             self._to_primitive_equations_state(state)
@@ -217,10 +227,10 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     )
 
   def implicit_inverse(
-      self, state: primitive_equations.StateWithTime, step_size: float
-  ) -> primitive_equations.StateWithTime:
+      self, state: dict[str, cx.Field], step_size: float
+  ) -> dict[str, cx.Field]:
     return self._from_primitive_equations_state(
         self.primitive_equation.implicit_inverse(
             self._to_primitive_equations_state(state), step_size
-        )
+        ), is_tendency=False
     )

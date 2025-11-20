@@ -48,7 +48,7 @@ class EnergyFixersTest(parameterized.TestCase):
     self.prognostics = {
         'divergence': ones_like(full_modal),
         'vorticity': ones_like(full_modal),
-        'temperature_variation': ones_like(full_modal),
+        'temperature': ones_like(full_modal),
         'specific_humidity': ones_like(full_modal),
         'specific_cloud_ice_water_content': ones_like(full_modal),
         'specific_cloud_liquid_water_content': ones_like(full_modal),

@@ -15,7 +15,7 @@
 """Modules for interpolating between atmosphere specific coordinates."""
 
 import dataclasses
-from typing import Literal, Sequence
+from typing import Literal, Sequence, Type
 import coordax as cx
 from flax import nnx
 import jax
@@ -315,3 +315,51 @@ class ConservativeOnPressure(nnx.Module):
     if self.include_surface_pressure_in_output:
       out['surface_pressure'] = surface_pressure
     return out
+
+
+def get_surface_pressure(
+    geopotential: cx.Field,
+    geopotential_at_surface: cx.Field,
+    sim_units: units.SimUnits | None = None,
+) -> cx.Field:
+  """Computes surface pressure from geopotential on pressure levels.
+
+  Args:
+    geopotential: geopotential Field with pressure level axis.
+    geopotential_at_surface: geopotential at the surface.
+    sim_units: optional object describing simulation units. If provided,
+      the returned surface pressure will be nondimensionalized. Otherwise
+      returns surface pressure in hPa.
+
+  Returns:
+    Surface pressure field on a horizontal grid.
+  """
+  canonical = cx.canonicalize_coordinates(geopotential.coordinate)
+  levels = [c for c in canonical if isinstance(c, coordinates.PressureLevels)]
+  if len(levels) != 1:
+    raise ValueError(
+        f'geopotential must have exactly 1 pressure-like coord, got {levels}'
+    )
+  [levels] = levels
+  pressure = levels.fields['pressure']
+  if sim_units is not None:
+    assert isinstance(sim_units, units.SimUnits)
+    pressure = cx.wrap(
+        sim_units.nondimensionalize(pressure.data * typing.units.millibar),
+        levels,
+    )
+
+  relative_heights = geopotential_at_surface - geopotential
+
+  # find pressure where at relative_height == 0.
+  def find_intercept(relative_height, pressure):
+    return _linear_interp_with_linear_extrap(0.0, relative_height, pressure)
+
+  out_coord = cx.replace_axes_in_coordinate(
+      geopotential.coordinate, levels, cx.Scalar()  # levels are reduced.
+  )
+  out_axes = {d: i for i, d in enumerate(out_coord.dims)}
+  surface_pressure = cx.cmap(find_intercept, out_axes=out_axes)(
+      relative_heights.untag(levels), pressure.untag(levels)
+  )
+  return surface_pressure

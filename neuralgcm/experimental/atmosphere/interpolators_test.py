@@ -256,6 +256,37 @@ class ConservativeOnPressureTest(parameterized.TestCase):
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-6)
 
 
+class GetSurfacePressureTest(parameterized.TestCase):
+  """Tests get_surface_pressure function."""
+
+  def test_get_surface_pressure(self):
+    """Tests get_surface_pressure against dinosaur implementation."""
+    levels = np.array([100, 200, 300, 400, 500])
+    orography = np.array([[0, 5, 10, 15]])
+    geopotential_data = np.moveaxis(
+        [[
+            [400, 250, 150, 50, -50],
+            [1000, 900, 140, 40, 20],
+            [500, 400, 300, 200, 100],
+            [600, 500, 400, 300, 200],
+        ]],
+        -1,
+        0,
+    )
+    pressure_levels = coordinates.PressureLevels(levels)
+    grid = coordinates.LonLatGrid(longitude_nodes=1, latitude_nodes=4)
+    coords = cx.compose_coordinates(pressure_levels, grid)
+    geopotential = cx.wrap(geopotential_data, coords)
+    gravity_acceleration = 10
+    geopotential_at_surface = cx.wrap(orography * gravity_acceleration, grid)
+    expected_data = np.array([[[450, 390, 500, 550]]])
+    expected = cx.wrap(np.squeeze(expected_data).reshape(1, 4), grid)
+    actual = interpolators.get_surface_pressure(
+        geopotential, geopotential_at_surface
+    )
+    cx_testing.assert_fields_allclose(actual, expected, atol=1e-6)
+
+
 if __name__ == '__main__':
   jax.config.parse_flags_with_absl()
   absltest.main()

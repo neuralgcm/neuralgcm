@@ -113,6 +113,51 @@ class StandardLayersTest(parameterized.TestCase):
 
   @parameterized.parameters(
       dict(
+          input_size=10,
+          output_size=5,
+          batch_size=3,
+      ),
+      dict(
+          input_size=1,
+          output_size=1,
+          batch_size=1,
+      ),
+      dict(
+          input_size=5,
+          output_size=10,
+          batch_size=16,
+      ),
+  )
+  def test_lstm_cell_shapes_and_params(
+      self,
+      input_size: int,
+      output_size: int,
+      batch_size: int,
+  ):
+    """Tests LSTMCell output shapes and parameter count."""
+    lstm_cell = standard_layers.LSTMCell(
+        input_size=input_size,
+        output_size=output_size,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = jnp.ones((batch_size, input_size))
+    c = jnp.ones((batch_size, output_size))
+    h = jnp.ones((batch_size, output_size))
+    carry = (c, h)
+    (new_c, new_h), out_h = lstm_cell(carry, inputs)
+
+    with self.subTest('output_shape'):
+      self.assertEqual(new_c.shape, (batch_size, output_size))
+      self.assertEqual(new_h.shape, (batch_size, output_size))
+      self.assertEqual(out_h.shape, (batch_size, output_size))
+
+    with self.subTest('total_params_count'):
+      expected = 4 * output_size * (input_size + output_size + 1)
+      actual = count_actual_params(lstm_cell)
+      self.assertEqual(actual, expected)
+
+  @parameterized.parameters(
+      dict(
           input_size=8,
           output_size=2,
           kernel_size=3,

@@ -55,7 +55,15 @@ def _query_to_dummy_datatree(query: typing.Query) -> xarray.DataTree:
           dims=coord.dims,
           coords=coord.to_xarray(),
       )
-    outputs[group] = ds
+    # TODO(jianingfang): remove this once we have can handle nested DataTrees.
+    # replace / with | to avoid xarray errors associated with nested DataTrees.
+    renamed_group = (
+        group.replace('land/', 'land|')
+        .replace('ocean/', 'ocean|')
+        .replace('atmosphere/', 'atmosphere|')
+        .replace('ice/', 'ice|')
+    )
+    outputs[renamed_group] = ds
   return xarray.DataTree.from_dict(outputs)
 
 
@@ -124,7 +132,7 @@ def check_pytree_for_bad_state(state: typing.Pytree, msg: str) -> None:
     BadStateError: if a bad state is found.
   """
   if _any_nans(device_put_to_cpu(state)):
-    raise BadStateError(msg)
+    raise BadStateError(f'bad state found: {msg}')
 
 
 T = TypeVar('T')
@@ -197,7 +205,7 @@ class InferenceRunner:
           f'{self.checkpoint_duration=} must be a multiple of'
           f' {self.write_duration=}'
       )
-    if self.bad_state_strategy not in ('raise', 'impute_nan'):
+    if self.bad_state_strategy not in ('raise', 'impute_nan', 'ignore'):
       raise ValueError(f'Unknown bad_state_strategy: {self.bad_state_strategy}')
     if isinstance(self.init_times, pd.DatetimeIndex):
       self.init_times = self.init_times.to_numpy()
@@ -355,7 +363,8 @@ class InferenceRunner:
       )
       logging.info('assimilating initial state')
       state = self.model.assimilate(input_obs, dynamic_inputs, rng)
-      check_pytree_for_bad_state(state, f'initial state for {task_id=}')
+      if self.bad_state_strategy != 'ignore':
+        check_pytree_for_bad_state(state, f'initial state for {task_id=}')
       commited_steps = 0
 
     # Unroll simulation forward in time.
@@ -369,7 +378,8 @@ class InferenceRunner:
       data = xarray_utils.model_dynamic_inputs_from_xarray(
           xarray_inputs, self.model
       )
-      check_pytree_for_bad_state(data, f'dynamic inputs at {output_step=}')
+      if self.bad_state_strategy != 'ignore':
+        check_pytree_for_bad_state(data, f'dynamic inputs at {output_step=}')
       keys = {k: list(v) for k, v in data.items()}
       logging.info(f'dynamic inputs ready: {keys}')
       return data
@@ -467,8 +477,13 @@ class InferenceRunner:
     logging.info('preparing DataTree for writing to zarr')
     trees = []
     for trajectory_slice in output_buffer:
+      # Replace / with | to avoid xarray errors in nested DataTrees.
+      # TODO(jianingfang): remove this once we have can handle nested DataTrees.
       outputs = {
-          k: xarray_utils.fields_to_xarray(ds)
+          k.replace('land/', 'land|')
+          .replace('ocean/', 'ocean|')
+          .replace('atmosphere/', 'atmosphere|')
+          .replace('ice/', 'ice|'): xarray_utils.fields_to_xarray(ds)
           for k, ds in trajectory_slice.items()
       }
       outputs_tree = xarray.DataTree.from_dict(outputs)
@@ -491,7 +506,6 @@ class InferenceRunner:
     if realization_index is not None:
       tree = _datatree_expand_dims(tree, realization=[realization_index])
       region['realization'] = slice(realization_index, realization_index + 1)
-
     # Remove variables that don't have an init_time dimension. These shouldn't
     # be written to disk again.
     for node in tree.subtree:
@@ -506,10 +520,10 @@ class InferenceRunner:
 
     logging.info(f'writing {tree.nbytes/1e6:.1f} MB to zarr')
     delayed.compute(num_workers=128)
-
-    check_pytree_for_bad_state(
-        output_buffer, f'unroll outputs at {steps_written=}'
-    )
+    if self.bad_state_strategy != 'ignore':
+      check_pytree_for_bad_state(
+          output_buffer, f'unroll outputs at {steps_written=}'
+      )
 
   def _maybe_update_state_checkpoint(
       self, state: typing.Pytree, task_id: int, steps_written: int
@@ -527,6 +541,7 @@ class InferenceRunner:
         contents = (state, saved_step)
         pickle.dump(contents, f, protocol=pickle.HIGHEST_PROTOCOL)
       # Check after dumping to pickle file to aid in debugging.
-      check_pytree_for_bad_state(state, f'unroll state at {saved_step=}')
+      if self.bad_state_strategy != 'ignore':
+        check_pytree_for_bad_state(state, f'unroll state at {saved_step=}')
     else:
       logging.info('no state checkpoint update for this step')

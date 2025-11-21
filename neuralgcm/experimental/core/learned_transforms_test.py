@@ -259,6 +259,166 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     self.assertFalse(np.isnan(out['surface_embedding'].data).any())
 
 
+class LstmTowerTransformTest(parameterized.TestCase):
+  """Tests different instantiations of LstmTowerTransform."""
+
+  def setUp(self):
+    """Set up common parameters and configurations for tests."""
+    super().setUp()
+    self.grid = coordinates.LonLatGrid.T21()
+    self.levels = coordinates.SoilLevels.with_era5_levels()
+    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.lstm_state_size = 10
+    self.lstm_dim_axis = cx.SizedAxis('lstm_dim', self.lstm_state_size)
+    self.tower_factory = functools.partial(
+        towers.LstmTower.build_using_factories,
+        inputs_in_dims=('d',),
+        state_dims=(self.lstm_dim_axis,),
+        out_dims=('d',),
+        lstm_cell_factory=standard_layers.LSTMCell,
+    )
+    self.forward_tower_factory = functools.partial(
+        towers.ForwardTower.build_using_factories,
+        inputs_in_dims=('d',),
+        out_dims=('d',),
+        neural_net_factory=functools.partial(
+            standard_layers.Mlp.uniform, hidden_size=6, hidden_layers=2
+        ),
+    )
+    self.mesh = parallelism.Mesh()
+
+  def test_lstm_tower_transform_shapes(self):
+    """Tests that LstmTowerTransform produces correct shapes."""
+    lstm_state_size = self.lstm_state_size
+    lstm_dim_axis = self.lstm_dim_axis
+    test_inputs = {
+        'lstm_c': cx.wrap(
+            np.ones((lstm_state_size,) + self.grid.shape),
+            cx.compose_coordinates(lstm_dim_axis, self.grid),
+        ),
+        'lstm_h': cx.wrap(
+            np.ones((lstm_state_size,) + self.grid.shape),
+            cx.compose_coordinates(lstm_dim_axis, self.grid),
+        ),
+        'precipitation': ones_field_for_coord(self.coord),
+        'evaporation': ones_field_for_coord(self.coord),
+    }
+    input_shapes = pytree_utils.shape_structure(test_inputs)
+    lstm_target_coords = {
+        'lstm_raw_output': cx.compose_coordinates(
+            cx.SizedAxis('lstm_dim', 10), self.grid
+        ),
+    }
+    lstm_internal_coords = {
+        'lstm_c': cx.compose_coordinates(lstm_dim_axis, self.grid),
+        'lstm_h': cx.compose_coordinates(lstm_dim_axis, self.grid),
+    }
+    output_coords_with_state = lstm_target_coords | lstm_internal_coords
+
+    lstm_transform = (
+        learned_transforms.LstmTowerTransform.build_using_factories(
+            input_shapes=input_shapes,
+            targets=lstm_target_coords,
+            tower_factory=functools.partial(self.tower_factory),
+            dims_to_align=(self.grid,),
+            mesh=self.mesh,
+            rngs=nnx.Rngs(0),
+        )
+    )
+
+    with self.subTest('output_shapes'):
+      actual = pytree_utils.shape_structure(lstm_transform(test_inputs))
+      expected = field_utils.shape_struct_fields_from_coords(
+          output_coords_with_state
+      )
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('output_shapes_method'):
+      actual = lstm_transform.output_shapes(input_shapes)
+      expected = field_utils.shape_struct_fields_from_coords(
+          output_coords_with_state
+      )
+      chex.assert_trees_all_equal(actual, expected)
+
+  def test_lstm_tower_transform_with_out_transform(self):
+    """Tests LstmTowerTransform with a ForwardTowerTransform as out_transform."""
+    lstm_state_size = self.lstm_state_size
+    lstm_dim_axis = self.lstm_dim_axis
+    test_inputs = {
+        'lstm_c': cx.wrap(
+            np.ones((lstm_state_size,) + self.grid.shape),
+            cx.compose_coordinates(lstm_dim_axis, self.grid),
+        ),
+        'lstm_h': cx.wrap(
+            np.ones((lstm_state_size,) + self.grid.shape),
+            cx.compose_coordinates(lstm_dim_axis, self.grid),
+        ),
+        'time': cx.wrap(jdt.to_datetime('2025-05-21T00')),
+    }
+    features = transforms.Merge({
+        'radiation': feature_transforms.RadiationFeatures(self.grid),
+        'latitude': feature_transforms.LatitudeFeatures(self.grid),
+        'prognostics': transforms.Select(r'(?!time).*'),
+    })
+    input_shapes = pytree_utils.shape_structure(test_inputs)
+    # These are the shapes of outputs from LstmTower + state, which are inputs
+    # to ForwardTowerTransform.
+    lstm_target_coords = {
+        'lstm_raw_output': cx.compose_coordinates(
+            cx.SizedAxis('lstm_dim', 10), self.grid
+        ),
+    }
+    out_transform_input_coords = lstm_target_coords
+    out_transform_input_shapes = field_utils.shape_struct_fields_from_coords(
+        out_transform_input_coords
+    )
+    # These are the final targets in "physical space".
+    final_target_coords = {
+        'volumetric_soil_water': cx.compose_coordinates(self.levels, self.grid),
+        'snow_depth': self.grid,
+    }
+    out_transform = (
+        learned_transforms.ForwardTowerTransform.build_using_factories(
+            input_shapes=out_transform_input_shapes,
+            targets=final_target_coords,
+            tower_factory=self.forward_tower_factory,
+            dims_to_align=(self.grid,),
+            mesh=self.mesh,
+            rngs=nnx.Rngs(0),
+        )
+    )
+    lstm_transform = (
+        learned_transforms.LstmTowerTransform.build_using_factories(
+            input_shapes=input_shapes,
+            in_transform=features,
+            targets=lstm_target_coords,
+            tower_factory=functools.partial(self.tower_factory),
+            dims_to_align=(self.grid,),
+            out_transform=out_transform,
+            mesh=self.mesh,
+            rngs=nnx.Rngs(0),
+        )
+    )
+
+    lstm_internal_coords = {
+        'lstm_c': cx.compose_coordinates(lstm_dim_axis, self.grid),
+        'lstm_h': cx.compose_coordinates(lstm_dim_axis, self.grid),
+    }
+    with self.subTest('output_shapes'):
+      actual = pytree_utils.shape_structure(lstm_transform(test_inputs))
+      expected = field_utils.shape_struct_fields_from_coords(
+          final_target_coords | lstm_internal_coords
+      )
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('output_shapes_method'):
+      actual = lstm_transform.output_shapes(input_shapes)
+      expected = field_utils.shape_struct_fields_from_coords(
+          final_target_coords | lstm_internal_coords
+      )
+      chex.assert_trees_all_equal(actual, expected)
+
+
 class TransformerTowerTransformTest(parameterized.TestCase):
   """Tests different instantiations of TransformerTowerTransform."""
 

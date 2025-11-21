@@ -82,6 +82,90 @@ ForwardTowerFactory = Callable[..., ForwardTower]
 
 
 @nnx_compat.dataclass
+class LstmTower(nnx.Module):
+  """Applies LSTMCell to inputs and carry state.
+
+  The output carry and field are computed by applying vectorized `lstm_cell`
+  to inputs and carry.
+  `inputs_in_dims` determines input dimensions processed by `lstm_cell`,
+  `state_dims` determines state dimensions, and `out_dims` specifies
+  dimension or coordinates for output axes produced by `lstm_cell`.
+  All other axes are vectorized over.
+
+  Attributes:
+    lstm_cell: The LSTM cell to be applied.
+    inputs_in_dims: Dims or coordinates over which `lstm_cell` is applied to
+      inputs.
+    state_dims: Dims or coordinates for lstm state.
+    out_dims: Dims or coordinates to attach to non-vectorized axes of output.
+    apply_remat: Whether to apply nnx.remat to the lstm cell.
+  """
+
+  lstm_cell: standard_layers.LSTMCell
+  inputs_in_dims: tuple[str | cx.Coordinate, ...]
+  state_dims: tuple[str | cx.Coordinate, ...]
+  out_dims: tuple[str | cx.Coordinate, ...]
+  apply_remat: bool = False
+
+  def __call__(
+      self,
+      carry: tuple[cx.Field, cx.Field],
+      inputs: cx.Field,
+  ) -> tuple[tuple[cx.Field, cx.Field], cx.Field]:
+    c, h = carry
+    inputs_untagged = inputs.untag(*self.inputs_in_dims)
+    c_untagged = c.untag(*self.state_dims)
+    h_untagged = h.untag(*self.state_dims)
+
+    batch_axes = inputs_untagged.named_axes
+    if (
+        batch_axes != c_untagged.named_axes
+        or batch_axes != h_untagged.named_axes
+    ):
+      raise ValueError(
+          f'Vectorized dimensions on inputs {inputs_untagged.named_axes}, c'
+          f' {c_untagged.named_axes}, and h {h_untagged.named_axes} do not'
+          ' match'
+      )
+
+    def apply_cell(cell, carry, inputs):
+      return cell(carry, inputs)
+
+    cmap_apply_cell = cx.cmap(apply_cell, batch_axes, vmap=nnx.vmap)
+    if self.apply_remat:
+      cmap_apply_cell = nnx.remat(cmap_apply_cell)
+
+    (out_c, out_h), output = cmap_apply_cell(
+        self.lstm_cell, (c_untagged, h_untagged), inputs_untagged
+    )
+    new_c = out_c.tag(*self.state_dims)
+    new_h = out_h.tag(*self.state_dims)
+    new_carry = (new_c, new_h)
+    output = output.tag(*self.out_dims)
+    return new_carry, output
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_size: int,
+      output_size: int,
+      *,
+      inputs_in_dims: tuple[str | cx.Coordinate, ...],
+      state_dims: tuple[str | cx.Coordinate, ...],
+      out_dims: tuple[str | cx.Coordinate, ...],
+      apply_remat: bool = False,
+      lstm_cell_factory: Callable[..., standard_layers.LSTMCell],
+      rngs: nnx.Rngs,
+      **kwargs,
+  ):
+    cell = lstm_cell_factory(input_size, output_size, rngs=rngs, **kwargs)
+    return cls(cell, inputs_in_dims, state_dims, out_dims, apply_remat)
+
+
+LstmTowerFactory = Callable[..., LstmTower]
+
+
+@nnx_compat.dataclass
 class TransformerTower(nnx.Module):
   """Applies transformer NN to a input fields over specified dimensions.
 

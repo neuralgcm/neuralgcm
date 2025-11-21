@@ -123,6 +123,100 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
 
 
 @nnx_compat.dataclass
+class LstmTowerTransform(transforms.TransformABC, nnx.Module):
+  """Transforms fields with LstmTower and splits the output to fields.
+
+  Attributes:
+    targets: A dictionary mapping output names to their coordinates.
+    tower: The LstmTower module to apply to the combined inputs.
+    dims_to_align: A tuple of dimsension names or coordinates used to align
+      fields when combining inputs and splitting outputs.
+    in_transform: Optional transform to be applied to inputs.
+    out_transform: Optional transform to be applied to module outputs.
+    carry_c_key: key for carry_c in input dict, default 'lstm_c'.
+    carry_h_key: key for carry_h in input dict, default 'lstm_h'.
+    feature_sharding_schema: Optional features sharding schema.
+    result_sharding_schema: Optional result sharding schema.
+    mesh: The `parallelism.Mesh` used for sharding.
+  """
+
+  targets: dict[str, cx.Coordinate]
+  tower: towers.LstmTower
+  dims_to_align: tuple[str | cx.Coordinate, ...]
+  in_transform: transforms.Transform = transforms.Identity()
+  out_transform: transforms.Transform = transforms.Identity()
+  carry_c_key: str = 'lstm_c'
+  carry_h_key: str = 'lstm_h'
+  feature_sharding_schema: str | None = None
+  result_sharding_schema: str | None = None
+  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    apply_sharding = self.mesh.with_sharding_constraint
+    in_features_with_carry = self.in_transform(inputs)
+    in_features_with_carry = apply_sharding(
+        in_features_with_carry, self.feature_sharding_schema
+    )
+    in_features = in_features_with_carry.copy()
+    tag = self.tower.inputs_in_dims[0]
+    carry_c = in_features.pop(self.carry_c_key)
+    carry_h = in_features.pop(self.carry_h_key)
+    in_field = field_utils.combine_fields(in_features, self.dims_to_align, tag)
+    (out_c, out_h), out_field = self.tower((carry_c, carry_h), in_field)
+    out_fields = field_utils.split_to_fields(out_field, self.targets)
+    out_fields = self.out_transform(out_fields)
+    out_fields[self.carry_c_key] = out_c
+    out_fields[self.carry_h_key] = out_h
+    out_fields = apply_sharding(out_fields, self.result_sharding_schema)
+    return out_fields
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_shapes: dict[str, cx.Field],
+      targets: dict[str, cx.Coordinate],
+      tower_factory: towers.LstmTowerFactory,
+      dims_to_align: tuple[str | cx.Coordinate, ...],
+      in_transform=transforms.Identity(),
+      out_transform=transforms.Identity(),
+      carry_c_key: str = 'lstm_c',
+      carry_h_key: str = 'lstm_h',
+      feature_sharding_schema: str | None = None,
+      result_sharding_schema: str | None = None,
+      *,
+      mesh: parallelism.Mesh,
+      rngs,
+  ):
+    """Builds a LstmTowerTransform using factories for submodules."""
+    in_shapes = in_transform.output_shapes(input_shapes)
+    in_shapes_for_combine = in_shapes.copy()
+    in_shapes_for_combine.pop(carry_c_key)
+    in_shapes_for_combine.pop(carry_h_key)
+    in_field_shape = nnx.eval_shape(
+        field_utils.combine_fields, in_shapes_for_combine, dims_to_align
+    )
+    out_shapes = field_utils.shape_struct_fields_from_coords(targets)
+    out_field_shape = nnx.eval_shape(
+        field_utils.combine_fields, out_shapes, dims_to_align
+    )
+    input_size = in_field_shape.positional_shape[0]
+    output_size = out_field_shape.positional_shape[0]
+    tower = tower_factory(input_size, output_size, rngs=rngs)
+    return cls(
+        targets=targets,
+        tower=tower,
+        dims_to_align=dims_to_align,
+        in_transform=in_transform,
+        out_transform=out_transform,
+        carry_c_key=carry_c_key,
+        carry_h_key=carry_h_key,
+        feature_sharding_schema=feature_sharding_schema,
+        result_sharding_schema=result_sharding_schema,
+        mesh=mesh,
+    )
+
+
+@nnx_compat.dataclass
 class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
   """Transforms fields with TransformerTower and splits the output to fields.
 

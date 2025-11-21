@@ -240,6 +240,67 @@ def conv_dilated_ncw(
 # TODO(dkochkov) Investigate performance of this layer.
 
 
+class LSTMCell(nnx.Module, pytree=False):
+  """LSTM cell layer."""
+
+  def __init__(
+      self,
+      input_size: int,
+      output_size: int,
+      *,
+      gate_fn: Callable[[Array], Array] = jax.nn.sigmoid,
+      activation_fn: Callable[[Array], Array] = jax.nn.tanh,
+      kernel_init: nnx.initializers.Initializer = default_w_init,
+      bias_init: nnx.initializers.Initializer = default_b_init,
+      dtype: typing.Dtype = jnp.float32,
+      rngs: nnx.Rngs,
+  ):
+    self.input_size = input_size
+    self.output_size = output_size
+    self.gate_fn = gate_fn
+    self.activation_fn = activation_fn
+    self.kernel_init = kernel_init
+    self.bias_init = bias_init
+    self.dtype = dtype
+    self.rngs = rngs
+
+    # Initialize nnx modules in __init__
+    self.dense_i2h = nnx.Linear(
+        input_size,
+        4 * self.output_size,
+        kernel_init=self.kernel_init,
+        bias_init=self.bias_init,
+        param_dtype=self.dtype,
+        rngs=self.rngs,
+    )
+    self.dense_h2h = nnx.Linear(
+        self.output_size,
+        4 * self.output_size,
+        use_bias=False,
+        kernel_init=self.kernel_init,
+        bias_init=self.bias_init,
+        param_dtype=self.dtype,
+        rngs=self.rngs,
+    )
+
+  def __call__(
+      self, carry: tuple[Array, Array], inputs: Array
+  ) -> tuple[tuple[Array, Array], Array]:
+    c, h = carry
+    gates = self.dense_i2h(inputs) + self.dense_h2h(h)
+    i, f, g, o = jnp.split(gates, 4, axis=-1)
+    i = self.gate_fn(i)
+    f = self.gate_fn(f)
+    g = self.activation_fn(g)
+    o = self.gate_fn(o)
+    new_c = f * c + i * g
+    new_h = o * self.activation_fn(new_c)
+    return (new_c, new_h), new_h
+
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
+
 class ConvLevel(nnx.Conv):
   """1D convolution in the NCW data format that preserves tail axis shape."""
 

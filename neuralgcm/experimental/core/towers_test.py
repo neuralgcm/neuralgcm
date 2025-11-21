@@ -179,6 +179,68 @@ class ForwardTowerTest(parameterized.TestCase):
       tower(transposed_inputs)
 
 
+class LstmTowerTest(parameterized.TestCase):
+  """Tests LstmTower implementation."""
+
+  def setUp(self):
+    super().setUp()
+    self.grid = coordinates.LonLatGrid.T21()
+    self.levels = coordinates.SigmaLevels.equidistant(12)
+    self.coord = cx.compose_coordinates(self.levels, self.grid)
+
+  def test_lstm_over_grid(self):
+    lstm_cell_factory = standard_layers.LSTMCell
+    tower = towers.LstmTower.build_using_factories(
+        input_size=7,
+        output_size=13,
+        inputs_in_dims=('din',),
+        state_dims=('dout',),
+        out_dims=('dout',),
+        apply_remat=False,
+        lstm_cell_factory=lstm_cell_factory,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    c = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+    h = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+    carry = (c, h)
+    (new_c, new_h), out = tower(carry, inputs)
+
+    with self.subTest('output_shape'):
+      self.assertEqual(out.shape, (13,) + self.grid.shape)
+      self.assertEqual(new_c.shape, (13,) + self.grid.shape)
+      self.assertEqual(new_h.shape, (13,) + self.grid.shape)
+    with self.subTest('output_dims'):
+      self.assertEqual(out.dims, ('dout',) + self.grid.dims)
+      self.assertEqual(new_c.dims, ('dout',) + self.grid.dims)
+      self.assertEqual(new_h.dims, ('dout',) + self.grid.dims)
+    with self.subTest('output_coordinates'):
+      self.assertEqual(cx.get_coordinate(out, missing_axes='skip'), self.grid)
+      self.assertEqual(cx.get_coordinate(new_c, missing_axes='skip'), self.grid)
+      self.assertEqual(cx.get_coordinate(new_h, missing_axes='skip'), self.grid)
+
+  def test_raises_on_wrong_alignment(self):
+    lstm_cell_factory = standard_layers.LSTMCell
+    tower = towers.LstmTower.build_using_factories(
+        input_size=7,
+        output_size=13,
+        inputs_in_dims=('din',),
+        state_dims=('dout',),
+        out_dims=('dout',),
+        apply_remat=False,
+        lstm_cell_factory=lstm_cell_factory,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    c = cx.wrap(jnp.ones((13,)), 'dout')  # c lacks grid dims
+    h = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+    carry = (c, h)
+    with self.assertRaisesRegex(
+        ValueError, 'Vectorized dimensions on inputs .* do not match'
+    ):
+      tower(carry, inputs)
+
+
 class TransformerTowerTest(parameterized.TestCase):
   """Tests TransformerTower implementation."""
 

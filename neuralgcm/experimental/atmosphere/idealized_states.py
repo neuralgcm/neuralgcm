@@ -19,9 +19,7 @@ import coordax as cx
 from dinosaur import coordinate_systems
 from dinosaur import primitive_equations as dinosaur_primitive_equations
 from dinosaur import primitive_equations_states
-from dinosaur import scales as dino_scales
 from dinosaur import spherical_harmonic as dino_spherical_harmonic
-from dinosaur import typing as dino_typing
 import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import spherical_harmonics
@@ -31,43 +29,13 @@ from neuralgcm.experimental.core import units
 import numpy as np
 
 
-def _as_dino_qty(q: typing.Quantity) -> dino_typing.Quantity:
-  """Returns a dinosaur Quantity from a neuralgcm Quantity."""
-  # We perform round trip through str representation to convert quantities
-  # between two unit registries to avoid incompatibility errors.
-  return dino_typing.Quantity(str(q))
-
-
-def _get_dino_specs(
-    sim_units: units.SimUnits,
-) -> dinosaur_primitive_equations.PrimitiveEquationsSpecs:
-  """Returns dinosaur PrimitiveEquationsSpecs from sim_units."""
-  ngcm_scales_dict = sim_units.scale._scales  # pylint: disable=protected-access
-  dino_scales_dict = {k: _as_dino_qty(v) for k, v in ngcm_scales_dict.items()}
-  dino_scale = dino_scales.Scale(*dino_scales_dict.values())
-  return dinosaur_primitive_equations.PrimitiveEquationsSpecs.from_si(
-      radius_si=_as_dino_qty(units.scales.RADIUS),
-      angular_velocity_si=_as_dino_qty(units.scales.ANGULAR_VELOCITY),
-      gravity_acceleration_si=_as_dino_qty(units.scales.GRAVITY_ACCELERATION),
-      ideal_gas_constant_si=_as_dino_qty(units.scales.IDEAL_GAS_CONSTANT),
-      water_vapor_gas_constant_si=_as_dino_qty(
-          units.scales.IDEAL_GAS_CONSTANT_H20
-      ),
-      water_vapor_isobaric_heat_capacity_si=_as_dino_qty(
-          units.scales.WATER_VAPOR_CP
-      ),
-      kappa_si=_as_dino_qty(units.scales.KAPPA),
-      scale=dino_scale,
-  )
-
-
 def _dino_state_to_neuralgcm_dict(
     state: dinosaur_primitive_equations.State,
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     aux_features: dict[str, Any] | None,
     as_nodal: bool = False,
-    temperature_format: Literal['absolute', 'variation'] = 'variation',
+    temperature_format: Literal['absolute', 'variation'] = 'absolute',
 ) -> dict[str, cx.Field]:
   """Converts dinosaur state to neuralgcm state dict."""
   state_dict = state.asdict()
@@ -86,7 +54,7 @@ def _dino_state_to_neuralgcm_dict(
   state_dict['log_surface_pressure'] = state_dict['log_surface_pressure'][0]
   coords_map = {
       2: ylm_map.modal_grid,  # for log_surface_pressure.
-      3: cx.compose_coordinates(sigma, ylm_map.modal_grid),  # other fields.
+      3: cx.compose_coordinates(levels, ylm_map.modal_grid),  # other fields.
   }
   state_dict = {
       k: cx.wrap(v, coords_map[v.ndim]) for k, v in state_dict.items()
@@ -98,7 +66,7 @@ def _dino_state_to_neuralgcm_dict(
 
 def isothermal_rest_atmosphere(
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
     tref: typing.Quantity = 288.0 * typing.units.kelvin,
@@ -106,30 +74,36 @@ def isothermal_rest_atmosphere(
     p1: typing.Quantity = 0.0 * typing.units.pascal,
     surface_height: typing.Quantity | None = None,
     as_nodal: bool = False,
-    temperature_format: Literal['absolute', 'variation'] = 'variation',
+    temperature_format: Literal['absolute', 'variation'] = 'absolute',
 ) -> dict[str, cx.Field]:
   """Returns initial state of isothermal atmosphere at rest."""
+  if isinstance(levels, coordinates.SigmaLevels):
+    vertical_coords = levels.sigma_levels
+  elif isinstance(levels, coordinates.HybridLevels):
+    vertical_coords = levels.hybrid_levels
+  else:
+    raise ValueError(f'Unsupported vertical coordinate system: {levels}')
   dinosaur_coords = coordinate_systems.CoordinateSystem(
-      ylm_map.dinosaur_grid, sigma.sigma_levels
+      ylm_map.dinosaur_grid, vertical_coords
   )
-  dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.isothermal_rest_atmosphere(
       coords=dinosaur_coords,
-      physics_specs=dino_specs,
-      tref=_as_dino_qty(tref),
-      p0=_as_dino_qty(p0),
-      p1=_as_dino_qty(p1),
-      surface_height=_as_dino_qty(surface_height) if surface_height else None,
+      physics_specs=sim_units,
+      tref=tref,
+      p0=p0,
+      p1=p1,
+      surface_height=surface_height,
+      meter_quantity=typing.units.meter,
   )
   dino_state = init_state_fn(rng)
   return _dino_state_to_neuralgcm_dict(
-      dino_state, ylm_map, sigma, aux, as_nodal, temperature_format
+      dino_state, ylm_map, levels, aux, as_nodal, temperature_format
   )
 
 
 def steady_state_jw(
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
     u0: typing.Quantity = 35.0 * typing.units.m / typing.units.s,
@@ -140,33 +114,39 @@ def steady_state_jw(
     eta_tropo: float = 0.2,
     eta0: float = 0.252,
     as_nodal: bool = False,
-    temperature_format: Literal['absolute', 'variation'] = 'variation',
+    temperature_format: Literal['absolute', 'variation'] = 'absolute',
 ) -> dict[str, cx.Field]:
   """Returns Jablonowski and Williamson steady state."""
+  if isinstance(levels, coordinates.SigmaLevels):
+    vertical_coords = levels.sigma_levels
+  elif isinstance(levels, coordinates.HybridLevels):
+    vertical_coords = levels.hybrid_levels
+  else:
+    raise ValueError(f'Unsupported vertical coordinate system: {levels}')
   dinosaur_coords = coordinate_systems.CoordinateSystem(
-      ylm_map.dinosaur_grid, sigma.sigma_levels
+      ylm_map.dinosaur_grid, vertical_coords
   )
-  dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.steady_state_jw(
       dinosaur_coords,  # coords
-      dino_specs,  # physics_specs
-      _as_dino_qty(u0),  # u0
-      _as_dino_qty(p0),  # p0
-      _as_dino_qty(t0),  # t0
-      _as_dino_qty(delta_t),  # delta_t
-      _as_dino_qty(gamma),  # gamma
+      sim_units,  # physics_specs
+      u0,  # u0
+      p0,  # p0
+      t0,  # t0
+      delta_t,  # delta_t
+      gamma,  # gamma
       eta_tropo,  # eta_tropo
       eta0,  # eta0
+      typing.units.hPa,  # hPa quantity
   )
   dino_state = init_state_fn(rng)
   return _dino_state_to_neuralgcm_dict(
-      dino_state, ylm_map, sigma, aux, as_nodal, temperature_format
+      dino_state, ylm_map, levels, aux, as_nodal, temperature_format
   )
 
 
 def perturbed_jw(
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
     u0: typing.Quantity = 35.0 * typing.units.m / typing.units.s,
@@ -181,29 +161,35 @@ def perturbed_jw(
     lat_location: float = 2 * np.pi / 9,
     perturbation_radius: float = 0.1,
     as_nodal: bool = False,
-    temperature_format: Literal['absolute', 'variation'] = 'variation',
+    temperature_format: Literal['absolute', 'variation'] = 'absolute',
 ) -> dict[str, cx.Field]:
   """Returns Jablonowski and Williamson steady state with perturbation."""
+  if isinstance(levels, coordinates.SigmaLevels):
+    vertical_coords = levels.sigma_levels
+  elif isinstance(levels, coordinates.HybridLevels):
+    vertical_coords = levels.hybrid_levels
+  else:
+    raise ValueError(f'Unsupported vertical coordinate system: {levels}')
   dinosaur_coords = coordinate_systems.CoordinateSystem(
-      ylm_map.dinosaur_grid, sigma.sigma_levels
+      ylm_map.dinosaur_grid, vertical_coords
   )
-  dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.steady_state_jw(
       dinosaur_coords,  # coords
-      dino_specs,  # physics_specs
-      _as_dino_qty(u0),  # u0
-      _as_dino_qty(p0),  # p0
-      _as_dino_qty(t0),  # t0
-      _as_dino_qty(delta_t),  # delta_t
-      _as_dino_qty(gamma),  # gamma
+      sim_units,  # physics_specs
+      u0,  # u0
+      p0,  # p0
+      t0,  # t0
+      delta_t,  # delta_t
+      gamma,  # gamma
       eta_tropo,  # eta_tropo
       eta0,  # eta0
+      typing.units.hPa,  # hPa quantity
   )
   dino_steady_state = init_state_fn(rng)
   dino_perturbation = primitive_equations_states.baroclinic_perturbation_jw(
       dinosaur_coords,
-      dino_specs,
-      u_perturb=_as_dino_qty(u_perturb),
+      sim_units,
+      u_perturb=u_perturb,
       lon_location=lon_location,
       lat_location=lat_location,
       perturbation_radius=perturbation_radius,
@@ -214,7 +200,7 @@ def perturbed_jw(
   return _dino_state_to_neuralgcm_dict(
       dino_full_state,
       ylm_map,
-      sigma,
+      levels,
       aux,
       as_nodal,
       temperature_format,

@@ -48,10 +48,11 @@ class CoordinatesTest(parameterized.TestCase):
           coords=cx.compose_coordinates(
               coordinates.SigmaLevels.equidistant(4),
               coordinates.PressureLevels([50, 100, 200, 800, 1000]),
+              coordinates.HybridLevels.with_n_levels(7),
               coordinates.LayerLevels(3),
           ),
-          expected_dims=('sigma', 'pressure', 'layer_index'),
-          expected_shape=(4, 5, 3),
+          expected_dims=('sigma', 'pressure', 'hybrid', 'layer_index'),
+          expected_shape=(4, 5, 7, 3),
       ),
       dict(
           testcase_name='sigma_and_sigma_boundaries',

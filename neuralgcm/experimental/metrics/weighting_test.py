@@ -102,7 +102,7 @@ class WeightingTest(parameterized.TestCase):
     mask_coord = coordinates.TimeDelta(mask_deltas)
     mask_weighting = weighting.CoordinateMaskWeighting(mask_coord=mask_coord)
     weights = mask_weighting.weights(field)
-    expected_weights = np.array([0.0, 1.0, 0.0, 1.0])
+    expected_weights = np.array([1.0, 0.0, 1.0, 0.0])
     np.testing.assert_allclose(weights.data, expected_weights)
 
   def test_coordinate_mask_weighting_with_context(self):
@@ -114,13 +114,13 @@ class WeightingTest(parameterized.TestCase):
 
     context_time_match = {'timedelta': cx.wrap(np.timedelta64(6, 'h'))}
     weights_match = mask_weighting.weights(field, context=context_time_match)
-    np.testing.assert_allclose(weights_match.data, np.ones(x.shape))
+    np.testing.assert_allclose(weights_match.data, 0.0)
 
     context_time_no_match = {'timedelta': cx.wrap(np.timedelta64(3, 'h'))}
     weights_no_match = mask_weighting.weights(
         field, context=context_time_no_match
     )
-    np.testing.assert_allclose(weights_no_match.data, np.zeros(x.shape))
+    np.testing.assert_allclose(weights_no_match.data, 1.0)
 
 
 if __name__ == '__main__':

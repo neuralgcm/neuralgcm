@@ -49,46 +49,46 @@ class ScaleFactor(abc.ABC):
       field: cx.Field,
       field_name: str | None = None,
       context: dict[str, cx.Field] | None = None,
-  ) -> cx.Field | float:
+  ) -> cx.Field:
     """Return scaling factor for a given field."""
     ...
 
 
 @dataclasses.dataclass
 class ConstantScaler(ScaleFactor):
-  """Applies a constant scaling factor specified by a Field.
+  """ScaleFactor that returns scales equal to a user-provided constant.
 
   Attributes:
-    scale: A `cx.Field` containing the scaling factor. Its coordinates should be
-      alignable with the field being scaled.
+    constant: A `cx.Field` containing the scaling factor. Its coordinates should
+      be alignable with the field being scaled.
     skip_missing: If True, inputs without a matching coordinates will return a
       scale of 1.0, otherwise an error is raised.
   """
 
-  scale: cx.Field
-  skip_missing: bool = False
+  constant: cx.Field
+  skip_missing: bool = True
 
   def scales(
       self,
       field: cx.Field,
       field_name: str | None = None,
       context: dict[str, cx.Field] | None = None,
-  ) -> cx.Field | float:
-    """Returns the user-provided weights field, optionally normalized."""
+  ) -> cx.Field:
+    """Returns the user-provided constant field for scaling."""
     del field_name, context  # unused.
-    if all(d in field.dims for d in self.scale.dims):
-      return self.scale
+    if all(d in field.dims for d in self.constant.dims):
+      return self.constant
     if self.skip_missing:
-      return 1.0
+      return cx.wrap(1.0)
     else:
       raise ValueError(
-          f'{field=} does not have all coordinates in {self.scale=}.'
+          f'{field=} does not have all coordinates in {self.constant=}.'
       )
 
 
 @dataclasses.dataclass
 class PerVariableScaler(ScaleFactor):
-  """Applies scalers from a dictionary to fields with matching names."""
+  """ScaleFactor that returns scales from `scalers_by_name[field_name]`."""
 
   scalers_by_name: dict[str, ScaleFactor]
   default_scaler: ScaleFactor | None = None
@@ -111,14 +111,111 @@ class PerVariableScaler(ScaleFactor):
       return self.default_scaler.scales(field, field_name, context)
 
     raise KeyError(
-        f"'{field_name}' not found in scalers_by_name and no default_scaler is"
+        f'"{field_name}" not found in scalers_by_name and no default_scaler is'
         ' set.'
     )
 
 
 @dataclasses.dataclass
+class GridAreaScaler(ScaleFactor):
+  """ScaleFactor that returns scales proportional to the area of grid cells.
+
+  This weighting works with both `LonLatGrid` and `SphericalHarmonicGrid`.
+
+  For `LonLatGrid`, weights are approximated by cos(lat), which are proportional
+  to the proper quadrature weights of Gaussian grids. This ensures that grid
+  cells near the poles have smaller weights than those near the equator.
+
+  For `SphericalHarmonicGrid`, the basis functions are orthonormal, so uniform
+  weights (1.0) are returned.
+
+  If skip_missing attribute is set to True, fields without a grid will return
+  a weight of 1.0, otherwise an error is raised.
+  """
+
+  skip_missing: bool = True
+
+  def scales(
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
+  ) -> cx.Field:
+    del context  # unused.
+    lon_lat_dims = ('longitude', 'latitude')
+    ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
+    if all(d in field.axes for d in lon_lat_dims):
+      grid = cx.compose_coordinates(*[field.axes.get(d) for d in lon_lat_dims])
+    elif all(d in field.axes for d in ylm_dims):
+      grid = cx.compose_coordinates(*[field.axes.get(d) for d in ylm_dims])
+    else:
+      grid = None
+
+    if isinstance(grid, coordinates.LonLatGrid):
+
+      def get_weight(x):
+        # Latitudes are in degrees, convert to radians for cosine.
+        lat = jnp.deg2rad(x)
+        pi_over_2 = jnp.array([np.pi / 2])
+        lat_cell_bounds = jnp.concatenate(
+            [-pi_over_2, (lat[:-1] + lat[1:]) / 2, pi_over_2]
+        )
+        upper = lat_cell_bounds[1:]
+        lower = lat_cell_bounds[:-1]
+        return jnp.sin(upper) - jnp.sin(lower)
+
+      get_weight = cx.cmap(get_weight)
+      lats = grid.fields['latitude']
+      lat_ax = lats.coordinate
+      weights = get_weight(grid.fields['latitude'].untag(lat_ax)).tag(lat_ax)
+      weights = weights.broadcast_like(grid)
+    elif isinstance(grid, coordinates.SphericalHarmonicGrid):
+      # avoid counting padding towards overall weight by using mask.
+      weights = grid.fields['mask'].astype(jnp.float32)
+    else:
+      if self.skip_missing:
+        weights = cx.wrap(1.0)
+      else:
+        raise ValueError(f'No LonLatGrid or SphericalHarmonicGrid on {field=}')
+    return weights
+
+
+@dataclasses.dataclass
+class PressureLevelAtmosphericMassScaler(ScaleFactor):
+  """ScaleFactor that returns scales proportional to pressure level thickness.
+
+  This scaling results in statistics that upon the sum would represent a
+  discrete integral over pressure (or approximate mass intergral) of the
+  corresponding quantity.
+  """
+
+  standard_pressure: float = 1013.25  # standard pressure in hPa.
+
+  def scales(
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
+  ) -> cx.Field:
+    """Return weights extracted from the pressure level coordinate."""
+    del field_name, context  # unused.
+    if 'pressure' not in field.dims:
+      return cx.wrap(1.0)
+
+    pressure = field.axes['pressure']
+    padded = np.concatenate([
+        np.asarray([0.0]),
+        pressure.centers,
+        np.asarray([self.standard_pressure]),
+    ])
+    # thickness is estimated as 0.5 * |p_{k+1} - p_{k-1}|.
+    thickness = (np.roll(padded, -1) - np.roll(padded, 1))[1:-1] / 2
+    return cx.wrap(thickness, pressure)
+
+
+@dataclasses.dataclass
 class WavenumberScaler(ScaleFactor):
-  """Scales modal statistics by the number of modes / 4pi.
+  """ScaleFactor that returns fixed scale equal to "number of ylm_modes" / 4pi.
 
   For fields with `SphericalHarmonicGrid` dimension, this scaler rescales the
   statistics by the number of spherical harmonic modes divided by 4pi. This
@@ -136,7 +233,7 @@ class WavenumberScaler(ScaleFactor):
       field: cx.Field,
       field_name: str | None = None,
       context: dict[str, cx.Field] | None = None,
-  ) -> cx.Field | float:
+  ) -> cx.Field:
     del field_name, context  # unused.
     ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
     if all(d in field.axes for d in ylm_dims):
@@ -145,16 +242,16 @@ class WavenumberScaler(ScaleFactor):
       grid = None
 
     if isinstance(grid, coordinates.SphericalHarmonicGrid):
-      return grid.fields['mask'].data.sum() / (4 * np.pi)
+      return cx.wrap(grid.fields['mask'].data.sum() / (4 * np.pi))
     elif self.skip_missing:
-      return 1.0
+      return cx.wrap(1.0)
     else:
       raise ValueError(f'No SphericalHarmonicGrid on {field=}')
 
 
 @dataclasses.dataclass
 class CoordinateMaskScaler(ScaleFactor):
-  """Applies fixed scaling of masked/unmasked values based on coordinate values.
+  """ScaleFactor that that returns masked/unmasked scales based on masking.
 
   This scaler is parameterized by a `mask_coord`. For each dimension in
   `mask_coord.dims`, it checks for a matching coordinate in the input `field`
@@ -188,7 +285,7 @@ class CoordinateMaskScaler(ScaleFactor):
       field: cx.Field,
       field_name: str | None = None,
       context: dict[str, cx.Field] | None = None,
-  ) -> cx.Field | float:
+  ) -> cx.Field:
     """Computes scales based on coordinate values."""
     del field_name  # unused.
     all_masks = []
@@ -229,7 +326,7 @@ class CoordinateMaskScaler(ScaleFactor):
         all_masks.append(mask_for_dim)
 
     if not all_masks:
-      return self.unmasked_value
+      return cx.wrap(self.unmasked_value)
 
     final_mask = functools.reduce(lambda x, y: x & y, all_masks)
     return cx.cmap(
@@ -241,7 +338,7 @@ class CoordinateMaskScaler(ScaleFactor):
 
 @dataclasses.dataclass
 class LeadTimeScaler(ScaleFactor):
-  """Scales statistics by the inverse of the std of a random walk spread.
+  """ScaleFactor that returns scales equal to 1/(std of a random walk spread).
 
   It computes scales that are inversely proportional to the anticipated standard
   deviation of errors at a given lead time, assuming random-walk-like error
@@ -274,14 +371,14 @@ class LeadTimeScaler(ScaleFactor):
       field: cx.Field,
       field_name: str | None = None,
       context: dict[str, cx.Field] | None = None,
-  ) -> cx.Field | float:
+  ) -> cx.Field:
     """Computes scale factors for statistics."""
     del field_name  # unused.
     time_coord = field.axes.get('timedelta', None)
     scale_from_context = context and 'timedelta' in context
     if time_coord is None and not scale_from_context:
       if self.skip_missing:
-        return 1.0
+        return cx.wrap(1.0)
       raise ValueError(
           f'TimeDelta coordinate not found on {field=} or in context'
       )

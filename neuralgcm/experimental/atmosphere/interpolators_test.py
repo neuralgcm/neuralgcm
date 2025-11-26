@@ -207,6 +207,64 @@ class LinearOnPressureTest(parameterized.TestCase):
     expected = cx.wrap(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='linear',
+          extrapolation='linear',
+          expected_data=np.array(
+              [11.666667, 20.0, 24.819277, 29.638554, 34.457831]
+          ),
+      ),
+      dict(
+          testcase_name='constant',
+          extrapolation='constant',
+          expected_data=np.array([11.666667, 20.0, 24.819277, 29.638554, 30.0]),
+      ),
+  )
+  def test_to_sigma_from_hybrid_1d(self, extrapolation, expected_data):
+    """Tests interpolation to sigma from 1d hybrid level inputs."""
+    a_boundaries = np.array([0, 20, 80, 150])
+    b_boundaries = np.array([0, 0.1, 0.4, 0.8])
+    source_levels = coordinates.HybridLevels(a_boundaries, b_boundaries)
+    target_levels = coordinates.SigmaLevels.equidistant(5)
+    surface_pressure = 1000.0
+    field = cx.wrap(np.array([10.0, 20.0, 30.0]), source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+
+    regridder = interpolators.LinearOnPressure(target_levels, extrapolation)
+    actual = regridder(inputs)['field']
+
+    expected = cx.wrap(expected_data, target_levels)
+    cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='linear',
+          extrapolation='linear',
+          expected_data=np.array([8.0, 20.0, 40.75]),
+      ),
+      dict(
+          testcase_name='constant',
+          extrapolation='constant',
+          expected_data=np.array([10.0, 20.0, 40.75]),
+      ),
+  )
+  def test_to_hybrid_from_sigma_1d(self, extrapolation, expected_data):
+    """Tests interpolation to hybrid from 1d sigma level inputs."""
+    source_levels = coordinates.SigmaLevels.equidistant(5)
+    a_boundaries = np.array([0, 20, 80, 150])
+    b_boundaries = np.array([0, 0.1, 0.4, 0.8])
+    target_levels = coordinates.HybridLevels(a_boundaries, b_boundaries)
+    surface_pressure = 1000.0
+    field = cx.wrap(np.array([10.0, 20.0, 30.0, 40.0, 50.0]), source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+
+    regridder = interpolators.LinearOnPressure(target_levels, extrapolation)
+    actual = regridder(inputs)['field']
+
+    expected = cx.wrap(expected_data, target_levels)
+    cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
+
 
 class ConservativeOnPressureTest(parameterized.TestCase):
   """Tests ConservativeOnPressure module."""

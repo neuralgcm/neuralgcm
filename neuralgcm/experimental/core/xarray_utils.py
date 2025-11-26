@@ -160,6 +160,7 @@ def field_from_xarray(
       coordinates.TimeDelta,
       coordinates.LonLatGrid,
       coordinates.SphericalHarmonicGrid,
+      coordinates.HybridLevels,
       coordinates.PressureLevels,
       coordinates.SigmaLevels,
       coordinates.SigmaBoundaries,

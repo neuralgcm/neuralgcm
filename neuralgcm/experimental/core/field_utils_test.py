@@ -257,6 +257,88 @@ class UtilsTest(parameterized.TestCase):
     self.assertIsInstance(actual['a'].data, jax.ShapeDtypeStruct)
 
 
+class ZeroMaskAxisOutliersTest(parameterized.TestCase):
+  """Tests zero_mask_axis_outliers utility function."""
+
+  def test_mask_lower_bound_only(self):
+    axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
+    field = cx.wrap(np.ones(4), axis)
+    actual = field_utils.zero_mask_axis_outliers(field, axis, lower=0.0)
+    expected = cx.wrap(np.array([0, 1, 1, 1]), axis)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_mask_upper_bound_only(self):
+    axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
+    field = cx.wrap(np.ones(4), axis)
+    actual = field_utils.zero_mask_axis_outliers(field, axis, upper=1.0)
+    expected = cx.wrap(np.array([1, 1, 1, 0]), axis)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_mask_lower_and_upper_bounds(self):
+    axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
+    field = cx.wrap(np.ones(4), axis)
+    actual = field_utils.zero_mask_axis_outliers(
+        field, axis, lower=0.0, upper=1.0
+    )
+    expected = cx.wrap(np.array([0, 1, 1, 0]), axis)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_mask_multidim_field(self):
+    x = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
+    y = cx.SizedAxis('y', 2)
+    field = cx.wrap(np.ones((4, 2)), x, y)
+    actual = field_utils.zero_mask_axis_outliers(field, x, lower=0.0, upper=1.0)
+    expected_data = np.array([[0, 0], [1, 1], [1, 1], [0, 0]])
+    expected = cx.wrap(expected_data, x, y)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_no_values_masked(self):
+    axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
+    field = cx.wrap(np.ones(4), axis)
+    actual = field_utils.zero_mask_axis_outliers(
+        field, axis, lower=-1.0, upper=2.0
+    )
+    expected = cx.wrap(np.array([1, 1, 1, 1]), axis)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_all_values_masked_if_lower_gt_upper(self):
+    axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
+    field = cx.wrap(np.ones(4), axis)
+    actual = field_utils.zero_mask_axis_outliers(
+        field, axis, lower=1.0, upper=0.0
+    )
+    expected = cx.wrap(np.zeros(4), axis)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_raises_on_no_lower_or_upper_bound(self):
+    axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
+    field = cx.wrap(np.ones(4), axis)
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        'Must specify at least one of `lower` or `upper`.',
+    ):
+      field_utils.zero_mask_axis_outliers(field, axis)
+
+  def test_raises_on_axis_without_ticks(self):
+    axis = cx.SizedAxis('x', 4)
+    field = cx.wrap(np.ones(4), axis)
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        f'Axis must be 1d with specified tick values got {axis}',
+    ):
+      field_utils.zero_mask_axis_outliers(field, axis, lower=0.0)
+
+  def test_raises_on_multidim_axis(self):
+    x, y = cx.SizedAxis('x', 2), cx.SizedAxis('y', 2)
+    axis = cx.compose_coordinates(x, y)
+    field = cx.wrap(np.ones((2, 2)), axis)
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        f'Axis must be 1d with specified tick values got {axis}',
+    ):
+      field_utils.zero_mask_axis_outliers(field, axis, lower=0.0)
+
+
 class InAxesUtilTest(parameterized.TestCase):
   """Tests in_axes utility functions."""
 
@@ -349,6 +431,93 @@ class InAxesUtilTest(parameterized.TestCase):
         'leaf in.*is mapped over the same axis multiple times',
     ):
       field_utils.nest_in_axes((0, 1), (0, 2))
+
+
+class Reconstruct1dFieldFromRefValuesTest(parameterized.TestCase):
+  """Tests reconstruct_1d_field_from_ref_values utility function."""
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='linear',
+          interpolation_space='linear',
+          ref_ticks=[0, 1],
+          ref_values=[1, 3],
+          axis_ticks=[0, 0.5, 1],
+          expected_values=[1, 2, 3],
+      ),
+      dict(
+          testcase_name='log',
+          interpolation_space='log',
+          ref_ticks=[0, 2],
+          ref_values=[1, np.exp(2)],
+          axis_ticks=[0, 1, 2],
+          expected_values=[1, np.exp(1), np.exp(2)],
+      ),
+      dict(
+          testcase_name='sqrt',
+          interpolation_space='sqrt',
+          ref_ticks=[0, 1],
+          ref_values=[1, 4],
+          axis_ticks=[0, 0.5, 1],
+          expected_values=[1, 2.25, 4],
+      ),
+      dict(
+          testcase_name='square',
+          interpolation_space='square',
+          ref_ticks=[0, 1],
+          ref_values=[1, 2],
+          axis_ticks=[0, 0.5, 1],
+          expected_values=[1, np.sqrt(2.5), 2],
+      ),
+  )
+  def test_interpolation(
+      self,
+      interpolation_space,
+      ref_ticks,
+      ref_values,
+      axis_ticks,
+      expected_values,
+  ):
+    axis = cx.LabeledAxis('x', np.array(axis_ticks))
+    actual = field_utils.reconstruct_1d_field_from_ref_values(
+        axis, ref_ticks, ref_values, interpolation_space
+    )
+    expected = cx.wrap(np.array(expected_values, dtype=np.float32), axis)
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_raises_on_axis_without_ticks(self):
+    axis = cx.SizedAxis('x', 4)
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        f'Expected 1D coordinate with specified ticks, got {axis}',
+    ):
+      field_utils.reconstruct_1d_field_from_ref_values(
+          axis, ref_ticks=[0, 1], ref_values=[1, 2]
+      )
+
+  def test_raises_on_multidim_axis(self):
+    x, y = cx.SizedAxis('x', 2), cx.SizedAxis('y', 2)
+    axis = cx.compose_coordinates(x, y)
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        f'Expected 1D coordinate with specified ticks, got {axis}',
+    ):
+      field_utils.reconstruct_1d_field_from_ref_values(
+          axis, ref_ticks=[0, 1], ref_values=[1, 2]
+      )
+
+  def test_raises_on_bad_interpolation_space(self):
+    axis = cx.LabeledAxis('x', np.array([0, 1]))
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        'Unsupported interpolation space: bad_space',
+    ):
+      field_utils.reconstruct_1d_field_from_ref_values(
+          axis,
+          ref_ticks=[0, 1],
+          ref_values=[1, 2],
+          interpolation_space='bad_space',
+      )
 
 
 if __name__ == '__main__':

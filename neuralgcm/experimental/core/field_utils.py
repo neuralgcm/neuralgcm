@@ -16,7 +16,7 @@
 
 import functools
 import itertools
-from typing import overload, Sequence
+from typing import overload, Literal, Sequence
 
 import coordax as cx
 import jax
@@ -256,3 +256,47 @@ def shape_struct_fields_from_coords(
   """Returns Fields constructed from `coords` with ShapeDtypeStruct data."""
   make_fn = lambda d: {k: cx.wrap(jnp.zeros(c.shape), c) for k, c in d.items()}
   return jax.eval_shape(make_fn, coords)
+
+
+def zero_mask_axis_outliers(
+    field: cx.Field,
+    axis: cx.Coordinate,
+    lower: float | None = None,
+    upper: float | None = None,
+) -> cx.Field:
+  """Returns field with values along `axis` set to 0 outside [lower, upper]."""
+  if axis.ndim != 1 or axis.dims[0] not in axis.fields:
+    raise ValueError(f'Axis must be 1d with specified tick values got {axis}')
+  if [upper, lower].count(None) == 2:
+    raise ValueError('Must specify at least one of `lower` or `upper`.')
+  ticks = axis.fields[axis.dims[0]].data
+  mask = jnp.ones_like(ticks, dtype=bool)
+  if lower is not None:
+    mask &= ticks >= lower
+  if upper is not None:
+    mask &= ticks <= upper
+  return field * cx.wrap(mask, axis)
+
+
+def reconstruct_1d_field_from_ref_values(
+    axis: cx.Coordinate,
+    ref_ticks: Sequence[float],
+    ref_values: Sequence[float],
+    interpolation_space: Literal['linear', 'log', 'sqrt', 'square'] = 'linear'
+) -> cx.Field:
+  """Reconstructs 1D Field via interpolation of reference values."""
+  if axis.ndim != 1 or axis.dims[0] not in axis.fields:
+    raise ValueError(f'Expected 1D coordinate with specified ticks, got {axis}')
+  ticks = axis.fields[axis.dims[0]].data
+  if interpolation_space == 'log':
+    log_values = np.interp(ticks, ref_ticks, np.log(ref_values))
+    values = np.exp(log_values)
+  elif interpolation_space == 'sqrt':
+    values = np.square(np.interp(ticks, ref_ticks, np.sqrt(ref_values)))
+  elif interpolation_space == 'square':
+    values = np.sqrt(np.interp(ticks, ref_ticks, np.square(ref_values)))
+  elif interpolation_space == 'linear':
+    values = np.interp(ticks, ref_ticks, ref_values)
+  else:
+    raise ValueError(f'Unsupported interpolation space: {interpolation_space}')
+  return cx.wrap(values, axis)

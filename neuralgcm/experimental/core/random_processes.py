@@ -222,8 +222,8 @@ class GaussianRandomFieldCore(nnx.Module):
     """Constructs a core of a Gaussian Random Field.
 
     Args:
-      ylm_map: spherical harmonic transform defining the default basis for
-        the random process.
+      ylm_map: spherical harmonic transform defining the default basis for the
+        random process.
       dt: time step of the random process.
       sim_units: object defining nondimensionalization and physical constants.
       correlation_time: correlation time of the random process.
@@ -535,3 +535,109 @@ class VectorizedGaussianRandomField(RandomProcessModule):
           f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
     return self.ylm_map.to_nodal(self.core.value)
+
+  @classmethod
+  def with_range_of_scales(
+      cls,
+      *,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
+      dt: float | np.timedelta64,
+      sim_units: units.SimUnits,
+      n_fields: int,
+      min_time_hrs: int = 1,
+      max_time_hrs: int = 117,
+      min_length_km: int = 85,
+      max_length_km: int = 10_000,
+      power: float = 4.0,
+      extra_n_constant_fields: int = 0,
+      axis_name: str = 'grf',
+      correlation_time_type: type[
+          nnx.Param | RandomnessParam
+      ] = RandomnessParam,
+      correlation_length_type: type[
+          nnx.Param | RandomnessParam
+      ] = RandomnessParam,
+      variance_type: type[nnx.Param | RandomnessParam] = RandomnessParam,
+      clip: float = 6.0,
+      rngs: nnx.Rngs,
+  ):
+    """Constructs GRF fields with correlation times and lengths in a given range.
+
+    This method generates correlation times and lengths for gaussian random
+    fields that range between min and max values. The variance of each field is
+    set to 1.0.
+
+    Args:
+      ylm_map: Spherical harmonic transform defining the default basis.
+      dt: Time step of the random process. If float, must be nondimensionalized.
+      sim_units: Object defining nondimensionalization and physical constants.
+      n_fields: Number of fields to generate with varying correlation scales.
+      min_time_hrs: Minimum time in hours for GRF correlation time.
+      max_time_hrs: Maximum time in hours for GRF correlation time.
+      min_length_km: Minimum length in km for GRF correlation length.
+      max_length_km: Maximum length in km for GRF correlation length.
+      power: Power to raise curve from min to max. Power > 1 results in a convex
+        curve, and therefore more times/powers near the minimum.
+      extra_n_constant_fields: Number of additional trailing fields that are
+        initialized as effectively constant in space and time.
+      axis_name: Name of coordinate axis for vectorized fields.
+      correlation_time_type: Parameter type for correlation time that allows for
+        granular selection of the subsets of model parameters.
+      correlation_length_type: Parameter type for correlation length that allows
+        for granular selection of the subsets of model parameters.
+      variance_type: Parameter type for variance that allows for granular
+        selection of the subsets of model parameters.
+      clip: Number of standard deviations at which to clip randomness to ensure
+        numerical stability.
+      rngs: Instance for random number generation.
+
+    Returns:
+      VectorizedGaussianRandomField instance with specified fields.
+    """
+    if isinstance(dt, np.timedelta64):
+      dt = sim_units.nondimensionalize_timedelta64(dt)
+    times = list(
+        int(t)
+        for t in np.linspace(
+            min_time_hrs ** (1 / power),
+            max_time_hrs ** (1 / power),
+            n_fields,
+        )
+        ** power
+    )
+    lengths = list(
+        int(l)
+        for l in np.linspace(
+            min_length_km ** (1 / power),
+            max_length_km ** (1 / power),
+            n_fields,
+        )
+        ** power
+    )
+    correlation_times = [f'{t} hours' for t in times]
+    correlation_lengths = [f'{l} km' for l in lengths]
+    variances = [1.0] * n_fields
+
+    if extra_n_constant_fields > 0:
+      constant_time_hrs = 24 * 365 * 1000  # 1000 years in hours
+      constant_length_km = 40_075 * 10  # 10x circumference of earth in km
+      for _ in range(extra_n_constant_fields):
+        correlation_times.append(f'{constant_time_hrs} hours')
+        correlation_lengths.append(f'{constant_length_km} km')
+        variances.append(1.0)
+
+    axis = cx.SizedAxis(axis_name, n_fields + extra_n_constant_fields)
+    return cls(
+        ylm_map=ylm_map,
+        dt=dt,
+        sim_units=sim_units,
+        axis=axis,
+        correlation_times=correlation_times,
+        correlation_lengths=correlation_lengths,
+        variances=variances,
+        correlation_time_type=correlation_time_type,
+        correlation_length_type=correlation_length_type,
+        variance_type=variance_type,
+        clip=clip,
+        rngs=rngs,
+    )

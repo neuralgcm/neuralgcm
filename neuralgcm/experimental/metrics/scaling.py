@@ -115,6 +115,21 @@ class PerVariableScaler(ScaleFactor):
         ' set.'
     )
 
+  @classmethod
+  def from_constants(
+      cls,
+      variable_weights: dict[str, float | cx.Field],
+      default_scaler: ScaleFactor | None = None,
+  ) -> PerVariableScaler:
+    """Returns a PerVariableScaler with ConstantScalers."""
+    scalers = {
+        name: ConstantScaler(constant=w if cx.is_field(w) else cx.wrap(w))
+        for name, w in variable_weights.items()
+    }
+    return cls(
+        scalers_by_name=scalers, default_scaler=default_scaler
+    )
+
 
 @dataclasses.dataclass
 class GridAreaScaler(ScaleFactor):

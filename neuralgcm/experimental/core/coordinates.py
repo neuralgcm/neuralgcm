@@ -24,6 +24,7 @@ from typing import Any, Iterable, Literal, Self, Sequence, TYPE_CHECKING, cast
 import coordax as cx
 from dinosaur import coordinate_systems as dinosaur_coordinates
 from dinosaur import fourier
+from dinosaur import hybrid_coordinates
 from dinosaur import sigma_coordinates
 from dinosaur import spherical_harmonic
 from dinosaur import vertical_interpolation
@@ -1168,6 +1169,173 @@ class PressureLevels(cx.Coordinate):
           f'pressure levels must end between 900 and 1025, got: {centers}'
       )
     return cls(centers=centers)
+
+
+@jax.tree_util.register_static
+@dataclasses.dataclass(frozen=True)
+class HybridLevels(cx.Coordinate):
+  """Coordinates with hybrid sigma-pressure levels."""
+
+  a_boundaries: np.ndarray
+  b_boundaries: np.ndarray
+  hybrid_levels: hybrid_coordinates.HybridCoordinates = dataclasses.field(
+      init=False, repr=False, compare=False
+  )
+
+  def __init__(
+      self,
+      a_boundaries: Iterable[float] | np.ndarray,
+      b_boundaries: Iterable[float] | np.ndarray,
+  ):
+    a_boundaries = np.asarray(a_boundaries, np.float32)
+    b_boundaries = np.asarray(b_boundaries, np.float32)
+    object.__setattr__(self, 'a_boundaries', a_boundaries)
+    object.__setattr__(self, 'b_boundaries', b_boundaries)
+    self.__post_init__()
+
+  def __post_init__(self):
+    hybrid_levels = hybrid_coordinates.HybridCoordinates(
+        a_boundaries=self.a_boundaries, b_boundaries=self.b_boundaries
+    )
+    object.__setattr__(self, 'hybrid_levels', hybrid_levels)
+
+  @property
+  def dims(self):
+    return ('hybrid',)
+
+  @property
+  def shape(self) -> tuple[int, ...]:
+    return (self.hybrid_levels.layers,)
+
+  @property
+  def fields(self):
+    # Use index starting at 1 to match ECMWF's IFS convention.
+    a = (self.a_boundaries[:-1] + self.a_boundaries[1:]) / 2.0
+    b = (self.b_boundaries[:-1] + self.b_boundaries[1:]) / 2.0
+    return {
+        'hybrid': cx.wrap(np.arange(1, self.shape[0] + 1), self),
+        'a': cx.wrap(a, self),
+        'b': cx.wrap(b, self),
+    }
+
+  def asdict(self) -> dict[str, Any]:
+    return {
+        'a_boundaries': self.a_boundaries.tolist(),
+        'b_boundaries': self.b_boundaries.tolist(),
+    }
+
+  def _components(self):
+    return (ArrayKey(self.a_boundaries), ArrayKey(self.b_boundaries))
+
+  def __eq__(self, other):
+    return (
+        isinstance(other, HybridLevels)
+        and self._components() == other._components()
+    )
+
+  def __hash__(self) -> int:
+    return hash(self._components())
+
+  def pressure_boundaries(self, surface_pressure: cx.Field) -> cx.Field:
+    def _boundaries(p_surface: jax.Array) -> jax.Array:
+      return self.a_boundaries + self.b_boundaries * p_surface
+    # TODO(dkochkov): Consider adding HybridLevelsBoundaries coordinate and
+    # tagging this output with it.
+    out_axes = {k: v + 1 for k, v in surface_pressure.named_axes}
+    return cx.cmap(_boundaries(surface_pressure), out_axes)
+
+  def pressure_centers(self, surface_pressure: cx.Field) -> cx.Field:
+    """Returns pressure at layer centers given `surface_pressure`."""
+    return self.fields['a'] + self.fields['b'] * surface_pressure
+
+  def to_xarray(self) -> dict[str, xarray.Variable]:
+    variables = super().to_xarray()
+    metadata = dict(
+        a_boundaries=self.a_boundaries.tolist(),
+        b_boundaries=self.b_boundaries.tolist(),
+    )
+    variables['hybrid'].attrs = metadata
+    return variables
+
+  @classmethod
+  def from_coefficients(
+      cls,
+      a_coefficients: list[float] | np.ndarray,
+      b_coefficients: list[float] | np.ndarray,
+      p0_in_hpa: float = 1000.0,
+  ) -> Self:
+    hybrid_levels = hybrid_coordinates.HybridCoordinates.from_coefficients(
+        a_coeffs=a_coefficients, b_coeffs=b_coefficients, p0=p0_in_hpa
+    )
+    return cls.from_dinosaur_hybrid_levels(hybrid_levels)
+
+  @classmethod
+  def from_dinosaur_hybrid_levels(
+      cls,
+      hybrid_levels: hybrid_coordinates.HybridCoordinates,
+  ) -> Self:
+    return cls(
+        a_boundaries=hybrid_levels.a_boundaries,
+        b_boundaries=hybrid_levels.b_boundaries,
+    )
+
+  @classmethod
+  def with_n_levels(
+      cls,
+      n_levels,
+      sigma_exponent: float = 1.5,
+      stretch_exponent: float = 0.5,
+  ) -> Self:
+    hybrid_levels = hybrid_coordinates.HybridCoordinates.analytic_levels(
+        n_levels=n_levels,
+        sigma_exponent=sigma_exponent,
+        stretch_exponent=stretch_exponent,
+    )
+    return cls.from_dinosaur_hybrid_levels(hybrid_levels)
+
+  @classmethod
+  def ECMWF137(cls) -> Self:
+    """Returns HybridLevels with 137 levels from ECMWF's IFS."""
+    hybrid_levels = hybrid_coordinates.HybridCoordinates.ECMWF137()
+    return cls.from_dinosaur_hybrid_levels(hybrid_levels)
+
+  @classmethod
+  def UFS127(cls) -> Self:
+    """Returns HybridLevels with 127 levels from NOAA's UFS."""
+    hybrid_levels = hybrid_coordinates.HybridCoordinates.UFS127()
+    return cls.from_dinosaur_hybrid_levels(hybrid_levels)
+
+  @classmethod
+  def from_xarray(
+      cls, dims: tuple[str, ...], coords: xarray.Coordinates
+  ) -> Self | cx.NoCoordinateMatch:
+    dim = dims[0]
+    if dim != 'hybrid':
+      return cx.NoCoordinateMatch(f'dimension {dim!r} != "hybrid"')
+
+    if 'hybrid' not in coords:
+      return cx.NoCoordinateMatch('no associated coordinate for "hybrid"')
+
+    if coords['hybrid'].ndim != 1:
+      return cx.NoCoordinateMatch('"hybrid" coordinate is not a 1D array')
+
+    attrs = coords['hybrid'].attrs
+    if 'a_boundaries' not in attrs or 'b_boundaries' not in attrs:
+      return cx.NoCoordinateMatch(
+          'a_boundaries or b_boundaries not in "hybrid" attributes'
+      )
+
+    a_boundaries = np.asarray(attrs['a_boundaries'])
+    b_boundaries = np.asarray(attrs['b_boundaries'])
+
+    # Check that the hybrid coordinate is just an index.
+    n_layers = len(a_boundaries) - 1
+    if coords.sizes[dim] != n_layers:
+      return cx.NoCoordinateMatch('level dimension size mismatch')
+    if not np.array_equal(coords['hybrid'].data, np.arange(1, n_layers + 1)):
+      return cx.NoCoordinateMatch('hybrid coordinate is not a simple index')
+
+    return cls(a_boundaries=a_boundaries, b_boundaries=b_boundaries)
 
 
 @jax.tree_util.register_static

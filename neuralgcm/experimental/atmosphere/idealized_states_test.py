@@ -68,6 +68,8 @@ class TestStatesTest(parameterized.TestCase):
         'vorticity': data_coord,
         'divergence': data_coord,
         'log_surface_pressure': surface_coord,
+        'orography': self.grid,
+        'ref_temperatures': levels,
     }
     if temperature_format == 'absolute':
       expected_coords['temperature'] = data_coord
@@ -104,6 +106,9 @@ class TestStatesTest(parameterized.TestCase):
         'vorticity': data_coord,
         'divergence': data_coord,
         'log_surface_pressure': surface_coord,
+        'orography': self.grid,
+        'ref_temperatures': levels,
+        'geopotential': cx.compose_coordinates(levels, self.grid),
     }
     if temperature_format == 'absolute':
       expected_coords['temperature'] = data_coord
@@ -139,6 +144,9 @@ class TestStatesTest(parameterized.TestCase):
         'vorticity': data_coord,
         'divergence': data_coord,
         'log_surface_pressure': surface_coord,
+        'orography': self.grid,
+        'ref_temperatures': levels,
+        'geopotential': cx.compose_coordinates(levels, self.grid),
     }
     if temperature_format == 'absolute':
       expected_coords['temperature'] = data_coord

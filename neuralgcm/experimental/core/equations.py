@@ -55,9 +55,9 @@ class ExplicitTransformEquation(time_integrators.ExplicitODE):
     return tendencies
 
 
-def _sum_non_nones(*args: jax.Array | None) -> jax.Array | None:
+def _sum_non_nones(*args: cx.Field | None) -> cx.Field:
   terms = [x for x in args if x is not None]
-  return sum(terms) if terms else None
+  return sum(terms) if terms else cx.wrap(0.0)
 
 
 @nnx_compat.dataclass
@@ -78,18 +78,19 @@ class ComposedODE(ImplicitExplicitODE):
     (implicit_explicit_eq,) = imex_equations
     self.implicit_explicit_equation = implicit_explicit_eq
 
-  def explicit_terms(self, x: typing.Pytree) -> typing.Pytree:
+  def explicit_terms(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
     explicit_tendencies = [fn.explicit_terms(x) for fn in self.equations]
-    return jax.tree.map(
-        _sum_non_nones, *explicit_tendencies, is_leaf=lambda x: x is None
-    )
+    return {
+        k: _sum_non_nones(*(et.get(k, None) for et in explicit_tendencies))
+        for k in x.keys()
+    }
 
-  def implicit_terms(self, x: typing.Pytree) -> typing.Pytree:
+  def implicit_terms(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return self.implicit_explicit_equation.implicit_terms(x)
 
   def implicit_inverse(
-      self, x: typing.Pytree, step_size: float
-  ) -> typing.Pytree:
+      self, x: dict[str, cx.Field], step_size: float
+  ) -> dict[str, cx.Field]:
     return self.implicit_explicit_equation.implicit_inverse(x, step_size)
 
   def __init_subclass__(cls, **kwargs):
@@ -102,10 +103,9 @@ class ComposedExplicitODE(ExplicitODE):
 
   equations: Sequence[ExplicitODE]
 
-  def explicit_terms(self, x: typing.Pytree) -> typing.Pytree:
+  def explicit_terms(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
     explicit_tendencies = [fn.explicit_terms(x) for fn in self.equations]
-    return jax.tree.map(
-        lambda *args: sum([x for x in args if x is not None]),
-        *explicit_tendencies,
-        is_leaf=lambda x: x is None,
-    )
+    return {
+        k: _sum_non_nones(*(et.get(k, None) for et in explicit_tendencies))
+        for k in x.keys()
+    }

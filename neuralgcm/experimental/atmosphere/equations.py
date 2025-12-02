@@ -18,6 +18,8 @@ from typing import Callable, Sequence
 
 import coordax as cx
 from dinosaur import coordinate_systems
+from dinosaur import held_suarez
+from dinosaur import hybrid_coordinates
 from dinosaur import primitive_equations
 from dinosaur import sigma_coordinates
 import jax.numpy as jnp
@@ -121,56 +123,116 @@ def get_temperature_delinearization_transform(
 
 
 class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
-  """Equation module for moist primitive equations ."""
+  """Equation module for primitive equations.
+
+  This module wraps methods of an appropriate primitive equations class from
+  `dinosaur` and converts between dict[str, cx.Field] and dinosaur convention
+  representations. The type of primitive equation solver is selected by the
+  type of the vertical coordinate system. Supported vertical coordinates include
+  SigmaLevels and HybridLevels for which spectral solvers are available. Other
+  arguments control the additional features of the primitive equations solver,
+  such as vertical advection and account for moisture species.
+
+  Attributes:
+    ylm_map: Spherical harmonics mapping for the horizontal grid.
+    levels: Vertical levels coordinate.
+    sim_units: Physical constants and units for nondimensionalization.
+    reference_temperatures: Reference temperatures used for linearization.
+    tracer_names: A sequence of names of tracers to be evolved by dynamics.
+    orography_module: Orography module that provides modal orography data.
+    vertical_advection: A optional custom function that implements vertical
+      advection scheme. If None, a default centered difference scheme will be
+      used based on the type of `levels`.
+    include_vertical_advection: Whether to include vertical advection terms.
+    humidity_key: Key in tracers names that corresponds to specific humidity.
+      If the key is not present in `tracer_names`, uses dry primitive equations.
+    cloud_keys: Keys in tracers names that corresponds to cloud species. Uses
+      only keys that are present in `tracer_names`. If at least one of the cloud
+      species is present, humidity key must be present in `tracer_names`.
+  """
 
   def __init__(
       self,
       ylm_map: spherical_harmonics.FixedYlmMapping,
-      sigma_levels: coordinates.SigmaLevels,
+      levels: coordinates.SigmaLevels | coordinates.HybridLevels,
       sim_units: units.SimUnits,
       reference_temperatures: Sequence[float],
       tracer_names: Sequence[str],
       orography_module: orographies.ModalOrography,
-      vertical_advection: Callable[..., typing.Array] = (
-          sigma_coordinates.centered_vertical_advection
-      ),
-      equation_cls=primitive_equations.MoistPrimitiveEquationsWithCloudMoisture,
+      vertical_advection: Callable[..., typing.Array] | None = None,
       include_vertical_advection: bool = True,
+      humidity_key: str = 'specific_humidity',
+      cloud_keys: tuple[str, ...] = (
+          'specific_cloud_ice_water_content',
+          'specific_cloud_liquid_water_content',
+      ),
   ):
     self.ylm_map = ylm_map
-    self.sigma_levels = sigma_levels
+    self.levels = levels
     self.orography_module = orography_module
     self.sim_units = sim_units
     self.orography = orography_module
     self.reference_temperatures = reference_temperatures
     self.tracer_names = tracer_names
-    self.vertical_advection = vertical_advection
     self.include_vertical_advection = include_vertical_advection
-    self.equation_cls = equation_cls
     self.linearize_transform = get_temperature_linearization_transform(
-        ref_temperatures=reference_temperatures, levels=sigma_levels
+        ref_temperatures=reference_temperatures, levels=levels
     )
     self.delinearize_transform = get_temperature_delinearization_transform(
-        ref_temperatures=reference_temperatures, levels=sigma_levels
+        ref_temperatures=reference_temperatures, levels=levels
     )
     self.linear_to_absolute_rename = transforms.Rename(
         rename_dict={'temperature_variation': 'temperature'}
     )
+    if isinstance(levels, coordinates.SigmaLevels):
+      self.equation_cls = primitive_equations.PrimitiveEquationsSigma
+      self.dinosaur_coords = coordinate_systems.CoordinateSystem(
+          horizontal=self.ylm_map.dinosaur_grid,
+          vertical=self.levels.sigma_levels,
+          spmd_mesh=self.ylm_map.dinosaur_spmd_mesh,
+      )
+      if vertical_advection is None:
+        vertical_advection = sigma_coordinates.centered_vertical_advection
+      self.vertical_advection = vertical_advection
+      self.unit_kwargs = {}
+    elif isinstance(levels, coordinates.HybridLevels):
+      self.equation_cls = primitive_equations.PrimitiveEquationsHybrid
+      self.dinosaur_coords = coordinate_systems.CoordinateSystem(
+          horizontal=self.ylm_map.dinosaur_grid,
+          vertical=self.levels.hybrid_levels,
+          spmd_mesh=self.ylm_map.dinosaur_spmd_mesh,
+      )
+      if vertical_advection is None:
+        vertical_advection = hybrid_coordinates.centered_vertical_advection
+      self.vertical_advection = vertical_advection
+      self.unit_kwargs = {
+          'hpa_quantity': typing.units.hPa,
+          'reference_surface_pressure': 101325.0 * typing.units.pascal,
+      }
+    else:
+      raise ValueError(f'Unsupported vertical coordinate system: {levels}')
+    if humidity_key in tracer_names:
+      self.humidity_key = humidity_key
+    else:
+      self.humidity_key = None
+    present_cloud_keys = tuple(k for k in cloud_keys if k in tracer_names)
+    if present_cloud_keys:
+      self.cloud_keys = present_cloud_keys
+    else:
+      self.cloud_keys = None
 
   @property
   def primitive_equation(self):
-    dinosaur_coords = coordinate_systems.CoordinateSystem(
-        horizontal=self.ylm_map.dinosaur_grid,
-        vertical=self.sigma_levels.sigma_levels,
-        spmd_mesh=self.ylm_map.dinosaur_spmd_mesh,
-    )
     return self.equation_cls(
-        coords=dinosaur_coords,
+        coords=self.dinosaur_coords,
         physics_specs=self.sim_units,
         reference_temperature=np.asarray(self.reference_temperatures),
         orography=self.orography_module.modal_orography.data,
         vertical_advection=self.vertical_advection,
         include_vertical_advection=self.include_vertical_advection,
+        humidity_key=self.humidity_key,
+        cloud_keys=self.cloud_keys,
+        **self.unit_kwargs,
     )
 
   @property
@@ -195,7 +257,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
   def _from_primitive_equations_state(
       self, state: primitive_equations.State, is_tendency: bool = True
   ) -> dict[str, cx.Field]:
-    sigma_levels, ylm_grid = self.sigma_levels, self.ylm_map.modal_grid
+    sigma_levels, ylm_grid = self.levels, self.ylm_map.modal_grid
     tracers = {
         k: cx.wrap(state.tracers[k], sigma_levels, ylm_grid)
         for k in self.tracer_names
@@ -232,5 +294,137 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     return self._from_primitive_equations_state(
         self.primitive_equation.implicit_inverse(
             self._to_primitive_equations_state(state), step_size
-        ), is_tendency=False
+        ),
+        is_tendency=False,
+    )
+
+
+class HeldSuarezForcing(time_integrators.ExplicitODE):
+  """Equation module for Held-Suarez forcing.
+
+  This module implements Held-Suarez forcing terms, which are often used for
+  benchmarking atmospheric models. It includes Rayleigh friction to relax
+  horizontal velocities to zero, and Newtonian cooling to relax temperature
+  to an equilibrium profile.
+
+  Attributes:
+    ylm_map: Spherical harmonics mapping for the horizontal grid.
+    levels: Vertical levels coordinate.
+    sim_units: Physical constants and units for nondimensionalization.
+    reference_temperatures: Reference temperature used for linearization. When
+      used with PrimitiveEquations class, this should be the same as the one
+      used to initialize the primitive equations class.
+    p0: Reference surface pressure used in Held-Suarez forcing.
+    sigma_b: Sigma level below which Rayleigh friction is applied.
+    kf: Time scale for Rayleigh friction.
+    ka: Time scale for Newtonian cooling in the troposphere.
+    ks: Time scale for Newtonian cooling in the stratosphere.
+    min_t: Minimum equilibrium temperature for Newtonian cooling.
+    max_t: Maximum equilibrium temperature for Newtonian cooling.
+    d_ty: Temperature diff for equilibrium profile in meridional direction.
+    d_thz: Temperature diff for equilibrium profile in vertical direction.
+  """
+
+  def __init__(
+      self,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
+      levels: coordinates.SigmaLevels | coordinates.HybridLevels,
+      sim_units: units.SimUnits,
+      reference_temperatures: Sequence[float],
+      p0: typing.Quantity = 1e5 * typing.units.pascal,
+      sigma_b: float = 0.7,
+      kf: typing.Quantity = 1 / (1 * typing.units.day),
+      ka: typing.Quantity = 1 / (40 * typing.units.day),
+      ks: typing.Quantity = 1 / (4 * typing.units.day),
+      min_t: typing.Quantity = 200 * typing.units.kelvin,
+      max_t: typing.Quantity = 315 * typing.units.kelvin,
+      d_ty: typing.Quantity = 60 * typing.units.kelvin,
+      d_thz: typing.Quantity = 10 * typing.units.kelvin,
+  ):
+    self.ylm_map = ylm_map
+    self.levels = levels
+    self.sim_units = sim_units
+    self.reference_temperatures = reference_temperatures
+    self.p0 = p0
+    self.sigma_b = sigma_b
+    self.kf = kf
+    self.ka = ka
+    self.ks = ks
+    self.min_t = min_t
+    self.max_t = max_t
+    self.d_ty = d_ty
+    self.d_thz = d_thz
+    if isinstance(levels, coordinates.SigmaLevels):
+      self.forcing_cls = held_suarez.HeldSuarezForcingSigma
+      self.units_kwargs = {}
+    elif isinstance(levels, coordinates.HybridLevels):
+      self.forcing_cls = held_suarez.HeldSuarezForcingHybrid
+      self.units_kwargs = {'hpa_quantity': typing.units.hPa}
+    else:
+      raise ValueError(f'Unsupported vertical coordinate system: {levels}')
+    self.linearize_transform = get_temperature_linearization_transform(
+        ref_temperatures=reference_temperatures, levels=levels
+    )
+    self.linear_to_absolute_rename = transforms.Rename(
+        rename_dict={'temperature_variation': 'temperature'}
+    )
+
+  @property
+  def forcing(self):
+    if isinstance(self.levels, coordinates.SigmaLevels):
+      vertical_coords = self.levels.sigma_levels
+    else:
+      vertical_coords = self.levels.hybrid_levels
+    dinosaur_coords = coordinate_systems.CoordinateSystem(
+        horizontal=self.ylm_map.dinosaur_grid,
+        vertical=vertical_coords,
+        spmd_mesh=self.ylm_map.dinosaur_spmd_mesh,
+    )
+    return self.forcing_cls(
+        coords=dinosaur_coords,
+        physics_specs=self.sim_units,
+        reference_temperature=np.asarray(self.reference_temperatures),
+        p0=self.p0,
+        sigma_b=self.sigma_b,
+        kf=self.kf,
+        ka=self.ka,
+        ks=self.ks,
+        minT=self.min_t,
+        maxT=self.max_t,
+        dTy=self.d_ty,
+        dThz=self.d_thz,
+        **self.units_kwargs,
+    )
+
+  def _to_primitive_equations_state(
+      self, inputs: dict[str, cx.Field]
+  ) -> primitive_equations.State:
+    """Converts a dict of fields to a primitive equations state."""
+    inputs = self.linearize_transform(inputs)  # temperature -> variation.
+    log_surface_pressure = inputs['log_surface_pressure'].data[np.newaxis]
+    return primitive_equations.State(
+        divergence=inputs['divergence'].data,
+        vorticity=inputs['vorticity'].data,
+        temperature_variation=inputs['temperature_variation'].data,
+        log_surface_pressure=log_surface_pressure,
+    )
+
+  def _from_primitive_equations_state(
+      self, state: primitive_equations.State
+  ) -> dict[str, cx.Field]:
+    levels, ylm_grid = self.levels, self.ylm_map.modal_grid
+    volume_field_names = ['divergence', 'vorticity', 'temperature_variation']
+    volume_fields = {
+        k: cx.wrap(getattr(state, k), levels, ylm_grid)
+        for k in volume_field_names
+    }
+    volume_fields = self.linear_to_absolute_rename(volume_fields)
+    lsp = cx.wrap(jnp.squeeze(state.log_surface_pressure, axis=0), ylm_grid)
+    return volume_fields | {'log_surface_pressure': lsp}
+
+  def explicit_terms(
+      self, state: primitive_equations.StateWithTime
+  ) -> primitive_equations.StateWithTime:
+    return self._from_primitive_equations_state(
+        self.forcing.explicit_terms(self._to_primitive_equations_state(state))
     )

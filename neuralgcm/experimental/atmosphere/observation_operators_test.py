@@ -21,7 +21,6 @@ import coordax as cx
 from flax import nnx
 import jax
 import jax_datetime as jdt
-from neuralgcm.experimental.atmosphere import equations
 from neuralgcm.experimental.atmosphere import observation_operators
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
@@ -55,14 +54,6 @@ class ObservationOperatorsTest(parameterized.TestCase):
         rngs=nnx.Rngs(0),
     )
     self.ref_temperatures = np.linspace(220, 250, num=n_sigma)
-    self.primitive_equations = equations.PrimitiveEquations(
-        ylm_map=self.ylm_map,
-        sigma_levels=self.input_sigma_levels,
-        sim_units=self.sim_units,
-        reference_temperatures=self.ref_temperatures,
-        orography_module=self.orography_module,
-        tracer_names=['specific_humidity'],
-    )
     zero_like = lambda c: cx.wrap(np.zeros(c.shape), c)
     self.prognostic_fields = {
         'divergence': zero_like(self.source_coords),

@@ -64,7 +64,7 @@ def _get_dino_specs(
 def _dino_state_to_neuralgcm_dict(
     state: dinosaur_primitive_equations.State,
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     aux_features: dict[str, Any] | None,
     as_nodal: bool = False,
     temperature_format: Literal['absolute', 'variation'] = 'variation',
@@ -86,7 +86,7 @@ def _dino_state_to_neuralgcm_dict(
   state_dict['log_surface_pressure'] = state_dict['log_surface_pressure'][0]
   coords_map = {
       2: ylm_map.modal_grid,  # for log_surface_pressure.
-      3: cx.compose_coordinates(sigma, ylm_map.modal_grid),  # other fields.
+      3: cx.compose_coordinates(levels, ylm_map.modal_grid),  # other fields.
   }
   state_dict = {
       k: cx.wrap(v, coords_map[v.ndim]) for k, v in state_dict.items()
@@ -98,7 +98,7 @@ def _dino_state_to_neuralgcm_dict(
 
 def isothermal_rest_atmosphere(
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
     tref: typing.Quantity = 288.0 * typing.units.kelvin,
@@ -109,8 +109,14 @@ def isothermal_rest_atmosphere(
     temperature_format: Literal['absolute', 'variation'] = 'variation',
 ) -> dict[str, cx.Field]:
   """Returns initial state of isothermal atmosphere at rest."""
+  if isinstance(levels, coordinates.SigmaLevels):
+    vertical_coords = levels.sigma_levels
+  elif isinstance(levels, coordinates.HybridLevels):
+    vertical_coords = levels.hybrid_levels
+  else:
+    raise ValueError(f'Unsupported vertical coordinate system: {levels}')
   dinosaur_coords = coordinate_systems.CoordinateSystem(
-      ylm_map.dinosaur_grid, sigma.sigma_levels
+      ylm_map.dinosaur_grid, vertical_coords
   )
   dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.isothermal_rest_atmosphere(
@@ -123,13 +129,13 @@ def isothermal_rest_atmosphere(
   )
   dino_state = init_state_fn(rng)
   return _dino_state_to_neuralgcm_dict(
-      dino_state, ylm_map, sigma, aux, as_nodal, temperature_format
+      dino_state, ylm_map, levels, aux, as_nodal, temperature_format
   )
 
 
 def steady_state_jw(
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
     u0: typing.Quantity = 35.0 * typing.units.m / typing.units.s,
@@ -143,8 +149,14 @@ def steady_state_jw(
     temperature_format: Literal['absolute', 'variation'] = 'variation',
 ) -> dict[str, cx.Field]:
   """Returns Jablonowski and Williamson steady state."""
+  if isinstance(levels, coordinates.SigmaLevels):
+    vertical_coords = levels.sigma_levels
+  elif isinstance(levels, coordinates.HybridLevels):
+    vertical_coords = levels.hybrid_levels
+  else:
+    raise ValueError(f'Unsupported vertical coordinate system: {levels}')
   dinosaur_coords = coordinate_systems.CoordinateSystem(
-      ylm_map.dinosaur_grid, sigma.sigma_levels
+      ylm_map.dinosaur_grid, vertical_coords
   )
   dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.steady_state_jw(
@@ -160,13 +172,13 @@ def steady_state_jw(
   )
   dino_state = init_state_fn(rng)
   return _dino_state_to_neuralgcm_dict(
-      dino_state, ylm_map, sigma, aux, as_nodal, temperature_format
+      dino_state, ylm_map, levels, aux, as_nodal, temperature_format
   )
 
 
 def perturbed_jw(
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    sigma: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     rng: typing.PRNGKeyArray,
     sim_units: units.SimUnits = units.SI_UNITS,
     u0: typing.Quantity = 35.0 * typing.units.m / typing.units.s,
@@ -184,8 +196,14 @@ def perturbed_jw(
     temperature_format: Literal['absolute', 'variation'] = 'variation',
 ) -> dict[str, cx.Field]:
   """Returns Jablonowski and Williamson steady state with perturbation."""
+  if isinstance(levels, coordinates.SigmaLevels):
+    vertical_coords = levels.sigma_levels
+  elif isinstance(levels, coordinates.HybridLevels):
+    vertical_coords = levels.hybrid_levels
+  else:
+    raise ValueError(f'Unsupported vertical coordinate system: {levels}')
   dinosaur_coords = coordinate_systems.CoordinateSystem(
-      ylm_map.dinosaur_grid, sigma.sigma_levels
+      ylm_map.dinosaur_grid, vertical_coords
   )
   dino_specs = _get_dino_specs(sim_units)
   init_state_fn, aux = primitive_equations_states.steady_state_jw(
@@ -214,7 +232,7 @@ def perturbed_jw(
   return _dino_state_to_neuralgcm_dict(
       dino_full_state,
       ylm_map,
-      sigma,
+      levels,
       aux,
       as_nodal,
       temperature_format,

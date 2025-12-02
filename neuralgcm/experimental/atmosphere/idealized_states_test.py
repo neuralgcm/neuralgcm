@@ -30,7 +30,6 @@ class TestStatesTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.sigma = coordinates.SigmaLevels.equidistant(8)
     self.grid = coordinates.LonLatGrid.T42()
     self.ylm_grid = coordinates.SphericalHarmonicGrid.T42()
     self.ylm_map = spherical_harmonics.FixedYlmMapping(
@@ -44,21 +43,25 @@ class TestStatesTest(parameterized.TestCase):
   @parameterized.product(
       as_nodal=[True, False],
       temperature_format=['absolute', 'variation'],
+      levels=[
+          coordinates.SigmaLevels.equidistant(8),
+          coordinates.HybridLevels.with_n_levels(8),
+      ],
   )
   def test_isothermal_rest_atmosphere(
-      self, as_nodal, temperature_format
+      self, as_nodal, temperature_format, levels
   ):
     rng = jax.random.PRNGKey(42)
     state = idealized_states.isothermal_rest_atmosphere(
         self.ylm_map,
-        self.sigma,
+        levels,
         rng,
         self.sim_units,
         as_nodal=as_nodal,
         temperature_format=temperature_format,
     )
     data_coord = cx.compose_coordinates(
-        self.sigma, self.grid if as_nodal else self.ylm_grid
+        levels, self.grid if as_nodal else self.ylm_grid
     )
     surface_coord = self.grid if as_nodal else self.ylm_grid
     expected_coords = {
@@ -76,21 +79,25 @@ class TestStatesTest(parameterized.TestCase):
   @parameterized.product(
       as_nodal=[True, False],
       temperature_format=['absolute', 'variation'],
+      levels=[
+          coordinates.SigmaLevels.equidistant(8),
+          coordinates.HybridLevels.with_n_levels(8),
+      ],
   )
   def test_steady_state_jw(
-      self, as_nodal, temperature_format
+      self, as_nodal, temperature_format, levels
   ):
     rng = jax.random.PRNGKey(42)
     state = idealized_states.steady_state_jw(
         self.ylm_map,
-        self.sigma,
+        levels,
         rng,
         self.sim_units,
         as_nodal=as_nodal,
         temperature_format=temperature_format,
     )
     data_coord = cx.compose_coordinates(
-        self.sigma, self.grid if as_nodal else self.ylm_grid
+        levels, self.grid if as_nodal else self.ylm_grid
     )
     surface_coord = self.grid if as_nodal else self.ylm_grid
     expected_coords = {
@@ -108,20 +115,24 @@ class TestStatesTest(parameterized.TestCase):
   @parameterized.product(
       as_nodal=[True, False],
       temperature_format=['absolute', 'variation'],
+      levels=[
+          coordinates.SigmaLevels.equidistant(8),
+          coordinates.HybridLevels.with_n_levels(8),
+      ],
   )
   def test_perturbed_jw(
-      self, as_nodal, temperature_format
+      self, as_nodal, temperature_format, levels
   ):
     state = idealized_states.perturbed_jw(
         self.ylm_map,
-        self.sigma,
+        levels,
         jax.random.key(42),
         self.sim_units,
         as_nodal=as_nodal,
         temperature_format=temperature_format,
     )
     data_coord = cx.compose_coordinates(
-        self.sigma, self.grid if as_nodal else self.ylm_grid
+        levels, self.grid if as_nodal else self.ylm_grid
     )
     surface_coord = self.grid if as_nodal else self.ylm_grid
     expected_coords = {

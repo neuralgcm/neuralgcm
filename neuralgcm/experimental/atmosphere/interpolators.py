@@ -109,13 +109,21 @@ class LinearOnPressure(nnx.Module):
     supported_level_types: A sequence of supported vertical coordinate types.
   """
 
-  target_levels: coordinates.SigmaLevels | coordinates.PressureLevels
+  target_levels: (
+      coordinates.SigmaLevels
+      | coordinates.PressureLevels
+      | coordinates.HybridLevels
+  )
   extrapolation: Literal['linear', 'constant'] = 'linear'
   include_surface_pressure_in_output: bool = False
   sim_units: units.SimUnits | None = None
   allow_no_levels: bool = False
   supported_level_types: Sequence[cx.Coordinate] = dataclasses.field(
-      default=(coordinates.PressureLevels, coordinates.SigmaLevels),
+      default=(
+          coordinates.PressureLevels,
+          coordinates.SigmaLevels,
+          coordinates.HybridLevels,
+      ),
       kw_only=True,
   )
 
@@ -152,17 +160,29 @@ class LinearOnPressure(nnx.Module):
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
         pressure = cx.wrap(
-            self.sim_units.nondimensionalize(
-                pressure.data * typing.units.millibar
-            ),
+            self.sim_units.nondimensionalize(pressure.data * typing.units.hPa),
             level,
         )
     elif isinstance(level, coordinates.SigmaLevels):
       if surface_pressure is None:
         raise ValueError(
-            '`surface_pressure` must be provided when interpolating from sigma.'
+            '`surface_pressure` must be provided when interpolating from sigma'
         )
       pressure = level.fields['sigma'] * surface_pressure
+    elif isinstance(level, coordinates.HybridLevels):
+      if surface_pressure is None:
+        raise ValueError(
+            '`surface_pressure` must be provided when interpolating from hybrid'
+        )
+      if self.sim_units is not None:
+        a_nondim = self.sim_units.nondimensionalize(
+            level.a_boundaries * typing.units.hPa
+        )
+        nondim_level = coordinates.HybridLevels(a_nondim, level.b_boundaries)
+        pressure = nondim_level.pressure_centers(surface_pressure)
+        pressure = pressure.untag(nondim_level).tag(level)
+      else:
+        pressure = level.pressure_centers(surface_pressure)
     else:
       raise ValueError(f'Unsupported level type {type(level)}.')
 
@@ -173,6 +193,19 @@ class LinearOnPressure(nnx.Module):
             'Missing `surface_pressure` needed when interpolating to sigma.'
         )
       desired = target_levels.fields['sigma'] * surface_pressure
+    elif isinstance(target_levels, coordinates.HybridLevels):
+      if surface_pressure is None:
+        raise ValueError(
+            'Missing `surface_pressure` needed when interpolating to hybrid.'
+        )
+      if self.sim_units is not None:
+        a, b = target_levels.a_boundaries, target_levels.b_boundaries
+        a_nondim = self.sim_units.nondimensionalize(a * typing.units.hPa)
+        nondim_level = coordinates.HybridLevels(a_nondim, b)
+        desired = nondim_level.pressure_centers(surface_pressure)
+        desired = desired.untag(nondim_level).tag(level)
+      else:
+        desired = target_levels.pressure_centers(surface_pressure)
     elif isinstance(target_levels, coordinates.PressureLevels):
       desired = target_levels.fields['pressure']
       if self.sim_units is not None:
@@ -327,9 +360,9 @@ def get_surface_pressure(
   Args:
     geopotential: geopotential Field with pressure level axis.
     geopotential_at_surface: geopotential at the surface.
-    sim_units: optional object describing simulation units. If provided,
-      the returned surface pressure will be nondimensionalized. Otherwise
-      returns surface pressure in hPa.
+    sim_units: optional object describing simulation units. If provided, the
+      returned surface pressure will be nondimensionalized. Otherwise returns
+      surface pressure in hPa.
 
   Returns:
     Surface pressure field on a horizontal grid.

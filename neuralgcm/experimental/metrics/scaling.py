@@ -21,6 +21,7 @@ import dataclasses
 import functools
 
 import coordax as cx
+import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 import numpy as np
@@ -126,9 +127,7 @@ class PerVariableScaler(ScaleFactor):
         name: ConstantScaler(constant=w if cx.is_field(w) else cx.wrap(w))
         for name, w in variable_weights.items()
     }
-    return cls(
-        scalers_by_name=scalers, default_scaler=default_scaler
-    )
+    return cls(scalers_by_name=scalers, default_scaler=default_scaler)
 
 
 @dataclasses.dataclass
@@ -344,11 +343,9 @@ class CoordinateMaskScaler(ScaleFactor):
       return cx.wrap(self.unmasked_value)
 
     final_mask = functools.reduce(lambda x, y: x & y, all_masks)
-    return cx.cmap(
-        lambda x: jnp.where(
-            x, self.masked_value, self.unmasked_value
-        ).astype(jnp.float32)
-    )(final_mask)
+    masked_v, unmasked_v = self.masked_value, self.unmasked_value
+    where_fn = lambda x: jnp.where(x, masked_v, unmasked_v).astype(jnp.float32)
+    return cx.cmap(where_fn)(final_mask)
 
 
 @dataclasses.dataclass
@@ -381,6 +378,15 @@ class LeadTimeScaler(ScaleFactor):
   skip_missing: bool = True
   weights_power: float | None = None
 
+  def _compute_inv_variance(self, t):
+    """Computes the unnormalized 1/std_dev weights."""
+    if self.asymptotic_squared_error_in_hours is not None:
+      t = t / (1 + t / self.asymptotic_squared_error_in_hours)
+
+    # Variance is assumed to grow linearly with our transformed time `t`.
+    # weight ~ 1 / std_dev ~ 1 / sqrt(variance)
+    return 1 / (1 + t / self.base_squared_error_in_hours)
+
   def scales(
       self,
       field: cx.Field,
@@ -390,40 +396,159 @@ class LeadTimeScaler(ScaleFactor):
     """Computes scale factors for statistics."""
     del field_name  # unused.
     time_coord = field.axes.get('timedelta', None)
-    scale_from_context = context and 'timedelta' in context
-    if time_coord is None and not scale_from_context:
+    from_context = time_coord is None and context and 'timedelta' in context
+
+    if time_coord is None and not from_context:
       if self.skip_missing:
         return cx.wrap(1.0)
-      raise ValueError(
-          f'TimeDelta coordinate not found on {field=} or in context'
-      )
+      raise ValueError(f'TimeDelta coord not found on {field=} or in context')
 
-    if scale_from_context:
-      time_field = context['timedelta']
-      if time_field.ndim != 0:
+    one_hr_delta = np.timedelta64(1, 'h')
+    if from_context:
+      assert isinstance(context, dict)  # make pytype happy.
+      all_timedeltas = None  # only used when normalize_weights is True.
+      if self.normalize_weights:
+        if 'times' not in context:
+          raise ValueError(
+              'Both "timedelta" and "times" must be present in the context'
+              f' when normalize_weights is True, but got: {context.keys()=}'
+          )
+        all_timedeltas = context['times'].data / one_hr_delta
+      timedelta_now = context['timedelta'].data
+      if timedelta_now.ndim != 0:
         raise ValueError(
-            f'Expected scalar timedelta in context, got {time_field.shape=}'
+            f'Expected scalar timedelta in context, got {timedelta_now.shape=}'
         )
-      t = time_field.data / np.timedelta64(1, 'h')
+      t = timedelta_now / one_hr_delta
     else:
-      t = time_coord.deltas / np.timedelta64(1, 'h')
+      t = time_coord.deltas / one_hr_delta
+      all_timedeltas = t
 
-    if self.asymptotic_squared_error_in_hours is not None:
-      t = t / (1 + t / self.asymptotic_squared_error_in_hours)
-    # Variance is assumed to grow linearly with our transformed time `t`.
-    # Weights are inverse of standard deviation.
-    inv_variance = 1 / (1 + t / self.base_squared_error_in_hours)
+    inv_variance = self._compute_inv_variance(t)
     if self.normalize_weights:
-      if not scale_from_context:
-        inv_variance /= inv_variance.sum()
+      if from_context:
+        norm_const = self._compute_inv_variance(all_timedeltas).sum()
       else:
-        raise ValueError(
-            'Normalizing weights is not supported when scales are computed from'
-            ' context.'
-        )
+        norm_const = inv_variance.sum()
+      inv_variance = inv_variance / norm_const
+
     inv_variance_sqrt = jnp.sqrt(inv_variance)
     if self.weights_power is not None:
-      inv_variance_sqrt = inv_variance_sqrt ** self.weights_power
-    if scale_from_context:
+      inv_variance_sqrt = inv_variance_sqrt**self.weights_power
+    if from_context:
       return cx.wrap(inv_variance_sqrt)
     return cx.wrap(inv_variance_sqrt, time_coord)
+
+
+@dataclasses.dataclass
+class GeneralizedLeadTimeScaler(ScaleFactor):
+  """ScaleFactor for reweighting loss based on lead-time error growth.
+
+  Computes scales inversely proportional to the anticipated growth of error
+  (assuming random-walk-like behavior). The scaling is normalized, with default
+  mean scale being 1 or a value that varies from 1 to `asymptotic_norm` as a
+  function of total lead-time. The rate at which longer lead-time is discounted
+  can be adjusted via `weights_power` argument. This scaler can be used with
+  both in-context and single pass evaluation. When used in-context, requires
+  `timedelta` and `times` that present the current in context lead-time and the
+  full time-series.
+
+  Attributes:
+    base_squared_error_in_hours: Hours before ~linear variance growth starts.
+    asymptotic_squared_error_in_hours: Hours before variance starts to plateau.
+    skip_missing: If True, fields without a timedelta coordinate get scale 1.0.
+    weights_power: Optional power to raise the weights. Can be used to scale
+      statistics that grow at a different rate.
+    asymptotic_norm: If set, the normalization of the mean scale is set to (1 +
+      asymptotic_norm * ratio) / (1 + ratio), where ratio is the ratio of the
+      total lead-time to the `norm_transition_timescale_in_hours`.
+    norm_transition_power: Power to raise the ratio in norm calculation.
+    norm_transition_timescale_in_hours: Number of hours at which norm crosses
+      `(1 + asymptotic_norm) / 2` value.
+  """
+
+  base_squared_error_in_hours: float
+  asymptotic_squared_error_in_hours: float | None = None
+  skip_missing: bool = True
+  weights_power: float | None = None
+  asymptotic_norm: float | None = None
+  norm_transition_power: float = 1.0
+  norm_transition_timescale_in_hours: float | None = None
+
+  def _compute_raw_weights(self, t: np.ndarray | jax.Array) -> jax.Array:
+    """Computes the unnormalized 1/std_dev weights."""
+    if self.asymptotic_squared_error_in_hours is not None:
+      t = t / (1 + t / self.asymptotic_squared_error_in_hours)
+
+    # Variance is assumed to grow linearly with our transformed time `t`.
+    # weight ~ 1 / std_dev ~ 1 / sqrt(variance)
+    inv_variance = 1 / (1 + t / self.base_squared_error_in_hours)
+    weights = jnp.sqrt(inv_variance)
+
+    if self.weights_power is not None:
+      weights = weights**self.weights_power
+    return weights
+
+  def _compute_normalization_scale(
+      self, max_t: float | jax.Array
+  ) -> float | jax.Array:
+    """Computes the target normalization scale."""
+    if self.asymptotic_norm is None:
+      return 1.0
+    if self.norm_transition_timescale_in_hours is None:
+      raise ValueError(
+          '`norm_transition_timescale_in_hours` must be provided '
+          'when `asymptotic_norm` is set.'
+      )
+    ratio = (
+        max_t / self.norm_transition_timescale_in_hours
+    ) ** self.norm_transition_power
+    return (1.0 + self.asymptotic_norm * ratio) / (1.0 + ratio)
+
+  def scales(
+      self,
+      field: cx.Field,
+      field_name: str | None = None,
+      context: dict[str, cx.Field] | None = None,
+  ) -> cx.Field:
+    """Computes scale factors for statistics."""
+    del field_name  # unused.
+
+    time_coord = field.axes.get('timedelta', None)
+    from_context = time_coord is None and context and 'timedelta' in context
+
+    if time_coord is None and not from_context:
+      if self.skip_missing:
+        return cx.wrap(1.0)
+      raise ValueError(f'TimeDelta coord not found on {field=} or in context')
+
+    one_hr_delta = np.timedelta64(1, 'h')
+    if from_context:
+      assert isinstance(context, dict)  # make pytype happy.
+      if 'times' not in context:
+        raise ValueError(
+            'Both "timedelta" and "times" must be present in the context, but'
+            f' got: {context.keys()=}'
+        )
+      timedelta_now = context['timedelta'].data
+      all_timedeltas = context['times'].data / one_hr_delta
+      if timedelta_now.ndim != 0:
+        raise ValueError(
+            f'Expected scalar timedelta in context, got {timedelta_now.shape=}'
+        )
+      t = timedelta_now / one_hr_delta
+    else:
+      t = time_coord.deltas / one_hr_delta
+      all_timedeltas = t
+
+    weights = self._compute_raw_weights(t)
+    max_t = jnp.max(all_timedeltas)
+    if from_context:
+      norm_const = jnp.mean(self._compute_raw_weights(all_timedeltas))
+    else:
+      norm_const = jnp.mean(weights)
+    weights = weights * self._compute_normalization_scale(max_t) / norm_const
+
+    if from_context:
+      return cx.wrap(weights)
+    return cx.wrap(weights, time_coord)

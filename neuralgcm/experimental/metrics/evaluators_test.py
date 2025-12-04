@@ -264,7 +264,8 @@ class EvaluatorsTest(parameterized.TestCase):
   def test_evaluation_through_scan_gives_same_results_as_default(self):
     length, n_spatial = 6, 10
     key_p, key_t = jax.random.split(jax.random.key(42))
-    dt = coordinates.TimeDelta(np.arange(length) * np.timedelta64(1, 'h'))
+    one_h = np.timedelta64(1, 'h')
+    dt = coordinates.TimeDelta(np.arange(length) * one_h)
     x = cx.SizedAxis('x', n_spatial)
     coord = cx.compose_coordinates(dt, x)
     predictions = {'u': cx.wrap(jax.random.uniform(key_p, coord.shape), coord)}
@@ -274,7 +275,11 @@ class EvaluatorsTest(parameterized.TestCase):
     three_hour_mask_coord = coordinates.TimeDelta(np.timedelta64(3, 'h')[None])
 
     agg_total = aggregation.Aggregator(  # full RMSE.
-        dims_to_reduce=('timedelta', 'x'), weight_by=[]
+        dims_to_reduce=('timedelta', 'x'),
+        weight_by=[],
+        scale_by=[
+            scaling.GeneralizedLeadTimeScaler(base_squared_error_in_hours=1.0)
+        ],
     )
     agg_3hr = aggregation.Aggregator(  # RMSE at dt == 3hr.
         dims_to_reduce=('timedelta', 'x'),
@@ -314,8 +319,15 @@ class EvaluatorsTest(parameterized.TestCase):
         in_axes=(nnx.Carry, 0, 0, 0),
         out_axes=nnx.Carry,
     )
+    timedelta = dt.fields['timedelta']
+    dummy = cx.DummyAxis(cx.tmp_axis_name(timedelta), length)
+    times = timedelta.broadcast_like(cx.compose_coordinates(dummy, dt))
+    context = {
+        'timedelta': timedelta.untag(dt),
+        'times': times.untag(dummy),
+    }
     evaluator_with_dt_context = evaluator.with_context(
-        {'timedelta': dt.fields['timedelta'].untag(dt)}
+        context
     )
     scanned_agg_states = evaluate_in_scan_fn(
         init_agg_states,

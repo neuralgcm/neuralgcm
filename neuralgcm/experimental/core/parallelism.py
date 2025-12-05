@@ -221,6 +221,9 @@ class Mesh:
       specifies that all `level` dimensions of a field will be partitioned
       across the `z`, `x`, and `y` axes of the device mesh and all `layer`
       dimensions will be partitioned only across the `z` axis.
+    memory_kind: Optional memory kind to use when placing arrays on the mesh.
+      Default is None, which means that the memory kind will be inherited from
+      the devices.
   """
 
   spmd_mesh: jax.sharding.Mesh | None = None
@@ -230,6 +233,7 @@ class Mesh:
   field_partitions: dict[Schema, DimPartitions] = dataclasses.field(
       default_factory=dict
   )
+  memory_kind: str | None = None
 
   def __post_init__(self):
     self._validate_partitions()
@@ -334,7 +338,9 @@ class Mesh:
       `inputs` with sharding constraint(s) applied.
     """
     p_specs = P(*self.array_partitions[schema])
-    sharding = jax.sharding.NamedSharding(self.spmd_mesh, p_specs)
+    sharding = jax.sharding.NamedSharding(
+        self.spmd_mesh, p_specs, memory_kind=self.memory_kind
+    )
     return jax.lax.with_sharding_constraint(array, sharding)
 
   def _get_named_sharding(
@@ -342,7 +348,9 @@ class Mesh:
   ) -> jax.sharding.NamedSharding:
     dim_partitions = self.field_partitions[schema]
     p_specs = get_partition_spec(dims, dim_partitions)
-    return jax.sharding.NamedSharding(self.spmd_mesh, p_specs)
+    return jax.sharding.NamedSharding(
+        self.spmd_mesh, p_specs, memory_kind=self.memory_kind
+    )
 
   def _with_sharding_constraint_field(
       self, field: cx.Field, schema: str

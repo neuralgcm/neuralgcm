@@ -72,21 +72,35 @@ def get_geopotential(
 
 def uvtz_to_primitive_equations(
     inputs: dict[str, cx.Field],
-    levels: coordinates.SigmaLevels,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels,
     orography: orographies.Orography,
     sim_units: units.SimUnits,
 ) -> dict[str, cx.Field]:
   """Converts velocity/temperature/geopotential to primitive equations state."""
-  if 'geopotential' not in inputs:
+  if 'geopotential' not in inputs and 'surface_pressure' not in inputs:
     raise ValueError(
-        f'Missing `geopotential` in source data keys {inputs.keys()}.'
+        'Missing `geopotential` and `surface_pressure` in source data keys'
+        f' {inputs.keys()}, at least one is needed to obtain surface pressure.'
     )
+
   inputs = inputs.copy()  # avoid mutating inputs.
   geopotential = inputs.pop('geopotential')
-  geopotential_at_surface = orography.nodal_orography * sim_units.g
-  surface_pressure = interpolators.get_surface_pressure(
-      geopotential, geopotential_at_surface, sim_units
-  )
+  input_levels = {
+      geopotential.axes.get(k) for k in ['sigma', 'hybrid', 'pressure']
+  }
+  input_levels.discard(None)
+  if len(input_levels) != 1:
+    raise ValueError('expected only one type of level type, got {levels}.')
+  [input_levels] = input_levels
+  if isinstance(
+      input_levels, (coordinates.SigmaLevels, coordinates.HybridLevels)
+  ):
+    surface_pressure = inputs.pop('surface_pressure')
+  else:
+    geopotential_at_surface = orography.nodal_orography * sim_units.g
+    surface_pressure = interpolators.get_surface_pressure(
+        geopotential, geopotential_at_surface, sim_units
+    )
   regrid = interpolators.LinearOnPressure(levels, sim_units=sim_units)
   on_levels = regrid(inputs | {'surface_pressure': surface_pressure})
   on_levels['log_surface_pressure'] = cx.cpmap(jnp.log)(surface_pressure)

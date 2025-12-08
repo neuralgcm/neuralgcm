@@ -488,7 +488,7 @@ class LonLatGrid(cx.Coordinate):
         latitude_nodes=latitude_nodes,
         latitude_spacing=latitude_spacing,
         longitude_offset=longitude_offset,
-        lon_lat_padding=lon_lat_padding,
+        lon_lat_padding=tuple(int(x) for x in lon_lat_padding),
     )
     result_lat = np.rad2deg(result._ylm_grid.latitudes)
     if not np.allclose(result_lat, lat, atol=1e-3):
@@ -824,7 +824,7 @@ class SphericalHarmonicGrid(cx.Coordinate):
         longitude_wavenumbers=longitude_wavenumbers,
         total_wavenumbers=coords.sizes['total_wavenumber'],
         spherical_harmonics_method=spherical_harmonics_method,
-        wavenumber_padding=wavenumber_padding,
+        wavenumber_padding=tuple(int(x) for x in wavenumber_padding),
     )
 
     expected = candidate.fields['longitude_wavenumber'].data

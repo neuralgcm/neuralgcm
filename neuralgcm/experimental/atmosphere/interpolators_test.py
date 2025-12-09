@@ -38,7 +38,7 @@ class LinearOnPressureTest(parameterized.TestCase):
     rng = np.random.RandomState(42)
     coords = cx.compose_coordinates(source_levels, grid)
     field = cx.wrap(rng.randn(*coords.shape), coords)
-    surface_pressure = cx.wrap(1000.0 + 100 * rng.randn(*grid.shape), grid)
+    surface_pressure = cx.wrap(100000 + 10000 * rng.randn(*grid.shape), grid)
     inputs = {'field': field, 'surface_pressure': surface_pressure}
 
     regridder = interpolators.LinearOnPressure(target_levels, 'linear')
@@ -50,7 +50,7 @@ class LinearOnPressureTest(parameterized.TestCase):
         {'field': field.data},
         pressure_coords=source_levels.pressure_levels,
         sigma_coords=target_levels.sigma_levels,
-        surface_pressure=surface_pressure.data,
+        surface_pressure=surface_pressure.data / 100,  # dinosaur uses hPa.
         interpolate_fn=dino_interp_fn,
     )
     expected_coords = cx.compose_coordinates(target_levels, grid)
@@ -81,7 +81,7 @@ class LinearOnPressureTest(parameterized.TestCase):
     rng = np.random.RandomState(42)
     coords = cx.compose_coordinates(source_levels, grid)
     field = cx.wrap(rng.randn(*coords.shape), coords)
-    surface_pressure = cx.wrap(1000.0 + 100 * rng.randn(*grid.shape), grid)
+    surface_pressure = cx.wrap(100000 + 10000 * rng.randn(*grid.shape), grid)
     inputs = {'field': field, 'surface_pressure': surface_pressure}
 
     regridder = interpolators.LinearOnPressure(target_levels, extrapolation)
@@ -93,7 +93,7 @@ class LinearOnPressureTest(parameterized.TestCase):
         {'field': field.data},
         pressure_coords=target_levels.pressure_levels,
         sigma_coords=source_levels.sigma_levels,
-        surface_pressure=surface_pressure.data,
+        surface_pressure=surface_pressure.data / 100,  # dinosaur uses hPa.
         interpolate_fn=dino_interp_fn,
     )
     expected_coords = cx.compose_coordinates(target_levels, grid)
@@ -118,7 +118,7 @@ class LinearOnPressureTest(parameterized.TestCase):
     """Tests interpolation to sigma from 1d pressure level inputs."""
     source_levels = coordinates.PressureLevels([100, 200, 400])
     target_levels = coordinates.SigmaLevels.equidistant(5)
-    surface_pressure = 1000.0
+    surface_pressure = 1000.0 * 100  # hPa to Pa.
     field = cx.wrap(np.array([10.0, 20.0, 30.0]), source_levels)
     inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
 
@@ -132,11 +132,11 @@ class LinearOnPressureTest(parameterized.TestCase):
     """Tests interpolation to sigma with sim_units and nondim pressure."""
     source_levels = coordinates.PressureLevels([100, 200, 400])
     target_levels = coordinates.SigmaLevels.equidistant(5)
-    surface_pressure_hpa = 1000.0
+    surface_pressure_pa = 1000.0 * 100  # hPa to Pa.
     field = cx.wrap(np.array([10.0, 20.0, 30.0]), source_levels)
     inputs_hpa = {
         'field': field,
-        'surface_pressure': cx.wrap(surface_pressure_hpa),
+        'surface_pressure': cx.wrap(surface_pressure_pa),
     }
 
     regridder_hpa = interpolators.LinearOnPressure(target_levels, 'linear')
@@ -144,7 +144,7 @@ class LinearOnPressureTest(parameterized.TestCase):
 
     sim_units = units.DEFAULT_UNITS
     surface_pressure_nondim = sim_units.nondimensionalize(
-        surface_pressure_hpa * typing.units.millibar
+        surface_pressure_pa * typing.units.Pa
     )
     inputs_nondim = {
         'field': field,
@@ -165,7 +165,7 @@ class LinearOnPressureTest(parameterized.TestCase):
     target_levels = coordinates.SigmaLevels.from_centers(
         np.array([0.1, 0.25, 0.4, 0.6, 0.85])
     )
-    surface_pressure = 1000.0
+    surface_pressure = 1000.0 * 100  # hPa to Pa.
     field_data = np.array([1.0, 2.0, 4.0, 6.0, 8.0])
     field = cx.wrap(field_data, source_levels)
     inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
@@ -196,7 +196,7 @@ class LinearOnPressureTest(parameterized.TestCase):
         np.array([0.1, 0.3, 0.5, 0.7, 0.9])
     )
     target_levels = coordinates.PressureLevels([100, 250, 400, 600, 850])
-    surface_pressure = 1000.0
+    surface_pressure = 1000.0 * 100  # hPa to Pa.
     field_data = np.array([1.0, 2.0, 4.0, 6.0, 8.0])
     field = cx.wrap(field_data, source_levels)
     inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
@@ -251,7 +251,7 @@ class LinearOnPressureTest(parameterized.TestCase):
     # 5 equidistant levels yield centers at 0.1, 0.3, 0.5, 0.7, 0.9
     target_levels = coordinates.SigmaLevels.equidistant(5)
 
-    surface_pressure = 1000.0
+    surface_pressure = 1000.0 * 100  # hPa to Pa.
 
     # Source Pressures: 200, 500, 800
     # Target Pressures: 100, 300, 500, 700, 900
@@ -285,7 +285,7 @@ class LinearOnPressureTest(parameterized.TestCase):
     a_boundaries = np.array([0, 20, 80, 150])
     b_boundaries = np.array([0, 0.1, 0.4, 0.8])
     target_levels = coordinates.HybridLevels(a_boundaries, b_boundaries)
-    surface_pressure = 1000.0
+    surface_pressure = 1000.0 * 100  # hPa to Pa.
     field = cx.wrap(np.array([10.0, 20.0, 30.0, 40.0, 50.0]), source_levels)
     inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
 
@@ -303,7 +303,7 @@ class ConservativeOnPressureTest(parameterized.TestCase):
     """Tests regridding from pressure with a simple case."""
     source_levels = coordinates.PressureLevels([100, 300, 500])
     # boundaries are: (0, 200), (200, 400), (400, 600).
-    surface_pressure = 600.0
+    surface_pressure = 600.0 * 100  # hPa to Pa.
     target_levels = coordinates.SigmaLevels.equidistant(2)
     # sigma levels correspond to pressure boundaries: (0, 300), (300, 600).
     field_data = np.array([10.0, 20.0, 30.0])
@@ -326,7 +326,7 @@ class ConservativeOnPressureTest(parameterized.TestCase):
     target_levels = coordinates.SigmaLevels.from_centers(
         np.array([0.25, 0.75])
     )  # boundaries at [0.0, 0.5, 1.0]
-    surface_pressure = 1000.0
+    surface_pressure = 1000.0 * 100  # hPa to Pa.
     field_data = np.array([10.0, 20.0, 30.0])
     field = cx.wrap(field_data, source_levels)
     inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
@@ -367,7 +367,7 @@ class GetSurfacePressureTest(parameterized.TestCase):
     geopotential = cx.wrap(geopotential_data, coords)
     gravity_acceleration = 10
     geopotential_at_surface = cx.wrap(orography * gravity_acceleration, grid)
-    expected_data = np.array([[[450, 390, 500, 550]]])
+    expected_data = np.array([[[45000, 39000, 50000, 55000]]])
     expected = cx.wrap(np.squeeze(expected_data).reshape(1, 4), grid)
     actual = interpolators.get_surface_pressure(
         geopotential, geopotential_at_surface

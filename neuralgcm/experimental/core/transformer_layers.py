@@ -20,7 +20,7 @@ import dataclasses
 import functools
 import itertools
 import math
-from typing import Callable, Protocol, Self, Sequence
+from typing import Callable, Protocol, Self, Sequence, TypeAlias
 
 import coordax as cx
 import einops
@@ -36,8 +36,9 @@ from neuralgcm.experimental.core import typing
 import numpy as np
 
 
+Array: TypeAlias = typing.Array
 Gating = Callable[[typing.Array, typing.Array], typing.Array]
-default_kernel_init = nnx.initializers.lecun_normal()
+default_kernel_init = nnx.initializers.he_normal()
 
 
 class TransformerLayer(Protocol):
@@ -590,7 +591,8 @@ class TransformerBase(nnx.Module, abc.ABC):
       dense_factory: standard_layers.UnaryLayerFactory,
       normalize_qk: bool = False,
       normalize_v: bool = False,
-      w_init=nnx.initializers.xavier_uniform(),
+      apply_final_norm: bool = False,
+      w_init=nnx.initializers.he_normal(),
       b_init=nnx.initializers.zeros,
       rngs: nnx.Rngs,
   ):
@@ -614,6 +616,7 @@ class TransformerBase(nnx.Module, abc.ABC):
       dense_factory: Factory for dense layers post-attention.
       normalize_qk: whether to add layer norm prior to computing query and key.
       normalize_v: whether to add layer norm prior to computing value.
+      apply_final_norm: whether to include final post_norm layer.
       w_init: Kernel initializer for `MultiHeadAttention`.
       b_init: Bias initializer for `MultiHeadAttention`.
       rngs: JAX PRNG keys.
@@ -631,6 +634,7 @@ class TransformerBase(nnx.Module, abc.ABC):
     pre_norms = []
     post_norms = []
     possible_gating = []
+    identity = lambda x: x
     for i, (d_in, d_out) in enumerate(zip(input_sizes, output_sizes)):
       if qkv_features is None:
         if d_in % num_heads != 0:
@@ -657,8 +661,12 @@ class TransformerBase(nnx.Module, abc.ABC):
         pre_norms.append(pre_normalization_factory(d_in, rngs=rngs))
         pre_norms.append(pre_normalization_factory(d_out, rngs=rngs))
       if post_normalization_factory is not None:
-        post_norms.append(post_normalization_factory(d_out, rngs=rngs))
-        post_norms.append(post_normalization_factory(d_out, rngs=rngs))
+        if i < len(intermediate_sizes) or apply_final_norm:
+          post_norms.append(post_normalization_factory(d_out, rngs=rngs))
+          post_norms.append(post_normalization_factory(d_out, rngs=rngs))
+        else:
+          post_norms.append(identity)
+          post_norms.append(identity)
       possible_gating.append(no_gating if d_in != d_out else residual_gating)
       dense_layers.append(dense_factory(d_out, d_out, rngs=rngs))
       possible_gating.append(residual_gating)  # (attention -> dense) residual.
@@ -680,12 +688,13 @@ class TransformerBase(nnx.Module, abc.ABC):
       use_bias_in_attention: bool = True,
       pre_normalization_factory: NormalizationFactory | None = None,
       post_normalization_factory: NormalizationFactory | None = None,
+      apply_final_norm: bool = False,
       activation: Callable[[typing.Array], typing.Array] = jax.nn.gelu,
       gating: Sequence[Gating] | Gating | None = lambda skip, x: x,
       dense_factory: standard_layers.UnaryLayerFactory,
       normalize_qk: bool = False,
       normalize_v: bool = False,
-      w_init=nnx.initializers.xavier_uniform(),
+      w_init=nnx.initializers.he_normal(),
       b_init=nnx.initializers.zeros,
       rngs: nnx.Rngs,
   ) -> Self:
@@ -700,6 +709,7 @@ class TransformerBase(nnx.Module, abc.ABC):
       use_bias_in_attention: whether to include bias term in MultiHeadAttention.
       pre_normalization_factory: factory for pre-normalization layers.
       post_normalization_factory: factory for post-normalization layers.
+      apply_final_norm: whether to include final post_norm layer.
       activation: activation function to be applied to the output of attention.
       gating: sequence of 2n+1 or single gating function. Default is no gating.
       dense_factory: factory for generating dense layers that follow attention.
@@ -719,6 +729,7 @@ class TransformerBase(nnx.Module, abc.ABC):
             use_bias_in_attention=use_bias_in_attention,
             pre_normalization_factory=pre_normalization_factory,
             post_normalization_factory=post_normalization_factory,
+            apply_final_norm=apply_final_norm,
             gating=gating,
             dense_factory=dense_factory,
             normalize_qk=normalize_qk,
@@ -1157,6 +1168,7 @@ class WindowTransformerBlocks(TransformerBase):
       use_bias_in_attention: bool = True,
       pre_normalization_factory: NormalizationFactory | None = None,
       post_normalization_factory: NormalizationFactory | None = None,
+      apply_final_norm: bool = False,
       activation: Callable[[typing.Array], typing.Array] = jax.nn.gelu,
       gating: Sequence[Gating] | Gating | None = lambda skip, x: x,
       dense_factory: standard_layers.UnaryLayerFactory,
@@ -1185,6 +1197,7 @@ class WindowTransformerBlocks(TransformerBase):
       use_bias_in_attention: whether to include bias term in MultiHeadAttention.
       pre_normalization_factory: factory for pre-normalization layers.
       post_normalization_factory: factory for post-normalization layers.
+      apply_final_norm: whether to apply final layer norm.
       activation: activation function to use in the feed-forward layers.
       gating: sequence of 2n or single gating function. Default is no gating.
       dense_factory: factory for generating dense layers that follow attention.
@@ -1204,6 +1217,7 @@ class WindowTransformerBlocks(TransformerBase):
             use_bias_in_attention=use_bias_in_attention,
             pre_normalization_factory=pre_normalization_factory,
             post_normalization_factory=post_normalization_factory,
+            apply_final_norm=apply_final_norm,
             gating=gating,
             dense_factory=dense_factory,
             normalize_qk=normalize_qk,

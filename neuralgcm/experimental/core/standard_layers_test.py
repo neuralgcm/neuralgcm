@@ -336,7 +336,8 @@ class StandardLayersTest(parameterized.TestCase):
       )
       conv.conv_layer.kernel.value = kernel_select_left
       output = conv(test_in_reflect)
-      np.testing.assert_allclose(output[:, :, 0], test_in_reflect[:, :, 1])
+      rotated_on_lon = jnp.roll(test_in_reflect, lon_size // 2, axis=1)
+      np.testing.assert_allclose(output[:, :, 0], rotated_on_lon[:, :, 0])
 
   @parameterized.parameters(
       dict(

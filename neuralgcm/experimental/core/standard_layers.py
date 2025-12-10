@@ -22,6 +22,7 @@ from flax import nnx
 from flax import typing as flax_typing
 import jax
 import jax.numpy as jnp
+from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 
@@ -376,26 +377,29 @@ class ConvLonLat(nnx.Module):
         out_features=output_size,
         kernel_size=kernel_size,
         rngs=rngs,
-        padding='valid',
+        padding='same',
         kernel_dilation=dilation,
         use_bias=use_bias,
     )
-    self.pad_size = int((kernel_size[0] - 1) / 2 * dilation)
+    lon_pad = kernel_size[0] * dilation // 2
+    lat_pad = kernel_size[1] * dilation // 2
+    self.bc = boundaries.LonLatBoundary()
+    self.pad_width = ((lon_pad, lon_pad), (lat_pad, lat_pad))
 
-  def __call__(self, inputs: Array) -> Array:
-    inputs = jnp.moveaxis(jnp.expand_dims(inputs, axis=0), 1, -1)
-    inputs = jnp.pad(
-        inputs,
-        ((0, 0), (self.pad_size, self.pad_size), (0, 0), (0, 0)),
-        mode='wrap',
-    )
-    inputs = jnp.pad(
-        inputs,
-        ((0, 0), (0, 0), (self.pad_size, self.pad_size), (0, 0)),
-        mode='reflect',
-    )
-    outputs = self.conv_layer(inputs).squeeze(axis=0)
-    return jnp.moveaxis(outputs, -1, 0)
+  def __call__(self, inputs: jax.Array) -> jax.Array:
+    @nnx.vmap(in_axes=(None, 0))
+    def pad(bc, x):
+      return bc.pad_array(x, self.pad_width)
+
+    @nnx.vmap(in_axes=(None, 0))
+    def trim(bc, x):
+      return bc.trim_array(x, self.pad_width)
+
+    inputs = pad(self.bc, inputs)
+    inputs = jnp.moveaxis(inputs, 0, -1)
+    outputs = self.conv_layer(inputs)
+    outputs = jnp.moveaxis(outputs, -1, 0)
+    return trim(self.bc, outputs)
 
 
 @nnx_compat.dataclass

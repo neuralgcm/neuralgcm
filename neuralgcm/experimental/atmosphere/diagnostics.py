@@ -18,7 +18,6 @@ import dataclasses
 from typing import Literal, Protocol
 
 import coordax as cx
-from dinosaur import sigma_coordinates
 from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
@@ -58,7 +57,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
   """
 
   ylm_map: spherical_harmonics.FixedYlmMapping
-  levels: coordinates.SigmaLevels
+  levels: coordinates.SigmaLevels | coordinates.HybridLevels
   sim_units: units.SimUnits
   moisture_species: tuple[str, ...] = (
       'specific_humidity',
@@ -74,17 +73,16 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
   ) -> dict[str, cx.Field]:
     to_nodal = self.ylm_map.to_nodal
     p_surface = cx.cmap(jnp.exp)(to_nodal(prognostics['log_surface_pressure']))
-    scale = p_surface / self.sim_units.gravity_acceleration
+    scale = 1 / self.sim_units.gravity_acceleration
     moisture_tendencies_nodal = [
         to_nodal(v) for k, v in tendencies.items() if k in self.moisture_species
     ]
     moisture_tendencies_sum = sum(moisture_tendencies_nodal)
     assert isinstance(moisture_tendencies_sum, cx.Field)
-    # TODO(dkochkov): add sigma integral method to SigmaLevels.
-    p_plus_e = -scale.data * sigma_coordinates.sigma_integral(
-        moisture_tendencies_sum.data,
-        self.levels.sigma_levels,
-        keepdims=False,
+    p_plus_e = -scale * self.levels.integrate_over_pressure(
+        moisture_tendencies_sum,
+        p_surface,
+        self.sim_units,
     )
     return p_plus_e
 
@@ -95,7 +93,6 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
     else:
       prognostics = kwargs.get(self.prognostics_arg_key)
     p_plus_e_rate = self._compute_p_plus_e_rate(tendencies, prognostics)
-    p_plus_e_rate = cx.wrap(p_plus_e_rate, self.ylm_map.nodal_grid)
     return {'precipitation_plus_evaporation_rate': p_plus_e_rate}
 
 
@@ -284,7 +281,7 @@ class ExtractEnergyResiduals(nnx.Module):
   """
 
   ylm_map: spherical_harmonics.FixedYlmMapping
-  levels: coordinates.SigmaLevels
+  levels: coordinates.SigmaLevels | coordinates.HybridLevels
   sim_units: units.SimUnits
   model_orography: orographies.ModalOrography
   observation_operator: observation_operators.ObservationOperator
@@ -386,16 +383,20 @@ class ExtractEnergyResiduals(nnx.Module):
         - lf * qi_nodal_field
         + k_nodal_field
     )
-    i1 = self.levels.integrate(integrand1)
+    i1 = self.levels.integrate_over_pressure(
+        integrand1, p_surface_field, self.sim_units
+    )
     integrand2 = (
         cp * temp_tend_nodal_field
         + lv * hum_tend_nodal_field
         - lf * dqi_dt_nodal_field
         + dk_dt_nodal_field
     )
-    i2 = self.levels.integrate(integrand2)
+    i2 = self.levels.integrate_over_pressure(
+        integrand2, p_surface_field, self.sim_units
+    )
 
-    energy_tendency_data = (p_surface_field / g) * (
+    energy_tendency_data = (1 / g) * (
         (phi_s + i1) * log_sp_tend_nodal_field + i2
     )
 

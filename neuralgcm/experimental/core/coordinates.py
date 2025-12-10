@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import functools
-from typing import Any, Iterable, Literal, Self, Sequence, TYPE_CHECKING, cast
+from typing import Any, cast, Iterable, Literal, Self, Sequence, TYPE_CHECKING
 
 import coordax as cx
 from dinosaur import coordinate_systems as dinosaur_coordinates
@@ -30,6 +30,8 @@ from dinosaur import spherical_harmonic
 from dinosaur import vertical_interpolation
 import jax
 import jax.numpy as jnp
+from neuralgcm.experimental.core import typing
+from neuralgcm.experimental.core import units
 import numpy as np
 import treescope
 import xarray
@@ -906,6 +908,16 @@ class SigmaLevels(cx.Coordinate):
     )
     return cx.cmap(sigma_integrate)(x.untag(self))
 
+  def integrate_over_pressure(
+      self,
+      x: cx.Field,
+      surface_pressure: cx.Field,
+      sim_units: units.SimUnits | None = None,
+  ) -> cx.Field:
+    """Integrates `x` over the sigma levels weighted by surface pressure."""
+    del sim_units  # unused
+    return surface_pressure * self.integrate(x)
+
   def integrate_cumulative(
       self,
       x: cx.Field,
@@ -1247,6 +1259,26 @@ class HybridLevels(cx.Coordinate):
   def pressure_centers(self, surface_pressure: cx.Field) -> cx.Field:
     """Returns pressure at layer centers given `surface_pressure`."""
     return self.fields['a'] + self.fields['b'] * surface_pressure
+
+  def integrate_over_pressure(
+      self,
+      x: cx.Field,
+      surface_pressure: cx.Field,
+      sim_units: units.SimUnits | None,
+  ) -> cx.Field:
+    a, b = self.hybrid_levels.a_boundaries, self.hybrid_levels.b_boundaries
+    if sim_units is not None:
+      a_nondim = sim_units.nondimensionalize(a * typing.units.hPa)
+    else:
+      a_nondim = a * 100  # default hPa -> Pa conversion.
+    nondim_hybrid_levels = hybrid_coordinates.HybridCoordinates(a_nondim, b)
+    integral_fn = functools.partial(
+        hybrid_coordinates.integral_over_pressure,
+        coordinates=nondim_hybrid_levels,
+        axis=0,
+        keepdims=False,
+    )
+    return cx.cmap(integral_fn)(x.untag(self), surface_pressure)
 
   def to_xarray(self) -> dict[str, xarray.Variable]:
     variables = super().to_xarray()

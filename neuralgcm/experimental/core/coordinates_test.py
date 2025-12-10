@@ -18,11 +18,13 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import coordax as cx
 from coordax import testing as coordax_testing
+from dinosaur import hybrid_coordinates
 from dinosaur import sigma_coordinates
 import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
+from neuralgcm.experimental.core import units
 from neuralgcm.experimental.core import xarray_utils
 import numpy as np
 
@@ -195,6 +197,101 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     )
     np.testing.assert_allclose(integrated_field.data, expected_data, atol=1e-6)
     expected_dims = tuple(d for d in coords.dims if d not in sigma_coord.dims)
+    self.assertEqual(integrated_field.dims, expected_dims)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='sigma_axis_minus_3',
+          shape=(4, 5, 3),
+          sigma_axis=-3,
+      ),
+      dict(
+          testcase_name='sigma_axis_1',
+          shape=(5, 4, 3),
+          sigma_axis=1,
+      ),
+  )
+  def test_sigma_level_integrate_over_pressure(self, shape, sigma_axis):
+    sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
+    pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
+    coords = cx.compose_coordinates(*[
+        sigma_coord if i == pos_sigma_axis else cx.SizedAxis(f'ax{i}', shape[i])
+        for i in range(len(shape))
+    ])
+    data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    rng = np.random.RandomState(0)
+    sp_data = rng.uniform(
+        size=[s for i, s in enumerate(shape) if i != pos_sigma_axis]
+    )
+    sp_coords = cx.compose_coordinates(*[
+        c
+        for c in coords.axes
+        if not isinstance(c, coordinates.SigmaLevels)
+    ])
+    field = cx.wrap(data, coords)
+    sp_field = cx.wrap(sp_data, sp_coords)
+    integrated_field = sigma_coord.integrate_over_pressure(field, sp_field)
+    expected_data = sp_data * sigma_coordinates.sigma_integral(
+        data,
+        sigma_coord.sigma_levels,
+        axis=sigma_axis,
+        keepdims=False,
+    )
+    np.testing.assert_allclose(integrated_field.data, expected_data, atol=1e-6)
+    expected_dims = tuple(d for d in coords.dims if d not in sigma_coord.dims)
+    self.assertEqual(integrated_field.dims, expected_dims)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='hybrid_axis_minus_3',
+          shape=(4, 5, 3),
+          hybrid_axis=-3,
+      ),
+      dict(
+          testcase_name='hybrid_axis_1',
+          shape=(5, 4, 3),
+          hybrid_axis=1,
+      ),
+  )
+  def test_hybrid_level_integrate_over_pressure(self, shape, hybrid_axis):
+    sim_units = units.SI_UNITS
+    hybrid_coord = coordinates.HybridLevels.with_n_levels(shape[hybrid_axis])
+    pos_hybrid_axis = (
+        hybrid_axis if hybrid_axis >= 0 else hybrid_axis + len(shape)
+    )
+    coords = cx.compose_coordinates(*[
+        hybrid_coord if i == pos_hybrid_axis
+        else cx.SizedAxis(f'ax{i}', shape[i])
+        for i in range(len(shape))
+    ])
+    data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    sp_shape = list(shape)
+    sp_shape.pop(pos_hybrid_axis)
+    sp_data = np.ones(sp_shape, dtype=np.float32)
+    sp_coords = cx.compose_coordinates(*[
+        c for c in coords.coordinates
+        if not isinstance(c, coordinates.HybridLevels)
+    ])
+    field = cx.wrap(data, coords)
+    sp_field = cx.wrap(sp_data, sp_coords)
+    integrated_field = hybrid_coord.integrate_over_pressure(
+        field, sp_field, sim_units=sim_units
+    )
+    a_nondim = sim_units.nondimensionalize(
+        hybrid_coord.hybrid_levels.a_boundaries * units.parse_units('hPa')
+    )
+    nondim_levels = hybrid_coordinates.HybridCoordinates(
+        a_nondim, hybrid_coord.hybrid_levels.b_boundaries
+    )
+    expected_data = hybrid_coordinates.integral_over_pressure(
+        data,
+        sp_data,
+        nondim_levels,
+        axis=hybrid_axis,
+        keepdims=False,
+    )
+    np.testing.assert_allclose(integrated_field.data, expected_data, atol=1e-6)
+    expected_dims = tuple(d for d in coords.dims if d not in hybrid_coord.dims)
     self.assertEqual(integrated_field.dims, expected_dims)
 
   @parameterized.named_parameters(

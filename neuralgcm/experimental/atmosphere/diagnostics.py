@@ -27,6 +27,7 @@ from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
+from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
@@ -428,7 +429,9 @@ class ExtractEnergyResiduals(nnx.Module):
     # accumulated over an hour time and need to be converted to W/m^2.
     # RT is TOA flux into atm, and FS is surface flux from atm.
     # The user-provided formula is dE/dt = RT - FS.
-    sec_in_hour_inv = 1 / 3600
+    sec_in_hour_inv = 1 / self.sim_units.nondimensionalize(
+        3600 * typing.units.seconds
+    )
     rt = sum(net_energy_terms[k] for k in self.rt_keys) * sec_in_hour_inv
     fs = sum(net_energy_terms[k] for k in self.fs_keys) * sec_in_hour_inv
 

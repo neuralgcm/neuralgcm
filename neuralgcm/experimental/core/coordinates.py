@@ -1085,7 +1085,7 @@ class PressureLevels(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'pressure': cx.wrap(self.centers * 100, self)}  # Use Pascal.
+    return {'pressure': cx.wrap(self.centers, self)}
 
   def asdict(self) -> dict[str, Any]:
     return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}
@@ -1160,11 +1160,6 @@ class PressureLevels(cx.Coordinate):
     centers = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
     return cls(centers=centers)
 
-  def to_xarray(self) -> dict[str, xarray.Variable]:
-    """Convert this coordinate into xarray variables."""
-    variables = {'pressure': xarray.Variable(self.dims, self.centers)}
-    return variables
-
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
@@ -1231,7 +1226,7 @@ class HybridLevels(cx.Coordinate):
     b = (self.b_boundaries[:-1] + self.b_boundaries[1:]) / 2.0
     return {
         'hybrid': cx.wrap(np.arange(1, self.shape[0] + 1), self),
-        'a': cx.wrap(a * 100, self),  # Use Pascal.
+        'a': cx.wrap(a, self),
         'b': cx.wrap(b, self),
     }
 
@@ -1277,7 +1272,7 @@ class HybridLevels(cx.Coordinate):
       sim_units: units.SimUnits | None = None,
   ) -> cx.Field:
     """Returns pressure at layer centers given `surface_pressure`."""
-    a = self.fields['a']  # In Pascal.
+    a = self.fields['a'] * 100  # In Pascal.
     if sim_units is not None:
       a = cx.wrap(sim_units.nondimensionalize(a.data * typing.units.Pa), self)
     return a + self.fields['b'] * surface_pressure

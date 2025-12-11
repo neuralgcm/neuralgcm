@@ -156,7 +156,7 @@ class LinearOnPressure(nnx.Module):
       )
     [level] = list(levels)
     if isinstance(level, coordinates.PressureLevels):
-      pressure = level.fields['pressure']
+      pressure = level.fields['pressure'] * 100  # In Pascal.
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
         pressure = cx.wrap(
@@ -192,7 +192,7 @@ class LinearOnPressure(nnx.Module):
         )
       desired = target_levels.pressure_centers(surface_pressure, self.sim_units)
     elif isinstance(target_levels, coordinates.PressureLevels):
-      desired = target_levels.fields['pressure']
+      desired = target_levels.fields['pressure'] * 100  # In Pascal.
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
         desired = cx.wrap(
@@ -281,11 +281,11 @@ class ConservativeOnPressure(nnx.Module):
     [level] = list(levels)
 
     if isinstance(level, coordinates.PressureLevels):
-      centers = level.fields['pressure'].data
+      centers = level.fields['pressure'].data * 100  # In Pascal.
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
         centers = self.sim_units.nondimensionalize(
-            centers * typing.units.millibar
+            centers * typing.units.Pa
         )
       midpoints = (centers[:-1] + centers[1:]) / 2
       first = centers[0] - (centers[1] - centers[0]) / 2
@@ -357,7 +357,7 @@ def get_surface_pressure(
         f'geopotential must have exactly 1 pressure-like coord, got {levels}'
     )
   [levels] = levels
-  pressure = levels.fields['pressure']
+  pressure = levels.fields['pressure'] * 100  # In Pascal.
   if sim_units is not None:
     assert isinstance(sim_units, units.SimUnits)
     pressure = cx.wrap(

@@ -103,7 +103,7 @@ class LinearOnPressure(nnx.Module):
     sim_units: An optional `SimUnits` instance. If provided, inputs are
       interpreted as nondimensionalized and appropriate coordinate
       nondimensionalization is performed. If None, assumes that surface pressure
-      is provided in hPa.
+      is provided in Pascals.
     allow_no_levels: If True, fields without vertical levels are passed through.
       If False, an error is raised.
     supported_level_types: A sequence of supported vertical coordinate types.
@@ -160,7 +160,7 @@ class LinearOnPressure(nnx.Module):
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
         pressure = cx.wrap(
-            self.sim_units.nondimensionalize(pressure.data * typing.units.hPa),
+            self.sim_units.nondimensionalize(pressure.data * typing.units.Pa),
             level,
         )
     elif isinstance(level, coordinates.SigmaLevels):
@@ -174,15 +174,7 @@ class LinearOnPressure(nnx.Module):
         raise ValueError(
             '`surface_pressure` must be provided when interpolating from hybrid'
         )
-      if self.sim_units is not None:
-        a_nondim = self.sim_units.nondimensionalize(
-            level.a_boundaries * typing.units.hPa
-        )
-        nondim_level = coordinates.HybridLevels(a_nondim, level.b_boundaries)
-        pressure = nondim_level.pressure_centers(surface_pressure)
-        pressure = pressure.untag(nondim_level).tag(level)
-      else:
-        pressure = level.pressure_centers(surface_pressure)
+      pressure = level.pressure_centers(surface_pressure, self.sim_units)
     else:
       raise ValueError(f'Unsupported level type {type(level)}.')
 
@@ -198,22 +190,13 @@ class LinearOnPressure(nnx.Module):
         raise ValueError(
             'Missing `surface_pressure` needed when interpolating to hybrid.'
         )
-      if self.sim_units is not None:
-        a, b = target_levels.a_boundaries, target_levels.b_boundaries
-        a_nondim = self.sim_units.nondimensionalize(a * typing.units.hPa)
-        nondim_level = coordinates.HybridLevels(a_nondim, b)
-        desired = nondim_level.pressure_centers(surface_pressure)
-        desired = desired.untag(nondim_level).tag(level)
-      else:
-        desired = target_levels.pressure_centers(surface_pressure)
+      desired = target_levels.pressure_centers(surface_pressure, self.sim_units)
     elif isinstance(target_levels, coordinates.PressureLevels):
       desired = target_levels.fields['pressure']
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
         desired = cx.wrap(
-            self.sim_units.nondimensionalize(
-                desired.data * typing.units.millibar
-            ),
+            self.sim_units.nondimensionalize(desired.data * typing.units.Pa),
             target_levels,
         )
     else:
@@ -254,7 +237,7 @@ class ConservativeOnPressure(nnx.Module):
     sim_units: An optional `SimUnits` instance. If provided, inputs are
       interpreted as nondimensionalized and appropriate coordinate
       nondimensionalization is performed. If None, assumes that surface pressure
-      is provided in hPa.
+      is provided in Pascals.
     allow_no_levels: If True, fields without vertical levels are passed through.
       If False, an error is raised.
     supported_level_types: A sequence of supported vertical coordinate types.
@@ -362,7 +345,7 @@ def get_surface_pressure(
     geopotential_at_surface: geopotential at the surface.
     sim_units: optional object describing simulation units. If provided, the
       returned surface pressure will be nondimensionalized. Otherwise returns
-      surface pressure in hPa.
+      surface pressure in Pascals.
 
   Returns:
     Surface pressure field on a horizontal grid.
@@ -378,7 +361,7 @@ def get_surface_pressure(
   if sim_units is not None:
     assert isinstance(sim_units, units.SimUnits)
     pressure = cx.wrap(
-        sim_units.nondimensionalize(pressure.data * typing.units.millibar),
+        sim_units.nondimensionalize(pressure.data * typing.units.Pa),
         levels,
     )
 

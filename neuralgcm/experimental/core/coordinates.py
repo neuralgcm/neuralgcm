@@ -1085,7 +1085,7 @@ class PressureLevels(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'pressure': cx.wrap(self.centers, self)}
+    return {'pressure': cx.wrap(self.centers * 100, self)}  # Use Pascal.
 
   def asdict(self) -> dict[str, Any]:
     return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}
@@ -1160,6 +1160,11 @@ class PressureLevels(cx.Coordinate):
     centers = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
     return cls(centers=centers)
 
+  def to_xarray(self) -> dict[str, xarray.Variable]:
+    """Convert this coordinate into xarray variables."""
+    variables = {'pressure': xarray.Variable(self.dims, self.centers)}
+    return variables
+
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
@@ -1226,7 +1231,7 @@ class HybridLevels(cx.Coordinate):
     b = (self.b_boundaries[:-1] + self.b_boundaries[1:]) / 2.0
     return {
         'hybrid': cx.wrap(np.arange(1, self.shape[0] + 1), self),
-        'a': cx.wrap(a, self),
+        'a': cx.wrap(a * 100, self),  # Use Pascal.
         'b': cx.wrap(b, self),
     }
 
@@ -1248,17 +1253,34 @@ class HybridLevels(cx.Coordinate):
   def __hash__(self) -> int:
     return hash(self._components())
 
-  def pressure_boundaries(self, surface_pressure: cx.Field) -> cx.Field:
+  def pressure_boundaries(
+      self,
+      surface_pressure: cx.Field,
+      sim_units: units.SimUnits | None = None,
+  ) -> cx.Field:
+    a_boundaries, b_boundaries = self.a_boundaries, self.b_boundaries
+    if sim_units is None:
+      a_boundaries = a_boundaries * 100  # Convert to Pascal.
+    else:
+      a_boundaries = sim_units.nondimensionalize(a_boundaries * typing.units.Pa)
+
     def _boundaries(p_surface: jax.Array) -> jax.Array:
-      return self.a_boundaries + self.b_boundaries * p_surface
+      return a_boundaries + b_boundaries * p_surface
     # TODO(dkochkov): Consider adding HybridLevelsBoundaries coordinate and
     # tagging this output with it.
     out_axes = {k: v + 1 for k, v in surface_pressure.named_axes}
     return cx.cmap(_boundaries(surface_pressure), out_axes)
 
-  def pressure_centers(self, surface_pressure: cx.Field) -> cx.Field:
+  def pressure_centers(
+      self,
+      surface_pressure: cx.Field,
+      sim_units: units.SimUnits | None = None,
+  ) -> cx.Field:
     """Returns pressure at layer centers given `surface_pressure`."""
-    return self.fields['a'] + self.fields['b'] * surface_pressure
+    a = self.fields['a']  # In Pascal.
+    if sim_units is not None:
+      a = cx.wrap(sim_units.nondimensionalize(a.data * typing.units.Pa), self)
+    return a + self.fields['b'] * surface_pressure
 
   def integrate_over_pressure(
       self,

@@ -15,18 +15,22 @@
 
 import dataclasses
 import math
+
+import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
+from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
+import numpy as np
 
 
-class StreamingValue(nnx.Intermediate):
+class StreamingValue(nnx.Variable):
   ...
 
 
-class StreamingCounter(nnx.Intermediate):
+class StreamingCounter(nnx.Variable):
   ...
 
 
@@ -115,3 +119,127 @@ class StreamNorm(nnx.Module):
     mean = jnp.expand_dims(mean, batch_axes)
     var = jnp.expand_dims(var, batch_axes)
     return (inputs - mean) * jax.lax.rsqrt(var + self.epsilon)
+
+
+@nnx_compat.dataclass
+class StreamingNormalizer(nnx.Module):
+  """Streaming normalization module.
+
+  Normalizes input values using mean and variance statistics computed via
+  a parallel online algorithm [1] over dimensions specified in `stat_coords`.
+  This type of normalization is helpful as an initialization
+  step during which the statistics of the input distribution is collected.
+  At initialization time, the estimates are set to zero. To avoid division by
+  zero, a small epsilon is added to the variance, similar to batch norm.
+  If no statistics has been collected, the inputs are returned unchanged.
+
+  References:
+    [1]
+    https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+  """
+
+  stat_coords: dict[str, cx.Coordinate]
+  counters: dict[str, StreamingCounter]
+  means: dict[str, StreamingValue]
+  m2: dict[str, StreamingValue]
+  epsilon: float
+
+  def __init__(
+      self, stat_coords: dict[str, cx.Coordinate], epsilon: float = 1e-8
+  ):
+    """Initializes MeanAndStd.
+
+    Args:
+      stat_coords: A dictionary mapping variable names to their coordinates.
+        These coordinates define the shape of the statistics to be computed.
+      epsilon: a small float added to variance to avoid dividing by zero.
+    """
+    self.stat_coords = stat_coords
+    self.epsilon = epsilon
+    self.counters = StreamingCounter({k: 0 for k in stat_coords})
+    self.means = StreamingValue(
+        {k: cx.wrap(jnp.zeros(c.shape), c) for k, c in stat_coords.items()}
+    )
+    self.m2 = StreamingValue(
+        {k: cx.wrap(jnp.zeros(c.shape), c) for k, c in stat_coords.items()}
+    )
+
+  def _update_stats(
+      self, inputs: dict[str, cx.Field], mask: cx.Field | None = None
+  ):
+    """Updates the statistics using the given inputs."""
+    if inputs.keys() != self.stat_coords.keys():
+      raise ValueError(
+          'Input keys must match the keys provided in stat_coords during'
+          ' initialization.'
+      )
+
+    counters = self.counters.get_value()
+    means = self.means.get_value()
+    m2s = self.m2.get_value()
+    for k, f in inputs.items():
+      counter = counters[k]
+      mean = means[k]
+      sum_squares = m2s[k]
+      stat_coord = self.stat_coords[k]
+      batch_dims = tuple(d for d in f.dims if d not in stat_coord.dims)
+      x = f.untag(*batch_dims)
+      if cx.get_coordinate(x, missing_axes='skip') != stat_coord:
+        raise ValueError(f'wrong coord on {k=}')
+
+      if mask is None:
+        batch_size = np.prod([f.named_shape[d] for d in batch_dims])
+        count_inc = batch_size
+        w = 1.0
+      else:
+        mask_batch_dims = tuple(d for d in batch_dims if d in mask.dims)
+        m = mask.untag(*mask_batch_dims)
+        w = cx.cmap(lambda m_arr: 1.0 - m_arr.astype(jnp.float32))(m)
+        # Broadcast w to x to count valid entries correctly.
+        ones = cx.cmap(jnp.ones_like)(x)
+        count_inc = cx.cmap(jnp.sum)(w * ones)
+
+      counter += count_inc
+      delta = x - mean
+      inv_counter = cx.cmap(lambda c: jnp.where(c > 0, 1.0 / c, 0.0))(counter)
+      mean_inc = cx.cmap(jnp.sum)(delta * w)
+      mean += mean_inc * inv_counter
+      delta2 = x - mean
+      sum_squares += cx.cmap(jnp.sum)(delta * delta2 * w)
+      counters[k] = counter
+      means[k] = mean
+      m2s[k] = sum_squares
+    self.counters.set_value(counters)
+    self.means.set_value(means)
+    self.m2.set_value(m2s)
+
+  def stats(
+      self, ddof: float = 1
+  ) -> tuple[dict[str, cx.Field], dict[str, cx.Field]]:
+    means = {}
+    variances = {}
+    for k in self.stat_coords:
+      means[k] = self.means.get_value()[k]
+      counter = self.counters.get_value()[k]
+      divisor = counter - ddof
+      var = self.m2.get_value()[k] / divisor
+      ones = cx.wrap(jnp.ones(var.shape), var.coordinate)
+      variances[k] = cx.cmap(jnp.where)(divisor > 0, var, ones)
+    return means, variances
+
+  def __call__(
+      self,
+      inputs: dict[str, cx.Field],
+      update_stats: bool = True,
+      mask: cx.Field | None = None,
+  ) -> dict[str, cx.Field]:
+    """Returns the current mean & std and updates state if update_stats=True."""
+    if update_stats:
+      self._update_stats(inputs, mask)
+
+    means, variances = self.stats()
+    rsqrt = cx.cmap(jax.lax.rsqrt)
+    normalize = lambda x, m, var: (x - m) * rsqrt(var + self.epsilon)
+    return jax.tree.map(
+        normalize, inputs, means, variances, is_leaf=cx.is_field
+    )

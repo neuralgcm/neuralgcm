@@ -67,19 +67,28 @@ class ToModalWithDivCurl(transforms.TransformABC):
 
 
 @nnx_compat.dataclass
-class PressureOnSigmaFeatures(transforms.TransformABC):
+class PressureOnLevelsFeatures(transforms.TransformABC):
   """Feature module that computes pressure."""
 
   ylm_map: spherical_harmonics.FixedYlmMapping
-  sigma: coordinates.SigmaLevels
+  levels: coordinates.SigmaLevels | coordinates.HybridLevels
   feature_name: str = 'pressure'
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     log_surface_p = self.ylm_map.to_nodal(inputs['log_surface_pressure'])
-    sigma = self.sigma.fields['sigma']
     surface_p = cx.cmap(jnp.exp)(log_surface_p)
-    pressure = sigma * surface_p  # order matters here to put sigma upfront.
+    if isinstance(self.levels, coordinates.SigmaLevels):
+      sigma = self.levels.fields['sigma']
+      pressure = sigma * surface_p  # order matters here to put sigma upfront.
+    elif isinstance(self.levels, coordinates.HybridLevels):
+      pressure = self.levels.pressure_centers(surface_p)
+    else:
+      raise ValueError(f'Unsupported level type: {type(self.levels)}')
     return {self.feature_name: pressure}
+
+
+# TODO(janniyuval): Remove this alias once we fully switch to HybridLevels.
+PressureOnSigmaFeatures = PressureOnLevelsFeatures
 
 
 class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):

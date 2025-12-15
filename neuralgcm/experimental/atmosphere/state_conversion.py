@@ -23,6 +23,7 @@ from neuralgcm.experimental.atmosphere import interpolators
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
+from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
@@ -44,22 +45,42 @@ def get_geopotential(
         + inputs['specific_cloud_liquid_water_content'].data
     )
   canonical = cx.coords.canonicalize(temperature.coordinate)
-  levels = [c for c in canonical if isinstance(c, coordinates.SigmaLevels)]
-  if len(levels) != 1:
+  sigma_levels = [
+      c for c in canonical if isinstance(c, coordinates.SigmaLevels)
+  ]
+  hybrid_levels = [
+      c for c in canonical if isinstance(c, coordinates.HybridLevels)
+  ]
+  if len(sigma_levels) + len(hybrid_levels) != 1:
     raise ValueError(
-        f'Expected exactly one sigma in {temperature.coordinate}, got {levels}'
+        'Expected exactly one sigma or hybrid level in'
+        f' {temperature.coordinate}, got {sigma_levels=} and {hybrid_levels=}'
     )
-  [levels] = levels
-  # TODO(dkochkov): Simplify and generalize this function in dinosaur, also
-  # consider exposing this function elsewhere in the codebase.
-  dino_get_geopotential = functools.partial(
-      dinosaur_primitive_equations.get_geopotential_with_moisture,
-      nodal_orography=orography.nodal_orography.data,
-      coordinates=levels.sigma_levels,
-      gravity_acceleration=sim_units.gravity_acceleration,
-      ideal_gas_constant=sim_units.ideal_gas_constant,
-      water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
-  )
+  if sigma_levels:
+    [levels] = sigma_levels
+    # TODO(dkochkov): Simplify and generalize this function in dinosaur, also
+    # consider exposing this function elsewhere in the codebase.
+    dino_get_geopotential = functools.partial(
+        dinosaur_primitive_equations.get_geopotential_with_moisture,
+        nodal_orography=orography.nodal_orography.data,
+        coordinates=levels.sigma_levels,
+        gravity_acceleration=sim_units.gravity_acceleration,
+        ideal_gas_constant=sim_units.ideal_gas_constant,
+        water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
+    )
+  else:
+    [levels] = hybrid_levels
+    p_s_ref = sim_units.nondimensionalize(101325.0 * typing.units.pascal)
+    dino_get_geopotential = functools.partial(
+        dinosaur_primitive_equations.get_geopotential_on_hybrid,
+        nodal_orography=orography.nodal_orography.data,
+        coordinates=levels.hybrid_levels,
+        gravity_acceleration=sim_units.gravity_acceleration,
+        ideal_gas_constant=sim_units.ideal_gas_constant,
+        water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
+        p_s_ref=p_s_ref,
+    )
+
   coord = temperature.coordinate
   geopotential = dino_get_geopotential(
       temperature=temperature.data,
@@ -110,7 +131,11 @@ def uvtz_to_primitive_equations(
 def primitive_equations_to_uvtz(
     inputs: dict[str, cx.Field],
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    levels: coordinates.PressureLevels | coordinates.SigmaLevels,
+    levels: (
+        coordinates.PressureLevels
+        | coordinates.SigmaLevels
+        | coordinates.HybridLevels
+    ),
     orography: orographies.Orography,
     sim_units: units.SimUnits,
     include_surface_pressure: bool = False,

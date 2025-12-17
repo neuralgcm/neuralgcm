@@ -20,7 +20,7 @@ import dataclasses
 import functools
 import itertools
 import math
-from typing import Callable, Protocol, Self, Sequence
+from typing import Callable, Protocol, Self, Sequence, TypeAlias
 
 import coordax as cx
 import einops
@@ -36,8 +36,9 @@ from neuralgcm.experimental.core import typing
 import numpy as np
 
 
+Array: TypeAlias = typing.Array
 Gating = Callable[[typing.Array, typing.Array], typing.Array]
-default_kernel_init = nnx.initializers.lecun_normal()
+default_kernel_init = nnx.initializers.he_normal()
 
 
 class TransformerLayer(Protocol):
@@ -407,7 +408,12 @@ class TransformerBase(nnx.Module, abc.ABC):
     Args:
       inputs: array to be rearranged.
     """
-    ...
+
+  def mask_to_attention_shape(self, mask: typing.Array) -> typing.Array:
+    """Converts `mask` from window to attention-broadcastible format."""
+    # mask shape: [B, KV_LEN, 1];
+    # attention mask shape: ~[B, NUM_HEADS, Q_LEN, KV_LEN].
+    return jnp.expand_dims(jnp.squeeze(mask, axis=-1), axis=(1, 2))
 
   @abc.abstractmethod
   def rearrange_latents(self, latents: typing.Array) -> typing.Array:
@@ -417,7 +423,10 @@ class TransformerBase(nnx.Module, abc.ABC):
     Args:
       latents: array to be rearranged.
     """
-    ...
+
+  @abc.abstractmethod
+  def rearrange_mask(self, mask: typing.Array) -> typing.Array:
+    """Converts `mask` from [C, spatial_axes...] to attention-chosen format."""
 
   @abc.abstractmethod
   def rearrange_outputs(
@@ -434,7 +443,6 @@ class TransformerBase(nnx.Module, abc.ABC):
     Returns:
       `outputs` rearranged to the original input's spatial format.
     """
-    ...
 
   @abc.abstractmethod
   def attention_key_source(
@@ -457,7 +465,6 @@ class TransformerBase(nnx.Module, abc.ABC):
     Returns:
       Array to be used as keys for attention.
     """
-    ...
 
   @abc.abstractmethod
   def attention_value_source(
@@ -480,7 +487,6 @@ class TransformerBase(nnx.Module, abc.ABC):
     Returns:
       Array to be used as values for attention.
     """
-    ...
 
   @abc.abstractmethod
   def apply_attention(
@@ -512,7 +518,6 @@ class TransformerBase(nnx.Module, abc.ABC):
     Returns:
       The output of the attention module.
     """
-    ...
 
   def __call__(
       self,
@@ -543,6 +548,7 @@ class TransformerBase(nnx.Module, abc.ABC):
     """
     x = self.rearrange_inputs(inputs)
     z = None if latents is None else self.rearrange_latents(latents)
+    mask = None if mask is None else self.rearrange_mask(mask)
     x_pos_enc, z_pos_enc = inputs_pos_encoding, latents_pos_encoding
     pre_norms = self.pre_norms or [lambda x: x] * 2 * self.n_layers
     post_norms = self.post_norms or [lambda x: x] * 2 * self.n_layers
@@ -590,7 +596,8 @@ class TransformerBase(nnx.Module, abc.ABC):
       dense_factory: standard_layers.UnaryLayerFactory,
       normalize_qk: bool = False,
       normalize_v: bool = False,
-      w_init=nnx.initializers.xavier_uniform(),
+      apply_final_norm: bool = False,
+      w_init=nnx.initializers.he_normal(),
       b_init=nnx.initializers.zeros,
       rngs: nnx.Rngs,
   ):
@@ -614,6 +621,7 @@ class TransformerBase(nnx.Module, abc.ABC):
       dense_factory: Factory for dense layers post-attention.
       normalize_qk: whether to add layer norm prior to computing query and key.
       normalize_v: whether to add layer norm prior to computing value.
+      apply_final_norm: whether to include final post_norm layer.
       w_init: Kernel initializer for `MultiHeadAttention`.
       b_init: Bias initializer for `MultiHeadAttention`.
       rngs: JAX PRNG keys.
@@ -631,6 +639,7 @@ class TransformerBase(nnx.Module, abc.ABC):
     pre_norms = []
     post_norms = []
     possible_gating = []
+    identity = lambda x: x
     for i, (d_in, d_out) in enumerate(zip(input_sizes, output_sizes)):
       if qkv_features is None:
         if d_in % num_heads != 0:
@@ -657,8 +666,12 @@ class TransformerBase(nnx.Module, abc.ABC):
         pre_norms.append(pre_normalization_factory(d_in, rngs=rngs))
         pre_norms.append(pre_normalization_factory(d_out, rngs=rngs))
       if post_normalization_factory is not None:
-        post_norms.append(post_normalization_factory(d_out, rngs=rngs))
-        post_norms.append(post_normalization_factory(d_out, rngs=rngs))
+        if i < len(intermediate_sizes) or apply_final_norm:
+          post_norms.append(post_normalization_factory(d_out, rngs=rngs))
+          post_norms.append(post_normalization_factory(d_out, rngs=rngs))
+        else:
+          post_norms.append(identity)
+          post_norms.append(identity)
       possible_gating.append(no_gating if d_in != d_out else residual_gating)
       dense_layers.append(dense_factory(d_out, d_out, rngs=rngs))
       possible_gating.append(residual_gating)  # (attention -> dense) residual.
@@ -680,12 +693,13 @@ class TransformerBase(nnx.Module, abc.ABC):
       use_bias_in_attention: bool = True,
       pre_normalization_factory: NormalizationFactory | None = None,
       post_normalization_factory: NormalizationFactory | None = None,
+      apply_final_norm: bool = False,
       activation: Callable[[typing.Array], typing.Array] = jax.nn.gelu,
       gating: Sequence[Gating] | Gating | None = lambda skip, x: x,
       dense_factory: standard_layers.UnaryLayerFactory,
       normalize_qk: bool = False,
       normalize_v: bool = False,
-      w_init=nnx.initializers.xavier_uniform(),
+      w_init=nnx.initializers.he_normal(),
       b_init=nnx.initializers.zeros,
       rngs: nnx.Rngs,
   ) -> Self:
@@ -700,6 +714,7 @@ class TransformerBase(nnx.Module, abc.ABC):
       use_bias_in_attention: whether to include bias term in MultiHeadAttention.
       pre_normalization_factory: factory for pre-normalization layers.
       post_normalization_factory: factory for post-normalization layers.
+      apply_final_norm: whether to include final post_norm layer.
       activation: activation function to be applied to the output of attention.
       gating: sequence of 2n+1 or single gating function. Default is no gating.
       dense_factory: factory for generating dense layers that follow attention.
@@ -719,6 +734,7 @@ class TransformerBase(nnx.Module, abc.ABC):
             use_bias_in_attention=use_bias_in_attention,
             pre_normalization_factory=pre_normalization_factory,
             post_normalization_factory=post_normalization_factory,
+            apply_final_norm=apply_final_norm,
             gating=gating,
             dense_factory=dense_factory,
             normalize_qk=normalize_qk,
@@ -751,6 +767,10 @@ class TransformerBlocks(TransformerBase):
   def rearrange_latents(self, latents: typing.Array) -> typing.Array:
     """Transposes latents for attention: [C, L] -> [L, C]."""
     return jnp.transpose(latents)
+
+  def rearrange_mask(self, mask: typing.Array) -> typing.Array:
+    """Formats mask to attention-broadcastable shape."""
+    return self.mask_to_attention_shape(jnp.transpose(mask))
 
   def rearrange_outputs(
       self, outputs: typing.Array, inputs_shape
@@ -971,6 +991,14 @@ class WindowTransformerBlocks(TransformerBase):
   def rearrange_latents(self, latents: typing.Array) -> typing.Array:
     return self._to_windows(latents, self.kv_window_shape, self.kv_bc)
 
+  def rearrange_mask(self, mask: typing.Array) -> typing.Array:
+    """Formats mask to same format as latents."""
+    # In contrast to TransformerBlocks, we do not expand mask shape here to
+    # match attention matix shape. This is because windowing requires mask
+    # rearrangements and hence we call `mask_to_attention_shape` directly before
+    # applying the attention.
+    return self.rearrange_latents(mask)
+
   def rearrange_outputs(
       self, outputs: typing.Array, inputs_shape: tuple[int, ...]
   ) -> typing.Array:
@@ -1051,6 +1079,8 @@ class WindowTransformerBlocks(TransformerBase):
           self.kv_bc,
       )
       attention_bias = self._attention_bias(q_pe_windows, kv_pe_windows)
+      if mask is not None:
+        mask = self.mask_to_attention_shape(mask)
       result = attention(
           query, key, value, mask=mask, attention_bias=attention_bias
       )
@@ -1100,6 +1130,7 @@ class WindowTransformerBlocks(TransformerBase):
             self.kv_bc,
             shifts=kv_shifts,
         )
+        mask = self.mask_to_attention_shape(mask)
       if key is not None:
         # adding shifting, see comment above similar transform on query above.
         key = self._from_windows(
@@ -1157,6 +1188,7 @@ class WindowTransformerBlocks(TransformerBase):
       use_bias_in_attention: bool = True,
       pre_normalization_factory: NormalizationFactory | None = None,
       post_normalization_factory: NormalizationFactory | None = None,
+      apply_final_norm: bool = False,
       activation: Callable[[typing.Array], typing.Array] = jax.nn.gelu,
       gating: Sequence[Gating] | Gating | None = lambda skip, x: x,
       dense_factory: standard_layers.UnaryLayerFactory,
@@ -1185,6 +1217,7 @@ class WindowTransformerBlocks(TransformerBase):
       use_bias_in_attention: whether to include bias term in MultiHeadAttention.
       pre_normalization_factory: factory for pre-normalization layers.
       post_normalization_factory: factory for post-normalization layers.
+      apply_final_norm: whether to apply final layer norm.
       activation: activation function to use in the feed-forward layers.
       gating: sequence of 2n or single gating function. Default is no gating.
       dense_factory: factory for generating dense layers that follow attention.
@@ -1204,6 +1237,7 @@ class WindowTransformerBlocks(TransformerBase):
             use_bias_in_attention=use_bias_in_attention,
             pre_normalization_factory=pre_normalization_factory,
             post_normalization_factory=post_normalization_factory,
+            apply_final_norm=apply_final_norm,
             gating=gating,
             dense_factory=dense_factory,
             normalize_qk=normalize_qk,
@@ -1298,3 +1332,82 @@ class SphericalPositionalEncoder(nnx.Module):
     ylm_map = self.ylm_mapper.ylm_map(grid)
     pe = spherical_harmonic_lon_lat_encodings(ylm_map, l_max, l_min)
     return cx.wrap(pe, encoding_dim_tag, grid)
+
+
+@nnx_compat.dataclass
+class EpdTransformer(nnx.Module, pytree=False):
+  """EPD layer with transformer process block."""
+
+  encode: standard_layers.UnaryLayer
+  decode: standard_layers.UnaryLayer
+  process_blocks: Sequence[TransformerLayer]
+  post_encode_activation: Callable[[Array], Array] | None = None
+  pre_decode_activation: Callable[[Array], Array] | None = None
+  final_activation: Callable[[Array], Array] | None = None
+
+  @property
+  def input_size(self) -> int:
+    return self.encode.input_size
+
+  @property
+  def output_size(self) -> int:
+    return self.decode.output_size
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_size: int,
+      output_size: int,
+      *,
+      latent_size: int,
+      num_process_blocks: int,
+      encode_factory: standard_layers.UnaryLayerFactory,
+      process_factory: standard_layers.UnaryLayerFactory,
+      decode_factory: standard_layers.UnaryLayerFactory,
+      post_encode_activation: Callable[[Array], Array] | None = None,
+      pre_decode_activation: Callable[[Array], Array] | None = None,
+      final_activation: Callable[[Array], Array] | None = None,
+      rngs: nnx.Rngs,
+  ) -> EpdTransformer:
+    encode = encode_factory(input_size, latent_size, rngs=rngs)
+    decode = decode_factory(latent_size, output_size, rngs=rngs)
+    process_blocks = tuple([
+        process_factory(latent_size, latent_size, rngs=rngs)
+        for _ in range(num_process_blocks)
+    ])
+    return cls(
+        encode=encode,
+        decode=decode,
+        process_blocks=process_blocks,
+        post_encode_activation=post_encode_activation,
+        pre_decode_activation=pre_decode_activation,
+        final_activation=final_activation,
+    )
+
+  def __call__(
+      self,
+      inputs: typing.Array,
+      latents: typing.Array | None = None,
+      inputs_pos_encoding: typing.Array | None = None,
+      latents_pos_encoding: typing.Array | None = None,
+      mask: typing.Array | None = None,
+  ) -> typing.Array:
+    """Applies all EPD layers to inputs."""
+    encoded = self.encode(inputs)
+    if self.post_encode_activation is not None:
+      encoded = self.post_encode_activation(encoded)
+    current = encoded
+    for process_block in self.process_blocks:
+      current = current + process_block(
+          current,
+          latents,
+          inputs_pos_encoding,
+          latents_pos_encoding,
+          mask,
+      )
+    if self.pre_decode_activation is not None:
+      current = self.pre_decode_activation(current)
+    out = self.decode(current)
+    if self.final_activation is not None:
+      return self.final_activation(out)
+    return out

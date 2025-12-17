@@ -222,6 +222,42 @@ class TransformerLayersTest(parameterized.TestCase):
     out = net(inputs, inputs_pos_encoding=ylm_pe)
     self.assertEqual(out.shape, (output_size,) + self.grid.shape)
 
+  def tests_window_transformer_with_mask(self):
+    """Tests output_shape of TransformerBlocks with mask."""
+    ylm_mapper = spherical_harmonics.YlmMapper(
+        mesh=parallelism.Mesh(),
+        partition_schema_key=None,
+    )
+    ylm_pe = transformer_layers.spherical_harmonic_lon_lat_encodings(
+        ylm_mapper.ylm_map(self.grid), 4
+    )
+    rngs = nnx.Rngs(0)
+    num_heads = 2
+    n_layers = 2
+    inputs_window_shape = (2, 2)
+    relative_bias_net = nnx.Linear(ylm_pe.shape[0], num_heads, rngs=rngs)
+    input_size = 6
+    output_size = 3
+    net = transformer_layers.WindowTransformerBlocks.build_using_factories(
+        input_size,
+        output_size,
+        intermediate_sizes=([self.hidden_size] * n_layers),
+        num_heads=num_heads,
+        relative_bias_net=relative_bias_net,
+        inputs_window_shape=inputs_window_shape,
+        qkv_features=num_heads * self.per_head_kv_size,
+        shift_windows=True,
+        dense_factory=self.dense_factory,
+        gating=lambda skip, x: x,
+        inputs_bc=boundaries.LonLatBoundary(),
+        rngs=rngs,
+    )
+    rng = jax.random.key(0)
+    inputs = jax.random.uniform(rng, (input_size, *self.grid.shape))
+    mask = jax.random.bernoulli(rng, 0.2, self.grid.shape)[np.newaxis, ...]
+    out = net(inputs, inputs_pos_encoding=ylm_pe, mask=mask)
+    self.assertEqual(out.shape, (output_size, *self.grid.shape))
+
   def test_spherical_positional_encoder(self):
     """Tests output_shape of SphericalPositionalEncoder."""
     ylm_mapper = spherical_harmonics.YlmMapper(

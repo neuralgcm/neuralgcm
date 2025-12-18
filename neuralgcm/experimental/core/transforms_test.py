@@ -478,6 +478,81 @@ class TransformsTest(parameterized.TestCase):
         out.data.var(ddof=1, axis=0), np.ones(x.shape), atol=1e-6
     )
 
+  def test_streaming_stats_norm(self):
+    batch = cx.SizedAxis('batch', 20)
+    level = cx.SizedAxis('level', 5)
+    pressure = cx.SizedAxis('pressure', 7)
+
+    rng = jax.random.PRNGKey(42)
+    u_data = jax.random.normal(rng, (batch.size, level.size))
+    v_data = jax.random.normal(rng, (batch.size, pressure.size)) + 5.0
+    inputs = {
+        'u': cx.field(u_data, batch, level),
+        'v': cx.field(v_data, batch, pressure),
+    }
+
+    with self.subTest('explicit_constructor'):
+      norm = transforms.StreamingStatsNorm(
+          norm_coords={'u': level, 'v': pressure},
+          update_stats=True,
+          epsilon=0.0,
+      )
+      _ = norm(inputs)
+      norm.update_stats = False
+      outputs = norm(inputs)
+
+      # Verify u statistics (normalized over batch, independent per level)
+      u_out = outputs['u'].data
+      np.testing.assert_allclose(np.mean(u_out, axis=0), 0.0, atol=1e-5)
+      np.testing.assert_allclose(np.var(u_out, axis=0, ddof=1), 1.0, atol=1e-5)
+
+      # Verify v statistics (normalized over batch, independent per pressure)
+      v_out = outputs['v'].data
+      np.testing.assert_allclose(np.mean(v_out, axis=0), 0.0, atol=1e-5)
+      np.testing.assert_allclose(np.var(v_out, axis=0, ddof=1), 1.0, atol=1e-5)
+
+    with self.subTest('for_inputs_struct'):
+      norm = transforms.StreamingStatsNorm.for_inputs_struct(
+          inputs,
+          independent_axes=(level, pressure),
+          update_stats=True,
+          epsilon=0.0,
+      )
+      _ = norm(inputs)
+      norm.update_stats = False
+      outputs = norm(inputs)
+
+      u_out = outputs['u'].data
+      np.testing.assert_allclose(np.mean(u_out, axis=0), 0.0, atol=1e-5)
+      np.testing.assert_allclose(np.var(u_out, axis=0, ddof=1), 1.0, atol=1e-5)
+
+      v_out = outputs['v'].data
+      np.testing.assert_allclose(np.mean(v_out, axis=0), 0.0, atol=1e-5)
+      np.testing.assert_allclose(np.var(v_out, axis=0, ddof=1), 1.0, atol=1e-5)
+
+  def test_streaming_stats_norm_with_mask(self):
+    rng = np.random.RandomState(42)
+    data = rng.normal(size=(10, 4))  # Data with mean 0.
+    data[0, 0] = 1e6  # Add an outlier that will be masked out.
+    mask_data = np.ones((10, 4), dtype=bool)
+    mask_data[0, 0] = False  # Mask must be False to skip data points.
+    inputs = {
+        'u': cx.field(data, 't', 'x'),
+        'outlier_mask': cx.field(mask_data, 't', 'x'),
+    }
+    make_masks_transform = transforms.Select('outlier_mask')
+    norm = transforms.StreamingStatsNorm(
+        norm_coords={'u': cx.Scalar()},
+        update_stats=True,
+        make_masks_transform=make_masks_transform,
+        epsilon=0.0,
+        skip_unspecified=True,
+    )
+    outputs = norm(inputs)
+    relevant_outputs = outputs['u'].data.ravel()[1:]  # skip the outlier.
+    np.testing.assert_allclose(np.mean(relevant_outputs), 0.0, atol=1e-4)
+    np.testing.assert_allclose(np.var(relevant_outputs, ddof=1), 1.0, atol=1e-4)
+
   def test_scale_to_match_coarse_fields(self):
     hres_grid = coordinates.LonLatGrid.TL63()
     coarse_grid = coordinates.LonLatGrid.T21()

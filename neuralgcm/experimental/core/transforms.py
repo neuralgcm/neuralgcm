@@ -251,9 +251,9 @@ class Sel(TransformABC):
           matches = field.coord_fields[dim].data == selection
           indices = np.argwhere(matches).astype(int).ravel()
         elif self.method == 'nearest':
-          assert np.size(selection) == 1, (
-              'With method="nearest", selection must be a single value.'
-          )
+          assert (
+              np.size(selection) == 1
+          ), 'With method="nearest", selection must be a single value.'
           indices = np.array(
               [np.argmin(np.abs(field.coord_fields[dim].data - selection))]
           )
@@ -680,6 +680,107 @@ class Relu(TransformABC):
     return outputs
 
 
+class StreamingStatsNorm(TransformABC):
+  """Normalizes inputs using values from streaming mean and variances.
+
+  Attributes:
+    streaming_norm: StreamingNormalizer that performs the normalization.
+    update_stats: Whether to update the normalization statistics.
+    make_masks_transform: Optional transform that produces a mask indicating
+      which entries should contribute to the statistics updates.
+  """
+
+  def __init__(
+      self,
+      norm_coords: dict[str, cx.Coordinate],
+      update_stats: bool = False,
+      epsilon: float = 1e-11,
+      make_masks_transform: Transform | None = None,
+      skip_unspecified: bool = False,
+      allow_missing: bool = True,
+  ):
+    """Initializes StreamingStatsNorm.
+
+    Args:
+      norm_coords: A dictionary mapping variable names to the coordinates over
+        which the normalization is done independently.
+      update_stats: Whether to update the normalization statistics.
+      epsilon: A small float added to variance to avoid dividing by zero.
+      make_masks_transform: Optional transform that produces a mask indicating
+        which entries should contribute to the statistics updates.
+      skip_unspecified: If True, input fields for which no normalization is
+        specified (i.e., keys not in `norm_coords`) are passed through
+        unchanged. If False, presence of such fields in `inputs` raises.
+      allow_missing: If True, `inputs` may omit fields for which normalization
+        is specified (i.e., keys in `norm_coords`). If False, all keys in
+        `norm_coords` must be present in `inputs`, otherwise an error is raised.
+    """
+    self.streaming_norm = normalizations.StreamingNormalizer(
+        norm_coords,
+        epsilon=epsilon,
+        skip_unspecified=skip_unspecified,
+        allow_missing=allow_missing,
+    )
+    self.make_masks_transform = make_masks_transform
+    self.update_stats = update_stats
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    """Normalizes inputs and optionally updates statistics."""
+    if self.make_masks_transform is not None:
+      mask = self.make_masks_transform(inputs)
+      if len(mask) > 1:
+        raise ValueError(
+            f'Mask transform must contain at most 1 Field, got {len(mask)=}.'
+        )
+      if not mask:
+        mask = None
+      else:
+        [mask] = list(mask.values())
+    else:
+      mask = None
+    return self.streaming_norm(inputs, self.update_stats, mask=mask)
+
+  @classmethod
+  def for_inputs_struct(
+      cls,
+      inputs_struct: dict[str, cx.Field],
+      independent_axes: tuple[cx.Coordinate, ...],
+      exclude_regex: str | None = None,
+      scalar_regex: str | None = None,
+      update_stats: bool = False,
+      make_masks_transform: Transform | None = None,
+      epsilon: float = 1e-11,
+      skip_unspecified: bool = False,
+      allow_missing: bool = True,
+  ):
+    """Custom constructor based on inputs struct that should be normalized."""
+    norm_coords = {
+        k: cx.coords.compose(
+            *[c for c in independent_axes if c in v.coordinate.axes]
+        )
+        for k, v in inputs_struct.items()
+    }
+    if exclude_regex is not None:
+      norm_coords = {
+          k: v
+          for k, v in norm_coords.items()
+          if not re.search(exclude_regex, k)
+      }
+    if scalar_regex is not None:
+      norm_coords = {
+          k: cx.Scalar() if re.search(scalar_regex, k) else v
+          for k, v in norm_coords.items()
+      }
+    return cls(
+        norm_coords=norm_coords,
+        update_stats=update_stats,
+        epsilon=epsilon,
+        make_masks_transform=make_masks_transform,
+        skip_unspecified=skip_unspecified,
+        allow_missing=allow_missing,
+    )
+
+
 class StreamingStatsNormalization(TransformABC):
   """Normalizes inputs using values from streaming mean and variances."""
 
@@ -760,9 +861,7 @@ class StreamingStatsNormalization(TransformABC):
 class ToModal(TransformABC):
   """Transforms inputs from nodal to modal space."""
 
-  ylm_map: (
-      spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
-  )
+  ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     modal_outputs = {}
@@ -775,9 +874,7 @@ class ToModal(TransformABC):
 class ToNodal(TransformABC):
   """Transforms inputs from modal to nodal space."""
 
-  ylm_map: (
-      spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
-  )
+  ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     nodal_outputs = {}
@@ -927,12 +1024,13 @@ class ScaleToMatchCoarseFields(TransformABC):
   Attributes:
     raw_hres_transform: Transform that generates high-resolution fields.
     ref_coarse_transform: Transform that generates coarse-resolution fields.
-    coarse_grid: The coarse grid to which high-resolution fields are
-      downsampled for comparison.
+    coarse_grid: The coarse grid to which high-resolution fields are downsampled
+      for comparison.
     hres_grid: The high-resolution grid.
     keys: A sequence of keys for which to apply conservation.
     epsilon: A small value to avoid division by zero.
   """
+
   raw_hres_transform: TransformABC
   ref_coarse_transform: TransformABC
   coarse_grid: coordinates.LonLatGrid

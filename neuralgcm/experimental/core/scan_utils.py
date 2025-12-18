@@ -28,7 +28,7 @@ def _extract_timedelta(
     coordinate: cx.Coordinate,
 ) -> coordinates.TimeDelta:
   """Extracts TimeDelta axis from a coordinate or raises if none found."""
-  for c in cx.canonicalize_coordinates(coordinate):
+  for c in cx.coords.canonicalize(coordinate):
     if isinstance(c, coordinates.TimeDelta):
       return c
   raise ValueError(f'No TimeDelta axis found in {coordinate}')
@@ -172,13 +172,13 @@ def nest_data_for_scans(
   nested_data = []
   for i, spec in enumerate(scan_specs):
     shape = scan_steps[i:][::-1]
-    dummy_td = cx.compose_coordinates(*[cx.DummyAxis(None, s) for s in shape])
+    dummy_td = cx.coords.compose(*[cx.DummyAxis(None, s) for s in shape])
 
     # pylint: disable=cell-var-from-loop
     def _reshape(field: cx.Field):
       coord = field.coordinate
       td = _extract_timedelta(coord)
-      out_coord = cx.replace_axes_in_coordinate(coord, td, dummy_td)
+      out_coord = cx.coords.replace_axes(coord, td, dummy_td)
       out_axes = {d: i for i, d in enumerate(out_coord.dims) if d}
       reshape = cx.cmap(lambda x: x.reshape(shape), out_axes=out_axes)
       return reshape(field.untag(td))

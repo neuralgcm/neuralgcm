@@ -59,7 +59,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
 
     grid = ylm_map.nodal_grid
     for name in (set(volume_field_names) | uv_fields) - div_curl_fields:
-      output_coords[name] = cx.compose_coordinates(sigma, grid)
+      output_coords[name] = cx.coords.compose(sigma, grid)
     for name in set(surface_field_names):
       output_coords[name] = grid
 

@@ -25,7 +25,7 @@ class WeightingTest(parameterized.TestCase):
 
   def test_grid_area_weighting_with_lon_lat_grid(self):
     grid = coordinates.LonLatGrid.T21()
-    field = cx.wrap(np.ones(grid.shape), grid)
+    field = cx.field(np.ones(grid.shape), grid)
     area_weighting = weighting.GridAreaWeighting()
     weights = area_weighting.weights(field)
     self.assertEqual(weights.shape, grid.shape)
@@ -34,7 +34,7 @@ class WeightingTest(parameterized.TestCase):
 
   def test_grid_area_weighting_with_spherical_harmonic_grid(self):
     grid = coordinates.SphericalHarmonicGrid.T21()
-    field = cx.wrap(np.ones(grid.shape), grid)
+    field = cx.field(np.ones(grid.shape), grid)
     area_weighting = weighting.GridAreaWeighting()
     weights = area_weighting.weights(field)
     self.assertEqual(weights.shape, grid.shape)
@@ -44,18 +44,18 @@ class WeightingTest(parameterized.TestCase):
   def test_constant_weighting(self):
     dim = cx.SizedAxis('spatial', 5)
     extra = cx.SizedAxis('extra', 2)
-    field = cx.wrap(np.zeros(dim.shape + extra.shape), dim, extra)
+    field = cx.field(np.zeros(dim.shape + extra.shape), dim, extra)
     constant_weights_data = np.arange(5, dtype=np.float32)
-    constant_weights = cx.wrap(constant_weights_data, dim)
+    constant_weights = cx.field(constant_weights_data, dim)
     constant_weighting = weighting.ConstantWeighting(constant=constant_weights)
     weights = constant_weighting.weights(field)
     np.testing.assert_allclose(weights.data, constant_weights_data)
 
   def test_clip_weighting(self):
     dim = cx.SizedAxis('spatial', 5)
-    field = cx.wrap(np.ones(dim.shape), dim)
+    field = cx.field(np.ones(dim.shape), dim)
     constant_weights_data = np.array([-1.0, 0.5, 1.0, 1.5, 2.0])
-    constant_weights = cx.wrap(constant_weights_data, dim)
+    constant_weights = cx.field(constant_weights_data, dim)
     base_weighting = weighting.ConstantWeighting(constant=constant_weights)
     clip_weighting = weighting.ClipWeighting(
         weighting=base_weighting, min_val=0.0, max_val=1.0
@@ -66,10 +66,10 @@ class WeightingTest(parameterized.TestCase):
 
   def test_per_variable_weighting(self):
     dim = cx.SizedAxis('spatial', 2)
-    field = cx.wrap(np.ones(dim.shape), dim)
-    weighting_x = weighting.ConstantWeighting(constant=cx.wrap(2.0))
-    weighting_y = weighting.ConstantWeighting(constant=cx.wrap(3.0))
-    default_weighting = weighting.ConstantWeighting(constant=cx.wrap(0.5))
+    field = cx.field(np.ones(dim.shape), dim)
+    weighting_x = weighting.ConstantWeighting(constant=cx.field(2.0))
+    weighting_y = weighting.ConstantWeighting(constant=cx.field(3.0))
+    default_weighting = weighting.ConstantWeighting(constant=cx.field(0.5))
     per_var_weighting = weighting.PerVariableWeighting(
         weightings_by_name={'x': weighting_x, 'y': weighting_y},
         default_weighting=default_weighting,
@@ -83,7 +83,7 @@ class WeightingTest(parameterized.TestCase):
 
   def test_per_variable_weighting_from_constants(self):
     dim = cx.SizedAxis('spatial', 2)
-    field_x = cx.wrap(np.ones(dim.shape), dim)
+    field_x = cx.field(np.ones(dim.shape), dim)
     variable_weights = {'x': 2.0, 'z': 3.14}
     per_var_weighting = weighting.PerVariableWeighting.from_constants(
         variable_weights=variable_weights
@@ -97,7 +97,7 @@ class WeightingTest(parameterized.TestCase):
     time_coord = coordinates.TimeDelta(
         np.array([0, 6, 12, 18]) * np.timedelta64(1, 'h')
     )
-    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    field = cx.field(np.ones(time_coord.shape), time_coord)
     mask_deltas = np.array([6, 18]) * np.timedelta64(1, 'h')
     mask_coord = coordinates.TimeDelta(mask_deltas)
     mask_weighting = weighting.CoordinateMaskWeighting(mask_coord=mask_coord)
@@ -107,16 +107,16 @@ class WeightingTest(parameterized.TestCase):
 
   def test_coordinate_mask_weighting_with_context(self):
     x = cx.SizedAxis('x', 4)
-    field = cx.wrap(np.ones(x.shape), x)
+    field = cx.field(np.ones(x.shape), x)
     mask_deltas = np.array([6, 18]) * np.timedelta64(1, 'h')
     mask_coord = coordinates.TimeDelta(mask_deltas)
     mask_weighting = weighting.CoordinateMaskWeighting(mask_coord=mask_coord)
 
-    context_time_match = {'timedelta': cx.wrap(np.timedelta64(6, 'h'))}
+    context_time_match = {'timedelta': cx.field(np.timedelta64(6, 'h'))}
     weights_match = mask_weighting.weights(field, context=context_time_match)
     np.testing.assert_allclose(weights_match.data, 0.0)
 
-    context_time_no_match = {'timedelta': cx.wrap(np.timedelta64(3, 'h'))}
+    context_time_no_match = {'timedelta': cx.field(np.timedelta64(3, 'h'))}
     weights_no_match = mask_weighting.weights(
         field, context=context_time_no_match
     )

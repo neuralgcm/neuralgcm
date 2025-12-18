@@ -54,7 +54,7 @@ class RadiationFeatures(transforms.TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     features = {}
-    features['radiation'] = cx.wrap(
+    features['radiation'] = cx.field(
         jax_solar.normalized_radiation_flux(
             time=inputs['time'].data, longitude=self.lon, latitude=self.lat
         ),
@@ -75,8 +75,8 @@ class LatitudeFeatures(transforms.TransformABC):
         self.grid.fields['latitude'].broadcast_like(self.grid).data
     )
     features = {
-        'cos_latitude': cx.wrap(jnp.cos(latitudes), self.grid),
-        'sin_latitude': cx.wrap(jnp.sin(latitudes), self.grid),
+        'cos_latitude': cx.field(jnp.cos(latitudes), self.grid),
+        'sin_latitude': cx.field(jnp.sin(latitudes), self.grid),
     }
     return features
 
@@ -153,8 +153,8 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
     lat_axis = grid.axes[1]
     sec_lat_scales = {
         0: 1,
-        1: cx.wrap(sec_lat, lat_axis),
-        2: cx.wrap(sec2_lat, lat_axis),
+        1: cx.field(sec_lat, lat_axis),
+        2: cx.field(sec2_lat, lat_axis),
     }
     features = {}
     if self.include_raw_orography:
@@ -187,7 +187,7 @@ class CoordFeatures(transforms.TransformABC):
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
     return {
-        k: cx.wrap(v[...], self.coords[k]) for k, v in self.features.items()
+        k: cx.field(v[...], self.coords[k]) for k, v in self.features.items()
     }
 
   def update_features_from_data(

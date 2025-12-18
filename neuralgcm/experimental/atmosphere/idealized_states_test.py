@@ -60,7 +60,7 @@ class TestStatesTest(parameterized.TestCase):
         as_nodal=as_nodal,
         temperature_format=temperature_format,
     )
-    data_coord = cx.compose_coordinates(
+    data_coord = cx.coords.compose(
         levels, self.grid if as_nodal else self.ylm_grid
     )
     surface_coord = self.grid if as_nodal else self.ylm_grid
@@ -98,7 +98,7 @@ class TestStatesTest(parameterized.TestCase):
         as_nodal=as_nodal,
         temperature_format=temperature_format,
     )
-    data_coord = cx.compose_coordinates(
+    data_coord = cx.coords.compose(
         levels, self.grid if as_nodal else self.ylm_grid
     )
     surface_coord = self.grid if as_nodal else self.ylm_grid
@@ -108,7 +108,7 @@ class TestStatesTest(parameterized.TestCase):
         'log_surface_pressure': surface_coord,
         'orography': self.grid,
         'ref_temperatures': levels,
-        'geopotential': cx.compose_coordinates(levels, self.grid),
+        'geopotential': cx.coords.compose(levels, self.grid),
     }
     if temperature_format == 'absolute':
       expected_coords['temperature'] = data_coord
@@ -136,7 +136,7 @@ class TestStatesTest(parameterized.TestCase):
         as_nodal=as_nodal,
         temperature_format=temperature_format,
     )
-    data_coord = cx.compose_coordinates(
+    data_coord = cx.coords.compose(
         levels, self.grid if as_nodal else self.ylm_grid
     )
     surface_coord = self.grid if as_nodal else self.ylm_grid
@@ -146,7 +146,7 @@ class TestStatesTest(parameterized.TestCase):
         'log_surface_pressure': surface_coord,
         'orography': self.grid,
         'ref_temperatures': levels,
-        'geopotential': cx.compose_coordinates(levels, self.grid),
+        'geopotential': cx.coords.compose(levels, self.grid),
     }
     if temperature_format == 'absolute':
       expected_coords['temperature'] = data_coord

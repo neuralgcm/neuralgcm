@@ -55,20 +55,20 @@ def _dino_state_to_neuralgcm_dict(
   grid, ylm_grid = ylm_map.nodal_grid, ylm_map.modal_grid
   coords_map = {
       2: ylm_grid,  # for log_surface_pressure.
-      3: cx.compose_coordinates(levels, ylm_grid),  # other fields.
+      3: cx.coords.compose(levels, ylm_grid),  # other fields.
   }
   state_dict = {
-      k: cx.wrap(v, coords_map[v.ndim]) for k, v in state_dict.items()
+      k: cx.field(v, coords_map[v.ndim]) for k, v in state_dict.items()
   }
   if as_nodal:
     state_dict = transforms.ToNodal(ylm_map)(state_dict)
   if 'orography' in aux_features:
-    state_dict['orography'] = cx.wrap(aux_features['orography'], grid)
+    state_dict['orography'] = cx.field(aux_features['orography'], grid)
   if 'ref_temperatures' in aux_features:
-    ref_temperatures = cx.wrap(aux_features['ref_temperatures'], levels)
+    ref_temperatures = cx.field(aux_features['ref_temperatures'], levels)
     state_dict['ref_temperatures'] = ref_temperatures
   if 'geopotential' in aux_features:
-    geopotential = cx.wrap(aux_features['geopotential'], levels, grid)
+    geopotential = cx.field(aux_features['geopotential'], levels, grid)
     state_dict['geopotential'] = geopotential
   return state_dict
 

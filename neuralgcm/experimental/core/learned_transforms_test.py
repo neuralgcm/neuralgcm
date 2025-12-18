@@ -43,7 +43,7 @@ ForwardTowerTransform = learned_transforms.ForwardTowerTransform
 
 
 def ones_field_for_coord(coord: cx.Coordinate):
-  return cx.wrap(np.ones(coord.shape), coord)
+  return cx.field(np.ones(coord.shape), coord)
 
 
 class ForwardTowerTransformTest(parameterized.TestCase):
@@ -54,7 +54,7 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     super().setUp()
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SigmaLevels.equidistant(12)
-    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.coord = cx.coords.compose(self.levels, self.grid)
     self.tower_factory = functools.partial(
         towers.ForwardTower.build_using_factories,
         inputs_in_dims=('d',),
@@ -74,8 +74,8 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     input_shapes = pytree_utils.shape_structure(test_inputs)
     az, bz = cx.SizedAxis('a', 7), cx.SizedAxis('b', 3)
     embedding_coords = {  # will create embeddings of multiple sizes for fun.
-        'a': cx.compose_coordinates(az, self.grid),
-        'b': cx.compose_coordinates(bz, self.grid),
+        'a': cx.coords.compose(az, self.grid),
+        'b': cx.coords.compose(bz, self.grid),
     }
     embedding = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
@@ -98,7 +98,7 @@ class ForwardTowerTransformTest(parameterized.TestCase):
 
   def test_tower_transform_as_volume_embeddings(self):
     """Tests that ForwardTowerTransform can work as volume embeddings."""
-    features_coords = cx.compose_coordinates(
+    features_coords = cx.coords.compose(
         cx.SizedAxis('in_features', 13), self.coord
     )
     test_inputs = {
@@ -107,7 +107,7 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     input_shapes = pytree_utils.shape_structure(test_inputs)
     z = cx.SizedAxis('embedding', 8)
     embedding_coords = {
-        'atm_embedding': cx.compose_coordinates(z, self.coord),
+        'atm_embedding': cx.coords.compose(z, self.coord),
     }
     v_embedding = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
@@ -133,7 +133,7 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     test_inputs = {
         'u': ones_field_for_coord(self.coord),
         'v': ones_field_for_coord(self.coord),
-        'time': cx.wrap(jdt.to_datetime('2025-05-21T00')),
+        'time': cx.field(jdt.to_datetime('2025-05-21T00')),
     }
     input_shapes = pytree_utils.shape_structure(test_inputs)
     target_coords = {  # will create embeddings of multiple sizes for fun.
@@ -171,16 +171,16 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     """Tests that WeightedLandSeaIceTowersTransform can be used."""
     grid = self.grid
     latent_coord = cx.SizedAxis('latent', 3)
-    embedding_coord = cx.compose_coordinates(latent_coord, grid)
+    embedding_coord = cx.coords.compose(latent_coord, grid)
     output_coords = {'surface_embedding': embedding_coord}
 
     # Create mock data with nans for sst + masks.
     lon, lat = grid.fields['longitude'], grid.fields['latitude']
-    atm_2m_temp = cx.wrap(288 * np.ones(grid.shape), grid)
+    atm_2m_temp = cx.field(288 * np.ones(grid.shape), grid)
     land_sea_mask = (lon < 120) * (lon > 30) * (lat < 70)
-    sst = cx.wrap(np.where(land_sea_mask.data, np.nan, 279), grid)
+    sst = cx.field(np.where(land_sea_mask.data, np.nan, 279), grid)
     sic_vals = (lat >= 70).broadcast_like(atm_2m_temp)
-    sea_ice_cover = cx.wrap(
+    sea_ice_cover = cx.field(
         np.where(land_sea_mask.data, np.nan, sic_vals.data), grid
     )
 
@@ -267,7 +267,7 @@ class TransformerTowerTransformTest(parameterized.TestCase):
     super().setUp()
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SigmaLevels.equidistant(12)
-    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.coord = cx.coords.compose(self.levels, self.grid)
     self.mesh = parallelism.Mesh()
 
   def test_transformer_tower_predicts_surface_and_volume_targets(self):
@@ -279,7 +279,7 @@ class TransformerTowerTransformTest(parameterized.TestCase):
 
     # Define target coordinates for both a volume and a surface field.
     target_levels = coordinates.SigmaLevels.equidistant(5)
-    target_coord = cx.compose_coordinates(target_levels, self.grid)
+    target_coord = cx.coords.compose(target_levels, self.grid)
     target_coords = {
         'tendency_of_u': target_coord,
         'tendency_of_surface_pressure': self.grid,

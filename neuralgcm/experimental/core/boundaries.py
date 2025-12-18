@@ -123,7 +123,7 @@ class LonLatBoundary(BoundaryCondition):
     lon_lat = ('longitude', 'latitude')
     lon_lat_sizes = {d: x.named_shape[d] for d in lon_lat}
     pads = tuple(pad_sizes.get(d) for d in lon_lat)
-    grid = cx.compose_coordinates(
+    grid = cx.coords.compose(
         *[x.axes.get(d, cx.DummyAxis(d, lon_lat_sizes[d])) for d in lon_lat]
     )
     padded_grid = coordinates.CoordinateWithPadding(grid, pad_sizes)
@@ -132,7 +132,7 @@ class LonLatBoundary(BoundaryCondition):
 
   def trim(self, x: cx.Field) -> cx.Field:
     padded_lon_lat = tuple('padded_' + d for d in ['longitude', 'latitude'])
-    grid = cx.compose_coordinates(*[x.axes.get(d) for d in padded_lon_lat])
+    grid = cx.coords.compose(*[x.axes.get(d) for d in padded_lon_lat])
     if (
         not isinstance(grid, coordinates.CoordinateWithPadding)
         or grid.ndim != 2

@@ -168,7 +168,7 @@ class PerVariableWeighting(Weighting):
   ) -> PerVariableWeighting:
     """Returns a PerVariableWeighting with ConstantWeightings."""
     weightings = {
-        name: ConstantWeighting(constant=w if cx.is_field(w) else cx.wrap(w))
+        name: ConstantWeighting(constant=w if cx.is_field(w) else cx.field(w))
         for name, w in variable_weights.items()
     }
     return cls(

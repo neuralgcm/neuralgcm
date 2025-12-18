@@ -47,7 +47,7 @@ class CoordinatesTest(parameterized.TestCase):
       ),
       dict(
           testcase_name='product_of_levels',
-          coords=cx.compose_coordinates(
+          coords=cx.coords.compose(
               coordinates.SigmaLevels.equidistant(4),
               coordinates.PressureLevels([50, 100, 200, 800, 1000]),
               coordinates.HybridLevels.with_n_levels(7),
@@ -58,7 +58,7 @@ class CoordinatesTest(parameterized.TestCase):
       ),
       dict(
           testcase_name='sigma_and_sigma_boundaries',
-          coords=cx.compose_coordinates(
+          coords=cx.coords.compose(
               coordinates.SigmaLevels.equidistant(4),
               coordinates.SigmaBoundaries.equidistant(4),
           ),
@@ -67,7 +67,7 @@ class CoordinatesTest(parameterized.TestCase):
       ),
       dict(
           testcase_name='sigma_spherical_harmonic_product',
-          coords=cx.compose_coordinates(
+          coords=cx.coords.compose(
               coordinates.SigmaLevels.equidistant(4),
               coordinates.SphericalHarmonicGrid.T21(),
           ),
@@ -85,7 +85,7 @@ class CoordinatesTest(parameterized.TestCase):
       ),
       dict(
           testcase_name='batched_trajectory',
-          coords=cx.compose_coordinates(
+          coords=cx.coords.compose(
               cx.SizedAxis('batch', 7),
               coordinates.TimeDelta(np.arange(5) * np.timedelta64(1, 'h')),
               coordinates.PressureLevels([50, 200, 800, 1000]),
@@ -157,7 +157,7 @@ class CoordinatesTest(parameterized.TestCase):
 
     if supports_xarray_roundtrip:
       with self.subTest('xarray_roundtrip'):
-        field = cx.wrap(np.zeros(coords.shape), coords)
+        field = cx.field(np.zeros(coords.shape), coords)
         data_array = field.to_xarray()
         reconstructed = xarray_utils.field_from_xarray(data_array)
         expected = expected_field_transform(field)
@@ -182,12 +182,12 @@ class CoordinatesMethodsTest(parameterized.TestCase):
   def test_sigma_level_integrate(self, shape, sigma_axis):
     sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
     pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
-    coords = cx.compose_coordinates(*[
+    coords = cx.coords.compose(*[
         sigma_coord if i == pos_sigma_axis else cx.SizedAxis(f'ax{i}', shape[i])
         for i in range(len(shape))
     ])
     data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
-    field = cx.wrap(data, coords)
+    field = cx.field(data, coords)
     integrated_field = sigma_coord.integrate(field)
     expected_data = sigma_coordinates.sigma_integral(
         data,
@@ -214,7 +214,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
   def test_sigma_level_integrate_over_pressure(self, shape, sigma_axis):
     sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
     pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
-    coords = cx.compose_coordinates(*[
+    coords = cx.coords.compose(*[
         sigma_coord if i == pos_sigma_axis else cx.SizedAxis(f'ax{i}', shape[i])
         for i in range(len(shape))
     ])
@@ -223,13 +223,13 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     sp_data = rng.uniform(
         size=[s for i, s in enumerate(shape) if i != pos_sigma_axis]
     )
-    sp_coords = cx.compose_coordinates(*[
+    sp_coords = cx.coords.compose(*[
         c
         for c in coords.axes
         if not isinstance(c, coordinates.SigmaLevels)
     ])
-    field = cx.wrap(data, coords)
-    sp_field = cx.wrap(sp_data, sp_coords)
+    field = cx.field(data, coords)
+    sp_field = cx.field(sp_data, sp_coords)
     integrated_field = sigma_coord.integrate_over_pressure(field, sp_field)
     expected_data = sp_data * sigma_coordinates.sigma_integral(
         data,
@@ -259,7 +259,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     pos_hybrid_axis = (
         hybrid_axis if hybrid_axis >= 0 else hybrid_axis + len(shape)
     )
-    coords = cx.compose_coordinates(*[
+    coords = cx.coords.compose(*[
         hybrid_coord if i == pos_hybrid_axis
         else cx.SizedAxis(f'ax{i}', shape[i])
         for i in range(len(shape))
@@ -268,12 +268,12 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     sp_shape = list(shape)
     sp_shape.pop(pos_hybrid_axis)
     sp_data = np.ones(sp_shape, dtype=np.float32)
-    sp_coords = cx.compose_coordinates(*[
+    sp_coords = cx.coords.compose(*[
         c for c in coords.coordinates
         if not isinstance(c, coordinates.HybridLevels)
     ])
-    field = cx.wrap(data, coords)
-    sp_field = cx.wrap(sp_data, sp_coords)
+    field = cx.field(data, coords)
+    sp_field = cx.field(sp_data, sp_coords)
     integrated_field = hybrid_coord.integrate_over_pressure(
         field, sp_field, sim_units=sim_units
     )
@@ -309,12 +309,12 @@ class CoordinatesMethodsTest(parameterized.TestCase):
   def test_sigma_level_integrate_cumulative(self, shape, sigma_axis):
     sigma_coord = coordinates.SigmaLevels.equidistant(shape[sigma_axis])
     pos_sigma_axis = sigma_axis if sigma_axis >= 0 else sigma_axis + len(shape)
-    coords = cx.compose_coordinates(*[
+    coords = cx.coords.compose(*[
         sigma_coord if i == pos_sigma_axis else cx.SizedAxis(f'ax{i}', shape[i])
         for i in range(len(shape))
     ])
     data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
-    field = cx.wrap(data, coords)
+    field = cx.field(data, coords)
     integrated_field = sigma_coord.integrate_cumulative(field)
     expected_data = sigma_coordinates.cumulative_sigma_integral(
         data,
@@ -326,7 +326,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
 
   def test_lon_lat_grid_integrate(self):
     grid = coordinates.LonLatGrid.T21()
-    field = cx.wrap(np.ones(grid.shape), grid)
+    field = cx.field(np.ones(grid.shape), grid)
     radius = 123.4
     integral = grid.integrate(field, radius=radius)
     np.testing.assert_allclose(integral.data, 4 * np.pi * radius**2, rtol=1e-5)
@@ -341,7 +341,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     # data that is 1 everywhere except 2 on first half of longitudes
     data = np.ones(grid.shape)
     data[: (n_lon // 2), :] = 2
-    field = cx.wrap(data, grid)
+    field = cx.field(data, grid)
 
     field_lat = grid.integrate(field, dims='longitude')
     self.assertEqual(field_lat.coordinate, cx.SelectedAxis(grid, axis=1))
@@ -362,7 +362,7 @@ class CoordinatesMethodsTest(parameterized.TestCase):
       dict(testcase_name='array', c=np.array(2.5)),
       dict(
           testcase_name='field_with_named_axes',
-          c=cx.wrap(np.eye(3), cx.SizedAxis('a', 3), cx.SizedAxis('b', 3)),
+          c=cx.field(np.eye(3), cx.SizedAxis('a', 3), cx.SizedAxis('b', 3)),
       ),
   )
   def test_spherical_harmonic_grid_add_constant(self, c):
@@ -370,12 +370,12 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     a, b = cx.SizedAxis('a', 3), cx.SizedAxis('b', 3)
     levels = coordinates.SigmaLevels.equidistant(4)
-    coords = cx.compose_coordinates(a, levels, b, ylm_grid)
+    coords = cx.coords.compose(a, levels, b, ylm_grid)
     x_data = np.zeros(coords.shape)
     rng = np.random.RandomState(4)
     x_data[:, :, :, 0, 0] = 0.13
     x_data[:, :, :, 2:4, 2:6] = rng.uniform(size=(2, 4))
-    x = cx.wrap(x_data, coords)
+    x = cx.field(x_data, coords)
     grid = coordinates.LonLatGrid.T21()
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=grid,
@@ -391,8 +391,8 @@ class CoordinatesMethodsTest(parameterized.TestCase):
       self,
   ):
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    x = cx.wrap(np.zeros(ylm_grid.shape), ylm_grid)
-    c = cx.wrap(np.arange(3.0))
+    x = cx.field(np.zeros(ylm_grid.shape), ylm_grid)
+    c = cx.field(np.arange(3.0))
     with self.assertRaisesRegex(
         ValueError, 'Adding non-scalar constants without axes is not supported'
     ):
@@ -402,9 +402,9 @@ class CoordinatesMethodsTest(parameterized.TestCase):
       self,
   ):
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    x = cx.wrap(np.zeros(ylm_grid.shape), ylm_grid)
+    x = cx.field(np.zeros(ylm_grid.shape), ylm_grid)
     conflicting_axis = cx.SizedAxis('total_wavenumber', ylm_grid.shape[-1])
-    c = cx.wrap(np.zeros(ylm_grid.shape[-1]), conflicting_axis)
+    c = cx.field(np.zeros(ylm_grid.shape[-1]), conflicting_axis)
     with self.assertRaisesRegex(
         ValueError, 'cannot have any of the dimensions'
     ):
@@ -413,8 +413,8 @@ class CoordinatesMethodsTest(parameterized.TestCase):
   def test_spherical_harmonic_grid_add_constant_raises_with_new_axes(self):
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     levels = coordinates.SigmaLevels.equidistant(4)
-    x = cx.wrap(np.zeros(levels.shape + ylm_grid.shape), levels, ylm_grid)
-    c = cx.wrap(np.arange(5), cx.SizedAxis('new_dim', 5))
+    x = cx.field(np.zeros(levels.shape + ylm_grid.shape), levels, ylm_grid)
+    c = cx.field(np.arange(5), cx.SizedAxis('new_dim', 5))
     with self.assertRaisesRegex(
         ValueError, 'Introduction of new axes via add_constant is not supported'
     ):

@@ -38,34 +38,34 @@ class DataObservationOperatorsTest(parameterized.TestCase):
 
   def test_returns_only_queried_fields(self):
     fields = {
-        'a': cx.wrap(np.ones(7), cx.LabeledAxis('x', np.arange(7))),
-        'b': cx.wrap(np.arange(11), 'z'),
+        'a': cx.field(np.ones(7), cx.LabeledAxis('x', np.arange(7))),
+        'b': cx.field(np.arange(11), 'z'),
     }
     operator = observation_operators.DataObservationOperator(fields)
     query = {'a': cx.LabeledAxis('x', np.arange(7))}
     actual = operator.observe(inputs={}, query=query)
     expected = {
-        'a': cx.wrap(np.ones(7), cx.LabeledAxis('x', np.arange(7))),
+        'a': cx.field(np.ones(7), cx.LabeledAxis('x', np.arange(7))),
     }
     chex.assert_trees_all_equal(actual, expected)
 
   def test_subset_along_coord(self):
     pressure_coord = cx.LabeledAxis('pressure', [10, 20, 30, 40, 50])
     fields = {
-        'a': cx.wrap(np.arange(5), pressure_coord),
+        'a': cx.field(np.arange(5), pressure_coord),
     }
     operator = observation_operators.DataObservationOperator(fields)
     query_pressure_coord = cx.LabeledAxis('pressure', [20, 40])
     query = {'a': query_pressure_coord}
     actual = operator.observe(inputs={}, query=query)
-    expected_field = cx.wrap(np.array([1, 3]), query_pressure_coord)
+    expected_field = cx.field(np.array([1, 3]), query_pressure_coord)
     expected = {'a': expected_field}
     chex.assert_trees_all_equal(actual, expected)
 
   def test_invalid_subset_along_coord(self):
     pressure_coord = cx.LabeledAxis('pressure', [10, 20, 30, 40, 50])
     fields = {
-        'a': cx.wrap(np.arange(5), pressure_coord),
+        'a': cx.field(np.arange(5), pressure_coord),
     }
     operator = observation_operators.DataObservationOperator(fields)
     query_pressure_coord = cx.LabeledAxis('pressure', [25, 40])
@@ -78,7 +78,7 @@ class DataObservationOperatorsTest(parameterized.TestCase):
       operator.observe(inputs={}, query=query)
 
   def test_raises_on_missing_field(self):
-    fields = {'a': cx.wrap(np.ones(7), cx.LabeledAxis('x', np.arange(7)))}
+    fields = {'a': cx.field(np.ones(7), cx.LabeledAxis('x', np.arange(7)))}
     operator = observation_operators.DataObservationOperator(fields)
     query = {'d': cx.LabeledAxis('x', np.arange(7))}
     with self.assertRaisesWithLiteralMatch(
@@ -89,7 +89,7 @@ class DataObservationOperatorsTest(parameterized.TestCase):
 
   def test_raises_on_non_matching_coordinate(self):
     coord = cx.LabeledAxis('x', np.arange(7))
-    fields = {'a': cx.wrap(np.ones(7), coord)}
+    fields = {'a': cx.field(np.ones(7), coord)}
     operator = observation_operators.DataObservationOperator(fields)
     q_coord = cx.LabeledAxis('x', np.linspace(0, 1, 7))
     query = {'a': q_coord}
@@ -103,8 +103,8 @@ class DataObservationOperatorsTest(parameterized.TestCase):
   def test_raises_on_field_in_query(self):
     coord = cx.LabeledAxis('rel_x', np.arange(7))
     fields = {
-        'a': cx.wrap(np.ones(7), coord),
-        'x': cx.wrap(np.linspace(0, np.pi, 7), coord),
+        'a': cx.field(np.ones(7), coord),
+        'x': cx.field(np.linspace(0, np.pi, 7), coord),
     }
     operator = observation_operators.DataObservationOperator(fields)
     query = {'a': coord, 'x': fields['x'] + 10.0}
@@ -127,9 +127,9 @@ class FixedLearnedObservationOperatorTest(parameterized.TestCase):
     self.sigma_levels = sigma_levels
 
     input_names = ('u', 'v', 't')
-    full_coord = cx.compose_coordinates(sigma_levels, lon_lat_grid)
+    full_coord = cx.coords.compose(sigma_levels, lon_lat_grid)
     self.inputs = {
-        k: cx.wrap(np.ones(full_coord.shape), full_coord) for k in input_names
+        k: cx.field(np.ones(full_coord.shape), full_coord) for k in input_names
     }
     feature_module = transforms.Select('|'.join(input_names))
     net_factory = functools.partial(
@@ -160,7 +160,7 @@ class FixedLearnedObservationOperatorTest(parameterized.TestCase):
     operator = observation_operators.FixedLearnedObservationOperator(
         self.observation_transform
     )
-    full_coord = cx.compose_coordinates(self.sigma_levels, self.lon_lat_grid)
+    full_coord = cx.coords.compose(self.sigma_levels, self.lon_lat_grid)
     query = {'turbulence_index': full_coord, 'evap_rate': self.lon_lat_grid}
     actual = operator.observe(inputs=self.inputs, query=query)
     self.assertSetEqual(set(actual.keys()), set(query.keys()))
@@ -198,8 +198,8 @@ class LearnedSparseScalarObservationFromNeighborsTest(parameterized.TestCase):
   def test_output_structure(self):
     sparse_coord = cx.LabeledAxis('id', np.arange(7))
     np.random.seed(0)
-    longitudes = cx.wrap(np.random.uniform(0, 360, 7), sparse_coord)
-    latitudes = cx.wrap(np.random.uniform(-90, 90, 7), sparse_coord)
+    longitudes = cx.field(np.random.uniform(0, 360, 7), sparse_coord)
+    latitudes = cx.field(np.random.uniform(-90, 90, 7), sparse_coord)
     full_query = {
         'longitude': longitudes,
         'latitude': latitudes,
@@ -226,9 +226,9 @@ class MultiObservationOperatorTest(parameterized.TestCase):
     coord_b = cx.LabeledAxis('b_ax', np.arange(4))
     coord_c = cx.LabeledAxis('c_ax', np.arange(5))
 
-    field_a = cx.wrap(np.random.rand(3), coord_a)
-    field_b = cx.wrap(np.random.rand(4), coord_b)
-    field_c = cx.wrap(np.random.rand(5), coord_c)
+    field_a = cx.field(np.random.rand(3), coord_a)
+    field_b = cx.field(np.random.rand(4), coord_b)
+    field_c = cx.field(np.random.rand(5), coord_c)
     op1 = observation_operators.DataObservationOperator({'a': field_a})
     op2 = observation_operators.DataObservationOperator(
         {'b': field_b, 'c': field_c}

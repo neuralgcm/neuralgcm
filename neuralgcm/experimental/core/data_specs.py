@@ -184,7 +184,7 @@ class CoordSpec:
       )
     dim_match_rules |= {delta_dim: AxisMatchRules.TYPE}
     return cls(  # pytype: disable=wrong-arg-types
-        coord=cx.compose_coordinates(dummy_timedelta, coord),
+        coord=cx.coords.compose(dummy_timedelta, coord),
         dim_match_rules=dim_match_rules,
     )
 
@@ -210,7 +210,7 @@ class CoordSpec:
       )
     dim_match_rules |= {delta_dim: AxisMatchRules.SUPERSET}
     return cls(  # pytype: disable=wrong-arg-types
-        coord=cx.compose_coordinates(dummy_timedelta, coord),
+        coord=cx.coords.compose(dummy_timedelta, coord),
         dim_match_rules=dim_match_rules,
     )
 
@@ -293,7 +293,7 @@ def finalize_spec(
         )
       else:
         coord_axes.append(coord_ax)
-  return cx.compose_coordinates(*coord_axes)
+  return cx.coords.compose(*coord_axes)
 
 
 # Type alias for extended Spec objects that are used as InputsSpec.
@@ -388,4 +388,3 @@ def construct_query(
       elif isinstance(spec, cx.Coordinate):
         queries[data_key][var_name] = spec
   return queries
-

@@ -36,9 +36,9 @@ class LinearOnPressureTest(parameterized.TestCase):
     target_levels = coordinates.SigmaLevels.equidistant(20)
     grid = coordinates.LonLatGrid.T21()
     rng = np.random.RandomState(42)
-    coords = cx.compose_coordinates(source_levels, grid)
-    field = cx.wrap(rng.randn(*coords.shape), coords)
-    surface_pressure = cx.wrap(100000 + 10000 * rng.randn(*grid.shape), grid)
+    coords = cx.coords.compose(source_levels, grid)
+    field = cx.field(rng.randn(*coords.shape), coords)
+    surface_pressure = cx.field(100000 + 10000 * rng.randn(*grid.shape), grid)
     inputs = {'field': field, 'surface_pressure': surface_pressure}
 
     regridder = interpolators.LinearOnPressure(target_levels, 'linear')
@@ -53,8 +53,8 @@ class LinearOnPressureTest(parameterized.TestCase):
         surface_pressure=surface_pressure.data / 100,  # dinosaur uses hPa.
         interpolate_fn=dino_interp_fn,
     )
-    expected_coords = cx.compose_coordinates(target_levels, grid)
-    expected_field = cx.wrap(expected_data['field'], expected_coords)
+    expected_coords = cx.coords.compose(target_levels, grid)
+    expected_field = cx.field(expected_data['field'], expected_coords)
     cx_testing.assert_fields_allclose(
         actual['field'], expected_field, atol=1e-5
     )
@@ -79,9 +79,9 @@ class LinearOnPressureTest(parameterized.TestCase):
     target_levels = coordinates.PressureLevels.with_13_era5_levels()
     grid = coordinates.LonLatGrid.T21()
     rng = np.random.RandomState(42)
-    coords = cx.compose_coordinates(source_levels, grid)
-    field = cx.wrap(rng.randn(*coords.shape), coords)
-    surface_pressure = cx.wrap(100000 + 10000 * rng.randn(*grid.shape), grid)
+    coords = cx.coords.compose(source_levels, grid)
+    field = cx.field(rng.randn(*coords.shape), coords)
+    surface_pressure = cx.field(100000 + 10000 * rng.randn(*grid.shape), grid)
     inputs = {'field': field, 'surface_pressure': surface_pressure}
 
     regridder = interpolators.LinearOnPressure(target_levels, extrapolation)
@@ -96,8 +96,8 @@ class LinearOnPressureTest(parameterized.TestCase):
         surface_pressure=surface_pressure.data / 100,  # dinosaur uses hPa.
         interpolate_fn=dino_interp_fn,
     )
-    expected_coords = cx.compose_coordinates(target_levels, grid)
-    expected_field = cx.wrap(expected_data['field'], expected_coords)
+    expected_coords = cx.coords.compose(target_levels, grid)
+    expected_field = cx.field(expected_data['field'], expected_coords)
     cx_testing.assert_fields_allclose(
         actual['field'], expected_field, atol=1e-5
     )
@@ -119,13 +119,13 @@ class LinearOnPressureTest(parameterized.TestCase):
     source_levels = coordinates.PressureLevels([100, 200, 400])
     target_levels = coordinates.SigmaLevels.equidistant(5)
     surface_pressure = 1000.0 * 100  # hPa to Pa.
-    field = cx.wrap(np.array([10.0, 20.0, 30.0]), source_levels)
-    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+    field = cx.field(np.array([10.0, 20.0, 30.0]), source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.field(surface_pressure)}
 
     regridder = interpolators.LinearOnPressure(target_levels, extrapolation)
     actual = regridder(inputs)['field']
 
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
   def test_to_sigma_from_pressure_1d_with_sim_units(self):
@@ -133,10 +133,10 @@ class LinearOnPressureTest(parameterized.TestCase):
     source_levels = coordinates.PressureLevels([100, 200, 400])
     target_levels = coordinates.SigmaLevels.equidistant(5)
     surface_pressure_pa = 1000.0 * 100  # hPa to Pa.
-    field = cx.wrap(np.array([10.0, 20.0, 30.0]), source_levels)
+    field = cx.field(np.array([10.0, 20.0, 30.0]), source_levels)
     inputs_hpa = {
         'field': field,
-        'surface_pressure': cx.wrap(surface_pressure_pa),
+        'surface_pressure': cx.field(surface_pressure_pa),
     }
 
     regridder_hpa = interpolators.LinearOnPressure(target_levels, 'linear')
@@ -148,7 +148,7 @@ class LinearOnPressureTest(parameterized.TestCase):
     )
     inputs_nondim = {
         'field': field,
-        'surface_pressure': cx.wrap(surface_pressure_nondim),
+        'surface_pressure': cx.field(surface_pressure_nondim),
     }
     regridder_nondim = interpolators.LinearOnPressure(
         target_levels, 'linear', sim_units=sim_units
@@ -167,27 +167,27 @@ class LinearOnPressureTest(parameterized.TestCase):
     )
     surface_pressure = 1000.0 * 100  # hPa to Pa.
     field_data = np.array([1.0, 2.0, 4.0, 6.0, 8.0])
-    field = cx.wrap(field_data, source_levels)
-    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+    field = cx.field(field_data, source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.field(surface_pressure)}
 
     regridder = interpolators.LinearOnPressure(target_levels=target_levels)
     actual = regridder(inputs)['field']
 
     expected_data = np.array([1.0, 1.75, 3.0, 5.0, 7.5])
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
   def test_to_pressure_from_pressure_1d(self):
     """Tests interpolation to pressure from pressure levels."""
     source_levels = coordinates.PressureLevels([100, 200, 400])
     target_levels = coordinates.PressureLevels([100, 150, 300])
-    field = cx.wrap(np.array([10.0, 20.0, 30.0]), source_levels)
+    field = cx.field(np.array([10.0, 20.0, 30.0]), source_levels)
     inputs = {'field': field}
 
     regridder = interpolators.LinearOnPressure(target_levels=target_levels)
     actual = regridder(inputs)['field']
     expected_data = np.array([10.0, 15.0, 25.0])
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
   def test_to_pressure_from_sigma_1d(self):
@@ -198,13 +198,13 @@ class LinearOnPressureTest(parameterized.TestCase):
     target_levels = coordinates.PressureLevels([100, 250, 400, 600, 850])
     surface_pressure = 1000.0 * 100  # hPa to Pa.
     field_data = np.array([1.0, 2.0, 4.0, 6.0, 8.0])
-    field = cx.wrap(field_data, source_levels)
-    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+    field = cx.field(field_data, source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.field(surface_pressure)}
 
     regridder = interpolators.LinearOnPressure(target_levels=target_levels)
     actual = regridder(inputs)['field']
     expected_data = np.array([1.0, 1.75, 3.0, 5.0, 7.5])
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
   @parameterized.named_parameters(
@@ -258,13 +258,13 @@ class LinearOnPressureTest(parameterized.TestCase):
 
     # Define field values linearly proportional to pressure (F = P/10)
     # Source Field: 20, 50, 80
-    field = cx.wrap(np.array([20.0, 50.0, 80.0]), source_levels)
-    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+    field = cx.field(np.array([20.0, 50.0, 80.0]), source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.field(surface_pressure)}
 
     regridder = interpolators.LinearOnPressure(target_levels, extrapolation)
     actual = regridder(inputs)['field']
 
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
   @parameterized.named_parameters(
@@ -286,13 +286,13 @@ class LinearOnPressureTest(parameterized.TestCase):
     b_boundaries = np.array([0, 0.1, 0.4, 0.8])
     target_levels = coordinates.HybridLevels(a_boundaries, b_boundaries)
     surface_pressure = 1000.0 * 100  # hPa to Pa.
-    field = cx.wrap(np.array([10.0, 20.0, 30.0, 40.0, 50.0]), source_levels)
-    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+    field = cx.field(np.array([10.0, 20.0, 30.0, 40.0, 50.0]), source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.field(surface_pressure)}
 
     regridder = interpolators.LinearOnPressure(target_levels, extrapolation)
     actual = regridder(inputs)['field']
 
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-5)
 
 
@@ -307,15 +307,15 @@ class ConservativeOnPressureTest(parameterized.TestCase):
     target_levels = coordinates.SigmaLevels.equidistant(2)
     # sigma levels correspond to pressure boundaries: (0, 300), (300, 600).
     field_data = np.array([10.0, 20.0, 30.0])
-    field = cx.wrap(field_data, source_levels)
-    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+    field = cx.field(field_data, source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.field(surface_pressure)}
 
     regridder = interpolators.ConservativeOnPressure(target_levels)
     actual = regridder(inputs)['field']
     # (10 * 200 + 20 * 100) / 300 = 40 / 3
     # (20 * 100 + 30 * 200) / 300 = 80 / 3
     expected_data = np.array([40.0 / 3.0, 80.0 / 3.0])
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-6)
 
   def test_to_sigma_from_sigma_levels_1d(self):
@@ -328,8 +328,8 @@ class ConservativeOnPressureTest(parameterized.TestCase):
     )  # boundaries at [0.0, 0.5, 1.0]
     surface_pressure = 1000.0 * 100  # hPa to Pa.
     field_data = np.array([10.0, 20.0, 30.0])
-    field = cx.wrap(field_data, source_levels)
-    inputs = {'field': field, 'surface_pressure': cx.wrap(surface_pressure)}
+    field = cx.field(field_data, source_levels)
+    inputs = {'field': field, 'surface_pressure': cx.field(surface_pressure)}
 
     regridder = interpolators.ConservativeOnPressure(target_levels)
     actual = regridder(inputs)['field']
@@ -340,7 +340,7 @@ class ConservativeOnPressureTest(parameterized.TestCase):
     # Target cell 2 (sigma): (0.5, 1.0).
     # Value = (30 * 0.5) / 0.5 = 30.0
     expected_data = np.array([18.0, 30.0])
-    expected = cx.wrap(expected_data, target_levels)
+    expected = cx.field(expected_data, target_levels)
     cx_testing.assert_fields_allclose(actual, expected, atol=1e-6)
 
 
@@ -363,12 +363,12 @@ class GetSurfacePressureTest(parameterized.TestCase):
     )
     pressure_levels = coordinates.PressureLevels(levels)
     grid = coordinates.LonLatGrid(longitude_nodes=1, latitude_nodes=4)
-    coords = cx.compose_coordinates(pressure_levels, grid)
-    geopotential = cx.wrap(geopotential_data, coords)
+    coords = cx.coords.compose(pressure_levels, grid)
+    geopotential = cx.field(geopotential_data, coords)
     gravity_acceleration = 10
-    geopotential_at_surface = cx.wrap(orography * gravity_acceleration, grid)
+    geopotential_at_surface = cx.field(orography * gravity_acceleration, grid)
     expected_data = np.array([[[45000, 39000, 50000, 55000]]])
-    expected = cx.wrap(np.squeeze(expected_data).reshape(1, 4), grid)
+    expected = cx.field(np.squeeze(expected_data).reshape(1, 4), grid)
     actual = interpolators.get_surface_pressure(
         geopotential, geopotential_at_surface
     )

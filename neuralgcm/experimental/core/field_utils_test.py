@@ -27,12 +27,12 @@ class SplitToFieldsTest(parameterized.TestCase):
 
   def test_split_to_fields_flat_out(self):
     b, x = cx.SizedAxis('batch', 3), cx.LabeledAxis('x', np.array([0, 1]))
-    field = cx.wrap(np.arange(6).reshape(3, 2), b, x)
+    field = cx.field(np.arange(6).reshape(3, 2), b, x)
     targets = {'a': x, 'b': x, 'c': x}
     expected = {
-        'a': cx.wrap(np.array([0, 1]), x),
-        'b': cx.wrap(np.array([2, 3]), x),
-        'c': cx.wrap(np.array([4, 5]), x),
+        'a': cx.field(np.array([0, 1]), x),
+        'b': cx.field(np.array([2, 3]), x),
+        'c': cx.field(np.array([4, 5]), x),
     }
     actual = field_utils.split_to_fields(field, targets)
     chex.assert_trees_all_close(actual, expected)
@@ -40,43 +40,43 @@ class SplitToFieldsTest(parameterized.TestCase):
   def test_split_to_fields_mixed_out(self):
     b, x = cx.SizedAxis('batch', 6), cx.LabeledAxis('x', np.array([0, 1]))
     s, d = cx.SizedAxis('s', 2), cx.SizedAxis('d', 3)
-    field = cx.wrap(np.arange(12).reshape(6, 2), b, x)
+    field = cx.field(np.arange(12).reshape(6, 2), b, x)
     targets = {
         'a': x,  # takes size 1.
-        'b': cx.compose_coordinates(s, x),  # takes size 2.
-        'c': cx.compose_coordinates(d, x),  # takes size 3.
+        'b': cx.coords.compose(s, x),  # takes size 2.
+        'c': cx.coords.compose(d, x),  # takes size 3.
     }
     expected = {
-        'a': cx.wrap(np.array([0, 1]), x),
-        'b': cx.wrap(np.array([[2, 3], [4, 5]]), s, x),
-        'c': cx.wrap(np.array([[6, 7], [8, 9], [10, 11]]), d, x),
+        'a': cx.field(np.array([0, 1]), x),
+        'b': cx.field(np.array([[2, 3], [4, 5]]), s, x),
+        'c': cx.field(np.array([[6, 7], [8, 9], [10, 11]]), d, x),
     }
     actual = field_utils.split_to_fields(field, targets)
     chex.assert_trees_all_close(actual, expected)
 
   def test_split_to_fields_multi_dims(self):
-    xy = cx.compose_coordinates(cx.SizedAxis('x', 6), cx.SizedAxis('y', 7))
-    field = cx.wrap(np.ones((5,) + xy.shape), None, xy)
+    xy = cx.coords.compose(cx.SizedAxis('x', 6), cx.SizedAxis('y', 7))
+    field = cx.field(np.ones((5,) + xy.shape), None, xy)
     s = cx.SizedAxis('s', 2)
-    sxy = cx.compose_coordinates(s, xy)
+    sxy = cx.coords.compose(s, xy)
     targets = {'a': xy, 'b': sxy, 'c': sxy}
     expected = {
-        'a': cx.wrap(np.ones(xy.shape), xy),
-        'b': cx.wrap(np.ones(sxy.shape), sxy),
-        'c': cx.wrap(np.ones(sxy.shape), sxy),
+        'a': cx.field(np.ones(xy.shape), xy),
+        'b': cx.field(np.ones(sxy.shape), sxy),
+        'c': cx.field(np.ones(sxy.shape), sxy),
     }
     actual = field_utils.split_to_fields(field, targets)
     chex.assert_trees_all_close(actual, expected)
 
   def test_split_to_fields_aligns_outputs(self):
     x, y = cx.SizedAxis('x', 6), cx.SizedAxis('y', 7)
-    field = cx.wrap(np.ones((3,) + x.shape + y.shape), None, x, y)
-    yx = cx.compose_coordinates(x, y)
+    field = cx.field(np.ones((3,) + x.shape + y.shape), None, x, y)
+    yx = cx.coords.compose(x, y)
     targets = {'a': yx, 'b': yx, 'c': yx}  # requests transposed xy;
     expected = {
-        'a': cx.wrap(np.ones(yx.shape), yx),
-        'b': cx.wrap(np.ones(yx.shape), yx),
-        'c': cx.wrap(np.ones(yx.shape), yx),
+        'a': cx.field(np.ones(yx.shape), yx),
+        'b': cx.field(np.ones(yx.shape), yx),
+        'c': cx.field(np.ones(yx.shape), yx),
     }
     actual = field_utils.split_to_fields(field, targets)
     chex.assert_trees_all_close(actual, expected)
@@ -84,11 +84,11 @@ class SplitToFieldsTest(parameterized.TestCase):
   def test_split_to_fields_raises_on_misaligned_coords(self):
     """Tests that split_to_fields raises on misaligned coordinates."""
     x, y = cx.LabeledAxis('x', np.arange(3)), cx.LabeledAxis('y', np.arange(2))
-    xy = cx.compose_coordinates(x, y)
-    field = cx.wrap(np.ones((2,) + xy.shape), None, xy)
+    xy = cx.coords.compose(x, y)
+    field = cx.field(np.ones((2,) + xy.shape), None, xy)
     good_targets = {'a': xy, 'b': xy}  # should not raise
     _ = field_utils.split_to_fields(field, good_targets)
-    bad_xy = cx.compose_coordinates(cx.SizedAxis('x', 3), cx.SizedAxis('y', 2))
+    bad_xy = cx.coords.compose(cx.SizedAxis('x', 3), cx.SizedAxis('y', 2))
     bad_targets = {'a': bad_xy, 'b': bad_xy}
     with self.assertRaisesRegex(
         ValueError,
@@ -102,7 +102,7 @@ class SplitToFieldsTest(parameterized.TestCase):
   def test_split_to_fields_raises_on_wrong_split_size(self):
     """Tests that split_to_fields raises on wrong split size."""
     b, x = cx.SizedAxis('batch', 3), cx.LabeledAxis('x', np.array([0, 1]))
-    field = cx.wrap(np.arange(6).reshape(3, 2), b, x)
+    field = cx.field(np.arange(6).reshape(3, 2), b, x)
     targets = {'a': x, 'b': x}  # requests 2*2 != 3*2.
     with self.assertRaisesWithLiteralMatch(
         ValueError,
@@ -115,11 +115,11 @@ class SplitToFieldsTest(parameterized.TestCase):
   def test_split_to_fields_raises_if_too_many_new_dims(self):
     """Tests that split_to_fields raises if more than 1 new dim is detected."""
     b, x = cx.SizedAxis('batch', 2), cx.LabeledAxis('x', np.arange(7))
-    field = cx.wrap(np.zeros((2, 7)), b, x)
+    field = cx.field(np.zeros((2, 7)), b, x)
     d = cx.SizedAxis('d', 1)
     targets = {
-        'a': cx.compose_coordinates(d, x),
-        'b': cx.compose_coordinates(d, cx.SizedAxis('second_new', 1), x),
+        'a': cx.coords.compose(d, x),
+        'b': cx.coords.compose(d, cx.SizedAxis('second_new', 1), x),
     }
     with self.assertRaisesRegex(
         ValueError,
@@ -135,64 +135,64 @@ class CombineFieldsTest(parameterized.TestCase):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     z, level = cx.SizedAxis('z', 2), cx.SizedAxis('level', 7)
     fields = {  # concatenates z and level when aligned on (x, y).
-        'a': cx.wrap(np.ones((2, 3, 5)), z, x, y),
-        'b': cx.wrap(np.ones((7, 3, 5)), level, x, y),
-        'c': cx.wrap(np.ones((7, 3, 5)), level, x, y),
+        'a': cx.field(np.ones((2, 3, 5)), z, x, y),
+        'b': cx.field(np.ones((7, 3, 5)), level, x, y),
+        'c': cx.field(np.ones((7, 3, 5)), level, x, y),
     }
     actual = field_utils.combine_fields(fields, dims_to_align=(x, y))
-    expected = cx.wrap(np.ones((7 + 7 + 2, 3, 5)), None, x, y)
+    expected = cx.field(np.ones((7 + 7 + 2, 3, 5)), None, x, y)
     chex.assert_trees_all_close(actual, expected)
 
   def test_combine_fields_supports_missing_concat_axis(self):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     level = cx.SizedAxis('level', 7)
     fields = {
-        'a_surf': cx.wrap(np.ones((3, 5)), x, y),  # should expand as (1, 3, 5).
-        'b': cx.wrap(np.ones((7, 3, 5)), level, x, y),
-        'c': cx.wrap(np.ones((7, 3, 5)), level, x, y),
+        'a_surf': cx.field(np.ones((3, 5)), x, y),  # should expand as (1, 3, 5).
+        'b': cx.field(np.ones((7, 3, 5)), level, x, y),
+        'c': cx.field(np.ones((7, 3, 5)), level, x, y),
     }
     actual = field_utils.combine_fields(fields, dims_to_align=(x, y))
-    expected = cx.wrap(np.ones((1 + 7 + 7, 3, 5)), None, x, y)
+    expected = cx.field(np.ones((1 + 7 + 7, 3, 5)), None, x, y)
     chex.assert_trees_all_close(actual, expected)
 
   def test_combine_fields_works_as_stack(self):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     level = cx.SizedAxis('level', 7)
     fields = {  # all expand to (1, 7, 3, 5) since aligned on level, x, y.
-        'a': cx.wrap(np.ones((7, 3, 5)), level, x, y),
-        'b': cx.wrap(np.ones((7, 3, 5)), level, x, y),
-        'c': cx.wrap(np.ones((7, 3, 5)), level, x, y),
+        'a': cx.field(np.ones((7, 3, 5)), level, x, y),
+        'b': cx.field(np.ones((7, 3, 5)), level, x, y),
+        'c': cx.field(np.ones((7, 3, 5)), level, x, y),
     }
     actual = field_utils.combine_fields(fields, dims_to_align=(level, x, y))
-    expected = cx.wrap(np.ones((3, 7, 3, 5)), None, level, x, y)
+    expected = cx.field(np.ones((3, 7, 3, 5)), None, level, x, y)
     chex.assert_trees_all_close(actual, expected)
 
   def test_combine_fields_out_axis_tag(self):
     x = cx.SizedAxis('x', 5)
-    fields = {'a': cx.wrap(np.ones(5), x), 'b': cx.wrap(np.ones(5), x)}
+    fields = {'a': cx.field(np.ones(5), x), 'b': cx.field(np.ones(5), x)}
 
     with self.subTest('coordinate_out_tag'):
       out_tag = cx.SizedAxis('out', 2)  # 2
       actual = field_utils.combine_fields(fields, (x,), out_tag)
-      expected = cx.wrap(np.ones((2, 5)), out_tag, x)
+      expected = cx.field(np.ones((2, 5)), out_tag, x)
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('name_out_tag'):
       actual = field_utils.combine_fields(fields, (x,), 'out')
-      expected = cx.wrap(np.ones((2, 5)), 'out', x)
+      expected = cx.field(np.ones((2, 5)), 'out', x)
       chex.assert_trees_all_close(actual, expected)
 
   def test_combine_fields_supports_dims_and_coords(self):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     z, level = cx.SizedAxis('z', 2), cx.SizedAxis('level', 7)
     fields = {
-        'a': cx.wrap(np.ones((2, 7, 3, 5)), z, level, x, y),
-        'b': cx.wrap(np.ones((7, 3, 5)), level, x, y),
-        'c': cx.wrap(np.ones((7, 3, 5)), level, x, y),
+        'a': cx.field(np.ones((2, 7, 3, 5)), z, level, x, y),
+        'b': cx.field(np.ones((7, 3, 5)), level, x, y),
+        'c': cx.field(np.ones((7, 3, 5)), level, x, y),
     }
-    xy = cx.compose_coordinates(x, y)  # can pass coords as dims_to_align.
+    xy = cx.coords.compose(x, y)  # can pass coords as dims_to_align.
     actual = field_utils.combine_fields(fields, dims_to_align=('level', xy))
-    expected = cx.wrap(np.ones((4, 7, 3, 5)), None, level, x, y)
+    expected = cx.field(np.ones((4, 7, 3, 5)), None, level, x, y)
     chex.assert_trees_all_close(actual, expected)
 
   def test_combine_fields_raises_on_repeated_dims_to_align(self):
@@ -207,8 +207,8 @@ class CombineFieldsTest(parameterized.TestCase):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     z, level = cx.SizedAxis('z', 2), cx.SizedAxis('level', 7)
     fields = {
-        'two_new': cx.wrap(np.ones((2, 7, 3, 5)), z, level, x, y),
-        'no_new': cx.wrap(np.ones((3, 5)), x, y),
+        'two_new': cx.field(np.ones((2, 7, 3, 5)), z, level, x, y),
+        'no_new': cx.field(np.ones((3, 5)), x, y),
     }
     with self.assertRaisesWithLiteralMatch(
         ValueError,
@@ -221,8 +221,8 @@ class CombineFieldsTest(parameterized.TestCase):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     level = cx.SizedAxis('level', 7)
     fields = {
-        'missing_x': cx.wrap(np.ones((7, 5)), level, y),
-        'valid': cx.wrap(np.ones((3, 5)), x, y),
+        'missing_x': cx.field(np.ones((7, 5)), level, y),
+        'valid': cx.field(np.ones((3, 5)), x, y),
     }
     with self.assertRaisesWithLiteralMatch(
         ValueError,
@@ -234,8 +234,8 @@ class CombineFieldsTest(parameterized.TestCase):
   def test_combine_fields_no_unique_axis_order(self):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     fields = {
-        'y_then_x': cx.wrap(np.ones((7, 5, 3)), 'l', y, x),
-        'x_then_y': cx.wrap(np.ones((3, 5)), x, y),
+        'y_then_x': cx.field(np.ones((7, 5, 3)), 'l', y, x),
+        'x_then_y': cx.field(np.ones((3, 5)), x, y),
     }
     with self.assertRaisesRegex(
         ValueError,
@@ -262,57 +262,57 @@ class ZeroMaskAxisOutliersTest(parameterized.TestCase):
 
   def test_mask_lower_bound_only(self):
     axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
-    field = cx.wrap(np.ones(4), axis)
+    field = cx.field(np.ones(4), axis)
     actual = field_utils.zero_mask_axis_outliers(field, axis, lower=0.0)
-    expected = cx.wrap(np.array([0, 1, 1, 1]), axis)
+    expected = cx.field(np.array([0, 1, 1, 1]), axis)
     chex.assert_trees_all_close(actual, expected)
 
   def test_mask_upper_bound_only(self):
     axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
-    field = cx.wrap(np.ones(4), axis)
+    field = cx.field(np.ones(4), axis)
     actual = field_utils.zero_mask_axis_outliers(field, axis, upper=1.0)
-    expected = cx.wrap(np.array([1, 1, 1, 0]), axis)
+    expected = cx.field(np.array([1, 1, 1, 0]), axis)
     chex.assert_trees_all_close(actual, expected)
 
   def test_mask_lower_and_upper_bounds(self):
     axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
-    field = cx.wrap(np.ones(4), axis)
+    field = cx.field(np.ones(4), axis)
     actual = field_utils.zero_mask_axis_outliers(
         field, axis, lower=0.0, upper=1.0
     )
-    expected = cx.wrap(np.array([0, 1, 1, 0]), axis)
+    expected = cx.field(np.array([0, 1, 1, 0]), axis)
     chex.assert_trees_all_close(actual, expected)
 
   def test_mask_multidim_field(self):
     x = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
     y = cx.SizedAxis('y', 2)
-    field = cx.wrap(np.ones((4, 2)), x, y)
+    field = cx.field(np.ones((4, 2)), x, y)
     actual = field_utils.zero_mask_axis_outliers(field, x, lower=0.0, upper=1.0)
     expected_data = np.array([[0, 0], [1, 1], [1, 1], [0, 0]])
-    expected = cx.wrap(expected_data, x, y)
+    expected = cx.field(expected_data, x, y)
     chex.assert_trees_all_close(actual, expected)
 
   def test_no_values_masked(self):
     axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
-    field = cx.wrap(np.ones(4), axis)
+    field = cx.field(np.ones(4), axis)
     actual = field_utils.zero_mask_axis_outliers(
         field, axis, lower=-1.0, upper=2.0
     )
-    expected = cx.wrap(np.array([1, 1, 1, 1]), axis)
+    expected = cx.field(np.array([1, 1, 1, 1]), axis)
     chex.assert_trees_all_close(actual, expected)
 
   def test_all_values_masked_if_lower_gt_upper(self):
     axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
-    field = cx.wrap(np.ones(4), axis)
+    field = cx.field(np.ones(4), axis)
     actual = field_utils.zero_mask_axis_outliers(
         field, axis, lower=1.0, upper=0.0
     )
-    expected = cx.wrap(np.zeros(4), axis)
+    expected = cx.field(np.zeros(4), axis)
     chex.assert_trees_all_close(actual, expected)
 
   def test_raises_on_no_lower_or_upper_bound(self):
     axis = cx.LabeledAxis('x', np.array([-1, 0, 1, 2]))
-    field = cx.wrap(np.ones(4), axis)
+    field = cx.field(np.ones(4), axis)
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         'Must specify at least one of `lower` or `upper`.',
@@ -321,7 +321,7 @@ class ZeroMaskAxisOutliersTest(parameterized.TestCase):
 
   def test_raises_on_axis_without_ticks(self):
     axis = cx.SizedAxis('x', 4)
-    field = cx.wrap(np.ones(4), axis)
+    field = cx.field(np.ones(4), axis)
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         f'Axis must be 1d with specified tick values got {axis}',
@@ -330,8 +330,8 @@ class ZeroMaskAxisOutliersTest(parameterized.TestCase):
 
   def test_raises_on_multidim_axis(self):
     x, y = cx.SizedAxis('x', 2), cx.SizedAxis('y', 2)
-    axis = cx.compose_coordinates(x, y)
-    field = cx.wrap(np.ones((2, 2)), axis)
+    axis = cx.coords.compose(x, y)
+    field = cx.field(np.ones((2, 2)), axis)
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         f'Axis must be 1d with specified tick values got {axis}',
@@ -344,9 +344,9 @@ class InAxesUtilTest(parameterized.TestCase):
 
   def test_in_axes_for_coord(self):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
-    f1 = cx.wrap(np.zeros((3, 4)), x, y)
-    f2 = cx.wrap(np.zeros((4, 3)), y, x)
-    f3 = cx.wrap(np.zeros((4,)), y)
+    f1 = cx.field(np.zeros((3, 4)), x, y)
+    f2 = cx.field(np.zeros((4, 3)), y, x)
+    f3 = cx.field(np.zeros((4,)), y)
     inputs = {'a': f1, 'b': (f2, 123, f3)}
     with self.subTest('map_over_x'):
       actual = field_utils.in_axes_for_coord(inputs, x)
@@ -359,16 +359,16 @@ class InAxesUtilTest(parameterized.TestCase):
 
   def test_in_axes_for_coord_raises_for_non_1d_coord(self):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
-    f1 = cx.wrap(np.zeros((3, 4)), x, y)
-    xy = cx.compose_coordinates(x, y)
+    f1 = cx.field(np.zeros((3, 4)), x, y)
+    xy = cx.coords.compose(x, y)
     with self.assertRaisesRegex(ValueError, 'idx can be computed only for 1d'):
       field_utils.in_axes_for_coord(f1, xy)
 
   def test_in_axes_for_coord_with_nesting(self):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
     f = {
-        'a': cx.wrap(np.zeros((3, 4)), x, y),
-        'b': cx.wrap(np.zeros((4, 3)), y, x),
+        'a': cx.field(np.zeros((3, 4)), x, y),
+        'b': cx.field(np.zeros((4, 3)), y, x),
     }
     actual_outer, actual_inner = field_utils.in_axes_for_coord(f, [x, y])
     expected_outer = {'a': 0, 'b': 1}
@@ -482,7 +482,7 @@ class Reconstruct1dFieldFromRefValuesTest(parameterized.TestCase):
     actual = field_utils.reconstruct_1d_field_from_ref_values(
         axis, ref_ticks, ref_values, interpolation_space
     )
-    expected = cx.wrap(np.array(expected_values, dtype=np.float32), axis)
+    expected = cx.field(np.array(expected_values, dtype=np.float32), axis)
     chex.assert_trees_all_close(actual, expected)
 
   def test_raises_on_axis_without_ticks(self):
@@ -497,7 +497,7 @@ class Reconstruct1dFieldFromRefValuesTest(parameterized.TestCase):
 
   def test_raises_on_multidim_axis(self):
     x, y = cx.SizedAxis('x', 2), cx.SizedAxis('y', 2)
-    axis = cx.compose_coordinates(x, y)
+    axis = cx.coords.compose(x, y)
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         f'Expected 1D coordinate with specified ticks, got {axis}',

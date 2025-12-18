@@ -46,12 +46,13 @@ tests = [
     "pytest",
 ]
 experimental = [
-    "coordax>=0.1.5",
+    "coordax>=0.2.2",
     "einops",
     "etils",
     # TODO(shoyer): use pypi version when there is a newer release than 0.3.0
     "fiddle @ git+https://github.com/google/fiddle.git",
-    "flax>=0.12.1",
+    # TODO(shoyer): use pypi version when there is a newer release than 0.12.1
+    "flax @ git+https://github.com/google/flax.git",
     "grain",
     "jax-datetime @ git+https://github.com/google/jax-datetime.git",
     "jax-solar",

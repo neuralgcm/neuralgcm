@@ -38,9 +38,9 @@ class MockModule(nnx.Module):
     x = cx.SizedAxis('x', nx)
     dt = coordinates.TimeDelta(np.array([np.timedelta64(1, 'h')]))
     self.x = x
-    self.u = typing.Prognostic(cx.wrap(jnp.zeros(nx), x))
-    self.u_trajectory = typing.DynamicInput(cx.wrap(jnp.ones((1, nx)), dt, x))
-    self.u_sum = typing.Diagnostic(cx.wrap(jnp.zeros(())))
+    self.u = typing.Prognostic(cx.field(jnp.zeros(nx), x))
+    self.u_trajectory = typing.DynamicInput(cx.field(jnp.ones((1, nx)), dt, x))
+    self.u_sum = typing.Diagnostic(cx.field(jnp.zeros(())))
 
   @module_utils.ensure_unchanged_state_structure
   def always_preserves_state(self, u: cx.Field):
@@ -60,19 +60,19 @@ class ModuleUtilsTest(parameterized.TestCase):
   @parameterized.named_parameters(
       dict(
           testcase_name='1d_input_same_coords',
-          u_input=cx.wrap(np.ones(5), cx.SizedAxis('x', 5)),
+          u_input=cx.field(np.ones(5), cx.SizedAxis('x', 5)),
           raises_if_same_coords=False,
           raises_on_timedelta_change=True,
       ),
       dict(
           testcase_name='1d_input_diff_coords',
-          u_input=cx.wrap(np.ones(5), cx.SizedAxis('NotX', 5)),
+          u_input=cx.field(np.ones(5), cx.SizedAxis('NotX', 5)),
           raises_if_same_coords=True,
           raises_on_timedelta_change=True,
       ),
       dict(
           testcase_name='2d_input_with_timedelta',
-          u_input=cx.wrap(
+          u_input=cx.field(
               np.ones((2, 5)),
               coordinates.TimeDelta(np.arange(2) * np.timedelta64(1, 'D')),
               cx.SizedAxis('x', 5),
@@ -82,7 +82,7 @@ class ModuleUtilsTest(parameterized.TestCase):
       ),
       dict(
           testcase_name='2d_input',
-          u_input=cx.wrap(
+          u_input=cx.field(
               np.ones((2, 5)),
               cx.SizedAxis('y', 2),
               cx.SizedAxis('x', 5),
@@ -116,7 +116,7 @@ class ModuleUtilsTest(parameterized.TestCase):
     b = cx.SizedAxis('batch', 3)
     vectorization_specs = {typing.Prognostic: b}
     module_utils.vectorize_module(module, vectorization_specs)
-    self.assertEqual(module.u.coordinate, cx.compose_coordinates(b, module.x))
+    self.assertEqual(module.u.coordinate, cx.coords.compose(b, module.x))
     self.assertEqual(module.u_trajectory.coordinate, u_traj_coords)
     self.assertEqual(module.u_sum.coordinate, cx.Scalar())
 
@@ -127,13 +127,13 @@ class ModuleUtilsTest(parameterized.TestCase):
     b, e = cx.SizedAxis('batch', 3), cx.SizedAxis('ensemble', 2)
     vectorization_specs_b = {typing.SimulationVariable: b}
     module_utils.vectorize_module(module, vectorization_specs_b)
-    self.assertEqual(module.u.coordinate, cx.compose_coordinates(b, u_coord))
+    self.assertEqual(module.u.coordinate, cx.coords.compose(b, u_coord))
     self.assertEqual(module.u_sum.coordinate, b)
     self.assertEqual(module.u_trajectory.coordinate, u_traj_coord)
     vectorization_specs_e = {typing.SimulationVariable: e}
     module_utils.vectorize_module(module, vectorization_specs_e)
-    self.assertEqual(module.u.coordinate, cx.compose_coordinates(e, b, u_coord))
-    self.assertEqual(module.u_sum.coordinate, cx.compose_coordinates(e, b))
+    self.assertEqual(module.u.coordinate, cx.coords.compose(e, b, u_coord))
+    self.assertEqual(module.u_sum.coordinate, cx.coords.compose(e, b))
     self.assertEqual(module.u_trajectory.coordinate, u_traj_coord)
 
   def test_vectorize_module_different_specs_for_types(self):
@@ -146,7 +146,7 @@ class ModuleUtilsTest(parameterized.TestCase):
         typing.Diagnostic: e,
     }
     module_utils.vectorize_module(module, vectorization_specs)
-    self.assertEqual(module.u.coordinate, cx.compose_coordinates(b, u_coord))
+    self.assertEqual(module.u.coordinate, cx.coords.compose(b, u_coord))
     self.assertEqual(module.u_trajectory.coordinate, u_traj_coords)
     self.assertEqual(module.u_sum.coordinate, e)
 
@@ -155,9 +155,9 @@ class ModuleUtilsTest(parameterized.TestCase):
     u_coord = module.u.coordinate
     u_traj_coords = module.u_trajectory.coordinate
     b, e = cx.SizedAxis('batch', 3), cx.SizedAxis('ensemble', 2)
-    vectorization_specs = {typing.Prognostic: cx.compose_coordinates(e, b)}
+    vectorization_specs = {typing.Prognostic: cx.coords.compose(e, b)}
     module_utils.vectorize_module(module, vectorization_specs)
-    self.assertEqual(module.u.coordinate, cx.compose_coordinates(e, b, u_coord))
+    self.assertEqual(module.u.coordinate, cx.coords.compose(e, b, u_coord))
     self.assertEqual(module.u_trajectory.coordinate, u_traj_coords)
     self.assertEqual(module.u_sum.coordinate, cx.Scalar())
 
@@ -169,9 +169,9 @@ class ModuleUtilsTest(parameterized.TestCase):
     vectorization_specs = {(typing.Prognostic, typing.DynamicInput): b}
     module_utils.vectorize_module(module, vectorization_specs)
     self.assertEqual(module.u_sum.coordinate, cx.Scalar())
-    self.assertEqual(module.u.coordinate, cx.compose_coordinates(b, u_coord))
+    self.assertEqual(module.u.coordinate, cx.coords.compose(b, u_coord))
     self.assertEqual(
-        module.u_trajectory.coordinate, cx.compose_coordinates(b, u_traj_coords)
+        module.u_trajectory.coordinate, cx.coords.compose(b, u_traj_coords)
     )
 
   def test_tag_untag_module_state(self):
@@ -182,15 +182,15 @@ class ModuleUtilsTest(parameterized.TestCase):
     vectorization_specs = {
         typing.Prognostic: b,
         typing.Diagnostic: e,
-        typing.DynamicInput: cx.compose_coordinates(b, e),
+        typing.DynamicInput: cx.coords.compose(b, e),
     }
     module_utils.vectorize_module(module, vectorization_specs)
     with self.subTest('original_state'):
       self.assertEqual(module.u_sum.coordinate, e)
-      self.assertEqual(module.u.coordinate, cx.compose_coordinates(b, u_coord))
+      self.assertEqual(module.u.coordinate, cx.coords.compose(b, u_coord))
       self.assertEqual(
           module.u_trajectory.coordinate,
-          cx.compose_coordinates(b, e, u_traj_coord),
+          cx.coords.compose(b, e, u_traj_coord),
       )
 
     # Untag batch axis
@@ -199,11 +199,11 @@ class ModuleUtilsTest(parameterized.TestCase):
       module_utils.untag_module_state(module, b, vectorization_specs)
       self.assertEqual(module.u_sum.coordinate, e)
       self.assertEqual(
-          module.u.coordinate, cx.compose_coordinates(pos_b, u_coord)
+          module.u.coordinate, cx.coords.compose(pos_b, u_coord)
       )
       self.assertEqual(
           module.u_trajectory.coordinate,
-          cx.compose_coordinates(pos_b, e, u_traj_coord),  # None, e, ...
+          cx.coords.compose(pos_b, e, u_traj_coord),  # None, e, ...
       )
       module_utils.tag_module_state(module, b, vectorization_specs)  # retag.
 
@@ -211,11 +211,11 @@ class ModuleUtilsTest(parameterized.TestCase):
       module_utils.untag_module_state(module, e, vectorization_specs)
       self.assertEqual(module.u_sum.coordinate, pos_e)
       self.assertEqual(
-          module.u.coordinate, cx.compose_coordinates(b, u_coord)  # b, ...
+          module.u.coordinate, cx.coords.compose(b, u_coord)  # b, ...
       )
       self.assertEqual(
           module.u_trajectory.coordinate,
-          cx.compose_coordinates(b, pos_e, u_traj_coord),  # b, None, ...;
+          cx.coords.compose(b, pos_e, u_traj_coord),  # b, None, ...;
       )
       module_utils.tag_module_state(module, e, vectorization_specs)  # retag.
 
@@ -257,7 +257,7 @@ class ModuleUtilsTest(parameterized.TestCase):
           testcase_name='filters_with_mixed_vectorization',
           specs_list=[
               {
-                  typing.Prognostic: cx.compose_coordinates(
+                  typing.Prognostic: cx.coords.compose(
                       cx.SizedAxis('batch', 3), cx.SizedAxis('forcing', 4)
                   ),
                   typing.DynamicInput: cx.SizedAxis('forcing', 4),
@@ -299,7 +299,7 @@ class ModuleUtilsTest(parameterized.TestCase):
       vector_leaves = jax.tree.leaves(vector_state, is_leaf=cx.is_field)
       for v_field, field in zip(vector_leaves, original_leaves):
         self.assertEqual(
-            cx.compose_coordinates(axes, field.coordinate),
+            cx.coords.compose(axes, field.coordinate),
             v_field.coordinate,
         )
 
@@ -310,7 +310,7 @@ class ModuleUtilsTest(parameterized.TestCase):
     spec2 = {typing.Prognostic: e}
     actual = module_utils.merge_vectorized_axes(spec1, spec2)
     expected = {
-        typing.Prognostic: cx.compose_coordinates(b, e),
+        typing.Prognostic: cx.coords.compose(b, e),
         typing.DynamicInput: b,
     }
     self.assertEqual(actual, expected)
@@ -322,7 +322,7 @@ class ModuleUtilsTest(parameterized.TestCase):
     spec2 = {typing.DynamicInput: cx.Scalar(), ...: e}
     actual = module_utils.merge_vectorized_axes(spec1, spec2)
     expected = {
-        typing.Prognostic: cx.compose_coordinates(b, e),
+        typing.Prognostic: cx.coords.compose(b, e),
         typing.DynamicInput: b,
         ...: e,
     }
@@ -344,9 +344,9 @@ class StateInAxesUtilTest(parameterized.TestCase):
     b, e = cx.SizedAxis('batch', 3), cx.SizedAxis('ensemble', 2)
     x = cx.SizedAxis('x', 5)
     vectorized_axes = {
-        typing.Prognostic: cx.compose_coordinates(b, x),
+        typing.Prognostic: cx.coords.compose(b, x),
         typing.Diagnostic: e,
-        typing.DynamicInput: cx.compose_coordinates(b, e, x),
+        typing.DynamicInput: cx.coords.compose(b, e, x),
     }
     with self.subTest('map_over_b'):
       actual = module_utils.state_in_axes_for_coord(vectorized_axes, b)
@@ -377,9 +377,9 @@ class StateInAxesUtilTest(parameterized.TestCase):
     b, e = cx.SizedAxis('batch', 3), cx.SizedAxis('ensemble', 2)
     x = cx.SizedAxis('x', 5)
     vectorized_axes = {
-        typing.Prognostic: cx.compose_coordinates(b, x),
+        typing.Prognostic: cx.coords.compose(b, x),
         typing.Diagnostic: e,
-        typing.DynamicInput: cx.compose_coordinates(b, e, x),
+        typing.DynamicInput: cx.coords.compose(b, e, x),
     }
     actual_outer, actual_inner = module_utils.state_in_axes_for_coord(
         vectorized_axes, [b, e]
@@ -413,13 +413,13 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     # u_sum is Diagnostic, starts as 0, vectorized to [0,0,0] over b.
 
     def update_module_no_arg(module):
-      module.always_preserves_state(cx.wrap(1.0))
+      module.always_preserves_state(cx.field(1.0))
 
     v_fn = module_utils.vectorize_module_fn(
         update_module_no_arg, vector_axes, b
     )
     v_fn(module)
-    expected = cx.wrap(jnp.ones(3), b)
+    expected = cx.field(jnp.ones(3), b)
     chex.assert_trees_all_close(module.u_sum.get_value(), expected)
 
   def test_vectorize_fn_with_arg_state_update(self):
@@ -433,7 +433,7 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     def update_module_with_arg(module, u_field):
       module.preserves_state_if_same_coords(u_field)
 
-    arg = cx.wrap(jnp.arange(b.size), b) * cx.wrap(jnp.ones(x.size), x)
+    arg = cx.field(jnp.arange(b.size), b) * cx.field(jnp.ones(x.size), x)
     v_fn = module_utils.vectorize_module_fn(
         update_module_with_arg, vector_axes, b
     )
@@ -450,7 +450,7 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     def get_u_plus_arg(module, arg_field):
       return module.u.get_value() + arg_field
 
-    arg = cx.wrap(jnp.ones((b.size, module.x.size)), b, module.x)
+    arg = cx.field(jnp.ones((b.size, module.x.size)), b, module.x)
     v_fn = module_utils.vectorize_module_fn(get_u_plus_arg, vector_axes, b)
     result = v_fn(module, arg)
     expected = module.u.get_value() + arg
@@ -461,16 +461,16 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     e = cx.SizedAxis('ensemble', 2)
     module = MockModule()
     x = module.x
-    vector_axes = {typing.Prognostic: cx.compose_coordinates(e, b)}
+    vector_axes = {typing.Prognostic: cx.coords.compose(e, b)}
     module_utils.vectorize_module(module, vector_axes)
     # u is Prognostic, shape (2,3,5), coords (e,b,x)
 
     def update_module_with_arg(module, u_field):
       module.preserves_state_if_same_coords(u_field)
 
-    arg_e = cx.wrap(jnp.arange(e.size), e)
-    arg_b = cx.wrap(jnp.arange(b.size), b)
-    arg_x = cx.wrap(jnp.ones(x.size), x)
+    arg_e = cx.field(jnp.arange(e.size), e)
+    arg_b = cx.field(jnp.arange(b.size), b)
+    arg_x = cx.field(jnp.ones(x.size), x)
     arg = arg_e * arg_b * arg_x  # shape (2,3,5), coords (e,b,x)
 
     v_fn = module_utils.vectorize_module_fn(
@@ -534,27 +534,27 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     @nnx_compat.dataclass
     class ScaleDemoModule(nnx.Module):
       param: nnx.Param = dataclasses.field(
-          default_factory=lambda: nnx.Param(cx.wrap(2.0))
+          default_factory=lambda: nnx.Param(cx.field(2.0))
       )
 
       def __call__(self, x: cx.Field) -> cx.Field:
         return x * self.param.get_value()
 
     e, b = cx.SizedAxis('e', 2), cx.SizedAxis('b', 4)
-    eb = cx.compose_coordinates(e, b)
+    eb = cx.coords.compose(e, b)
 
     # Vectorize module over `e` and simple `fn` over `eb`.
     module = ScaleDemoModule()
     vector_axes = {nnx.Param: e}  # vectorize module for dimension `e`.
     module_utils.vectorize_module(module, vector_axes)
-    module.param.set_value(cx.wrap(1 + np.arange(e.size), e))  # update scales.
+    module.param.set_value(cx.field(1 + np.arange(e.size), e))  # update scales.
     fn = lambda module, x: module(x)
     eb_vectorized_fn = module_utils.vectorize_module_fn(
         fn, vector_axes, eb, allow_non_vector_axes=True
     )
 
     # Apply vectorized function to inputs with different axes order.
-    x = cx.wrap(np.arange(e.size * b.size).reshape((e.size, b.size)), eb)
+    x = cx.field(np.arange(e.size * b.size).reshape((e.size, b.size)), eb)
     x_reordered = x.order_as(b, e)
     expected_data = x.data * (1 + np.arange(e.size))[:, np.newaxis]
 

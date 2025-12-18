@@ -40,12 +40,12 @@ class EvaluatorsTest(parameterized.TestCase):
   def test_evaluator_mse(self):
     dim = cx.SizedAxis('spatial', 2)
     predictions = {
-        'x': cx.wrap(np.array([2.0, 3.0]), dim),
-        'y': cx.wrap(np.array([2.0, 2.0]), dim),
+        'x': cx.field(np.array([2.0, 3.0]), dim),
+        'y': cx.field(np.array([2.0, 2.0]), dim),
     }
     targets = {
-        'x': cx.wrap(np.array([1.0, 1.0]), dim),
-        'y': cx.wrap(np.array([4.0, 4.0]), dim),
+        'x': cx.field(np.array([1.0, 1.0]), dim),
+        'y': cx.field(np.array([4.0, 4.0]), dim),
     }
     mse = deterministic_metrics.MSE()
     evaluator = evaluators.Evaluator(
@@ -74,9 +74,9 @@ class EvaluatorsTest(parameterized.TestCase):
     ens_dim = cx.SizedAxis('ensemble', 2)
     spatial_dim = cx.SizedAxis('spatial', 2)
     predictions = {
-        'z': cx.wrap(np.array([[1.0, 3.0], [2.0, 4.0]]), ens_dim, spatial_dim)
+        'z': cx.field(np.array([[1.0, 3.0], [2.0, 4.0]]), ens_dim, spatial_dim)
     }
-    targets = {'z': cx.wrap(np.array([0.0, 5.0]), spatial_dim)}
+    targets = {'z': cx.field(np.array([0.0, 5.0]), spatial_dim)}
 
     crps = probabilistic_losses.CRPS(ensemble_dim='ensemble')
     evaluator = evaluators.Evaluator(
@@ -109,8 +109,8 @@ class EvaluatorsTest(parameterized.TestCase):
 
   def test_evaluator_sum_loss(self):
     dim = cx.SizedAxis('spatial', 2)
-    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
-    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+    predictions = {'x': cx.field(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.field(np.array([1.0, 1.0]), dim)}
 
     loss = base.SumLoss(
         terms={
@@ -135,11 +135,11 @@ class EvaluatorsTest(parameterized.TestCase):
 
   def test_evaluator_with_scaling(self):
     dim = cx.SizedAxis('spatial', 2)
-    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
-    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+    predictions = {'x': cx.field(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.field(np.array([1.0, 1.0]), dim)}
 
     loss = deterministic_losses.MAE()
-    scaler = scaling.ConstantScaler(cx.wrap(np.array([2.0, 1.0]), dim))
+    scaler = scaling.ConstantScaler(cx.field(np.array([2.0, 1.0]), dim))
     evaluator = evaluators.Evaluator(
         metrics={'loss': loss},
         aggregators=aggregation.Aggregator(
@@ -153,8 +153,8 @@ class EvaluatorsTest(parameterized.TestCase):
 
   def test_evaluator_with_skipna(self):
     dim = cx.SizedAxis('spatial', 3)
-    predictions = {'x': cx.wrap(np.array([1.0, 2.0, 3.0]), dim)}
-    targets = {'x': cx.wrap(np.array([1.0, 5.0, np.nan]), dim)}
+    predictions = {'x': cx.field(np.array([1.0, 2.0, 3.0]), dim)}
+    targets = {'x': cx.field(np.array([1.0, 5.0, np.nan]), dim)}
 
     loss = deterministic_losses.MAE()
     with self.subTest('keep_weights_false'):
@@ -193,15 +193,15 @@ class EvaluatorsTest(parameterized.TestCase):
     ens = cx.SizedAxis('ensemble', 2)
     grid = coordinates.LonLatGrid.T21()
     pressure = coordinates.PressureLevels.with_13_era5_levels()
-    ones_like = lambda c: cx.wrap(np.ones(c.shape), c)
-    zeros_like = lambda c: cx.wrap(np.zeros(c.shape), c)
+    ones_like = lambda c: cx.field(np.ones(c.shape), c)
+    zeros_like = lambda c: cx.field(np.zeros(c.shape), c)
     predictions = {
-        'x': ones_like(cx.compose_coordinates(ens, pressure, grid)),
-        'y': ones_like(cx.compose_coordinates(ens, grid)),
+        'x': ones_like(cx.coords.compose(ens, pressure, grid)),
+        'y': ones_like(cx.coords.compose(ens, grid)),
     }
     targets = {
-        'x': zeros_like(cx.compose_coordinates(pressure, grid)),
-        'y': zeros_like(cx.compose_coordinates(grid)),
+        'x': zeros_like(cx.coords.compose(pressure, grid)),
+        'y': zeros_like(cx.coords.compose(grid)),
     }
 
     #
@@ -242,8 +242,8 @@ class EvaluatorsTest(parameterized.TestCase):
 
   def test_evaluator_shared_statistics(self):
     dim = cx.SizedAxis('spatial', 2)
-    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
-    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+    predictions = {'x': cx.field(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.field(np.array([1.0, 1.0]), dim)}
     mse = deterministic_metrics.MSE()
     rmse = deterministic_metrics.RMSE()
     evaluator = evaluators.Evaluator(
@@ -267,9 +267,9 @@ class EvaluatorsTest(parameterized.TestCase):
     one_h = np.timedelta64(1, 'h')
     dt = coordinates.TimeDelta(np.arange(length) * one_h)
     x = cx.SizedAxis('x', n_spatial)
-    coord = cx.compose_coordinates(dt, x)
-    predictions = {'u': cx.wrap(jax.random.uniform(key_p, coord.shape), coord)}
-    targets = {'u': cx.wrap(jax.random.uniform(key_t, coord.shape), coord)}
+    coord = cx.coords.compose(dt, x)
+    predictions = {'u': cx.field(jax.random.uniform(key_p, coord.shape), coord)}
+    targets = {'u': cx.field(jax.random.uniform(key_t, coord.shape), coord)}
 
     rmse = deterministic_metrics.RMSE()
     three_hour_mask_coord = coordinates.TimeDelta(np.timedelta64(3, 'h')[None])
@@ -320,8 +320,8 @@ class EvaluatorsTest(parameterized.TestCase):
         out_axes=nnx.Carry,
     )
     timedelta = dt.fields['timedelta']
-    dummy = cx.DummyAxis(cx.tmp_axis_name(timedelta), length)
-    times = timedelta.broadcast_like(cx.compose_coordinates(dummy, dt))
+    dummy = cx.DummyAxis(cx.new_axis_name(timedelta), length)
+    times = timedelta.broadcast_like(cx.coords.compose(dummy, dt))
     context = {
         'timedelta': timedelta.untag(dt),
         'times': times.untag(dummy),
@@ -343,8 +343,8 @@ class EvaluatorsTest(parameterized.TestCase):
 
   def test_evaluator_zeros_aggregation_states(self):
     dim = cx.SizedAxis('spatial', 2)
-    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
-    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+    predictions = {'x': cx.field(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.field(np.array([1.0, 1.0]), dim)}
     mse = deterministic_metrics.MSE()
     rmse = deterministic_metrics.RMSE()
     evaluator = evaluators.Evaluator(
@@ -364,12 +364,12 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
     super().setUp()
     dim = cx.SizedAxis('spatial', 2)
     self.predictions = {
-        'atmosphere': {'t': cx.wrap(np.array([2.0, 3.0]), dim)},
-        'ocean': {'sst': cx.wrap(np.array([10.0, 14.0]), dim)},
+        'atmosphere': {'t': cx.field(np.array([2.0, 3.0]), dim)},
+        'ocean': {'sst': cx.field(np.array([10.0, 14.0]), dim)},
     }
     self.targets = {
-        'atmosphere': {'t': cx.wrap(np.array([1.0, 1.0]), dim)},
-        'ocean': {'sst': cx.wrap(np.array([12.0, 12.0]), dim)},
+        'atmosphere': {'t': cx.field(np.array([1.0, 1.0]), dim)},
+        'ocean': {'sst': cx.field(np.array([12.0, 12.0]), dim)},
     }
     self.aggregator = aggregation.Aggregator(
         dims_to_reduce=['spatial'], weight_by=[]
@@ -392,8 +392,8 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
     agg_states = nested.evaluate(self.predictions, self.targets)
     # check structure
     expected_metrics_struct = {
-        'atmosphere': {'mse': {'t': cx.wrap(0.0)}},
-        'ocean': {'mae': {'sst': cx.wrap(0.0)}},
+        'atmosphere': {'mse': {'t': cx.field(0.0)}},
+        'ocean': {'mae': {'sst': cx.field(0.0)}},
     }
     metric_values = nested.evaluate_metrics(self.predictions, self.targets)
     chex.assert_trees_all_equal_structs(metric_values, expected_metrics_struct)
@@ -418,7 +418,7 @@ class NestedAndFlattenedEvaluatorsTest(parameterized.TestCase):
     agg_states = flat_eval.evaluate(self.predictions, self.targets)
     # check structure
     expected_metrics_struct = {
-        'flat_mse': {'atmosphere.t': cx.wrap(0.0), 'ocean.sst': cx.wrap(0.0)}
+        'flat_mse': {'atmosphere.t': cx.field(0.0), 'ocean.sst': cx.field(0.0)}
     }
     metric_values = flat_eval.evaluate_metrics(self.predictions, self.targets)
     chex.assert_trees_all_equal_structs(metric_values, expected_metrics_struct)

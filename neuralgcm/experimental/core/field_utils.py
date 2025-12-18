@@ -74,7 +74,7 @@ def combine_fields(
       if ax in aligned_dims_and_axes or ax.dims[0] in dims_to_align:
         axes.append(ax)
 
-    if set(aligned_dims) - set(cx.compose_coordinates(*axes).dims):
+    if set(aligned_dims) - set(cx.coords.compose(*axes).dims):
       raise ValueError(
           f'Cannot combine {f} because it does not align with {aligned_dims}'
       )
@@ -200,9 +200,9 @@ def in_axes_for_coord(
 
   Examples:
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 4)
-    f1 = cx.wrap(np.zeros((3, 4)), x, y)
-    f2 = cx.wrap(np.zeros((4, 3)), y, x)
-    f3 = cx.wrap(np.zeros((4,)), y)
+    f1 = cx.field(np.zeros((3, 4)), x, y)
+    f2 = cx.field(np.zeros((4, 3)), y, x)
+    f3 = cx.field(np.zeros((4,)), y)
     inputs = {'a': f1, 'b': (f2, 123, f3)}
     # in_axes for mapping over x:
     # in_axes_for_coord(inputs, x) returns {'a': 0, 'b': (1, None, None)}
@@ -254,7 +254,7 @@ def shape_struct_fields_from_coords(
     coords: dict[str, cx.Coordinate],
 ) -> dict[str, cx.Field]:
   """Returns Fields constructed from `coords` with ShapeDtypeStruct data."""
-  make_fn = lambda d: {k: cx.wrap(jnp.zeros(c.shape), c) for k, c in d.items()}
+  make_fn = lambda d: {k: cx.field(jnp.zeros(c.shape), c) for k, c in d.items()}
   return jax.eval_shape(make_fn, coords)
 
 
@@ -275,7 +275,7 @@ def zero_mask_axis_outliers(
     mask &= ticks >= lower
   if upper is not None:
     mask &= ticks <= upper
-  return field * cx.wrap(mask, axis)
+  return field * cx.field(mask, axis)
 
 
 def reconstruct_1d_field_from_ref_values(
@@ -299,4 +299,4 @@ def reconstruct_1d_field_from_ref_values(
     values = np.interp(ticks, ref_ticks, ref_values)
   else:
     raise ValueError(f'Unsupported interpolation space: {interpolation_space}')
-  return cx.wrap(values, axis)
+  return cx.field(values, axis)

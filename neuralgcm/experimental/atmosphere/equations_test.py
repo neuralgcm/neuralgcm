@@ -38,11 +38,11 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     rng = np.random.RandomState(42)
 
-    temperature = cx.wrap(rng.randn(*levels.shape, *grid.shape), levels, grid)
+    temperature = cx.field(rng.randn(*levels.shape, *grid.shape), levels, grid)
     inputs = {
         'temperature': temperature,
-        'time': cx.wrap(jdt.to_datetime('2025-01-01')),
-        'sh': cx.wrap(rng.randn(*ylm_grid.shape), ylm_grid),
+        'time': cx.field(jdt.to_datetime('2025-01-01')),
+        'sh': cx.field(rng.randn(*ylm_grid.shape), ylm_grid),
     }
 
     linearize = equations.get_temperature_linearization_transform(
@@ -61,7 +61,7 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
           if k != 'temperature_variation'
       }
       chex.assert_trees_all_equal(actual_others, expected_others)
-      expected_variation = temperature - cx.wrap(ref_temps, levels)
+      expected_variation = temperature - cx.field(ref_temps, levels)
       cx_testing.assert_fields_allclose(
           actual_linearized['temperature_variation'], expected_variation
       )
@@ -82,13 +82,13 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
     grid = coordinates.LonLatGrid.T21()
     rng = np.random.RandomState(42)
 
-    temperature = cx.wrap(
+    temperature = cx.field(
         rng.randn(*levels.shape, *ylm_grid.shape), levels, ylm_grid
     )
     inputs = {
         'temperature': temperature,
-        'time': cx.wrap(jdt.to_datetime('2025-01-01')),
-        'lonlat': cx.wrap(rng.randn(*grid.shape), grid),
+        'time': cx.field(jdt.to_datetime('2025-01-01')),
+        'lonlat': cx.field(rng.randn(*grid.shape), grid),
     }
 
     linearize = equations.get_temperature_linearization_transform(

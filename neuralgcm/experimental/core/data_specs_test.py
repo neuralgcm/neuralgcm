@@ -29,13 +29,13 @@ class ValidateInputsTest(parameterized.TestCase):
     t = coordinates.TimeDelta(np.arange(3) * np.timedelta64(1, 'h'))
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
-    tx = cx.compose_coordinates(t, x)
-    ty = cx.compose_coordinates(t, y)
+    tx = cx.coords.compose(t, x)
+    ty = cx.coords.compose(t, y)
     rng = np.random.RandomState(42)
     inputs = {
         'data_key': {
-            'u': cx.wrap(rng.randn(*tx.shape), tx),
-            'v': cx.wrap(rng.randn(*ty.shape), ty),
+            'u': cx.field(rng.randn(*tx.shape), tx),
+            'v': cx.field(rng.randn(*ty.shape), ty),
         }
     }
     inputs_spec = {'data_key': {'u': tx, 'v': ty}}
@@ -44,9 +44,9 @@ class ValidateInputsTest(parameterized.TestCase):
   def test_validate_inputs_with_exact_coord_spec(self):
     t = coordinates.TimeDelta(np.arange(3) * np.timedelta64(1, 'h'))
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
-    tx = cx.compose_coordinates(t, x)
+    tx = cx.coords.compose(t, x)
     rng = np.random.RandomState(42)
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*tx.shape), tx)}}
+    inputs = {'data_key': {'u': cx.field(rng.randn(*tx.shape), tx)}}
     inputs_spec = {'data_key': {'u': data_specs.CoordSpec(tx)}}
     data_specs.validate_inputs(inputs, inputs_spec)
 
@@ -57,15 +57,15 @@ class ValidateInputsTest(parameterized.TestCase):
     rng = np.random.RandomState(42)
 
     t = coordinates.TimeDelta(np.arange(10) * np.timedelta64(1, 'h'))
-    tx = cx.compose_coordinates(t, x)
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*tx.shape), tx)}}
+    tx = cx.coords.compose(t, x)
+    inputs = {'data_key': {'u': cx.field(rng.randn(*tx.shape), tx)}}
     data_specs.validate_inputs(inputs, inputs_spec)
 
     with self.subTest('invalid_type'):
       t_wrong_type = cx.LabeledAxis('timedelta', np.arange(10))
-      tx_wrong = cx.compose_coordinates(t_wrong_type, x)
+      tx_wrong = cx.coords.compose(t_wrong_type, x)
       inputs_wrong = {
-          'data_key': {'u': cx.wrap(rng.randn(*tx_wrong.shape), tx_wrong)}
+          'data_key': {'u': cx.field(rng.randn(*tx_wrong.shape), tx_wrong)}
       }
       with self.assertRaisesRegex(
           ValueError, 'is not present or not of the expected type'
@@ -80,17 +80,17 @@ class ValidateInputsTest(parameterized.TestCase):
     rng = np.random.RandomState(42)
 
     t = coordinates.TimeDelta(np.arange(10) * np.timedelta64(1, 'h'))
-    tx = cx.compose_coordinates(t, x)
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*tx.shape), tx)}}
+    tx = cx.coords.compose(t, x)
+    inputs = {'data_key': {'u': cx.field(rng.randn(*tx.shape), tx)}}
     data_specs.validate_inputs(inputs, inputs_spec)
 
     with self.subTest('not_a_subset'):
       t_wrong = coordinates.TimeDelta(
           (np.arange(10) + 5) * np.timedelta64(1, 'h')
       )
-      tx_wrong = cx.compose_coordinates(t_wrong, x)
+      tx_wrong = cx.coords.compose(t_wrong, x)
       inputs_wrong = {
-          'data_key': {'u': cx.wrap(rng.randn(*tx_wrong.shape), tx_wrong)}
+          'data_key': {'u': cx.field(rng.randn(*tx_wrong.shape), tx_wrong)}
       }
       with self.assertRaisesRegex(
           ValueError, 'does not contain all required ticks'
@@ -100,24 +100,24 @@ class ValidateInputsTest(parameterized.TestCase):
   def test_validate_inputs_with_any_coord_spec(self):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.pi, num=5))
-    xy = cx.compose_coordinates(x, y)
+    xy = cx.coords.compose(x, y)
     coord_spec = data_specs.CoordSpec(xy, {'y': data_specs.AxisMatchRules.ANY})
     inputs_spec = {'data_key': {'u': coord_spec}}
     rng = np.random.RandomState(42)
 
     # y-axis doesn't match, but ANY rule should ignore it.
     y_different = cx.LabeledAxis('y', np.linspace(0, 1.0, num=10))
-    xy_different = cx.compose_coordinates(x, y_different)
+    xy_different = cx.coords.compose(x, y_different)
     inputs = {
-        'data_key': {'u': cx.wrap(rng.randn(*xy_different.shape), xy_different)}
+        'data_key': {'u': cx.field(rng.randn(*xy_different.shape), xy_different)}
     }
     data_specs.validate_inputs(inputs, inputs_spec)
 
     with self.subTest('x_is_still_validated'):
       x_wrong = cx.LabeledAxis('x', np.linspace(0, 1.0, num=4))
-      x_wrong_y = cx.compose_coordinates(x_wrong, y)
+      x_wrong_y = cx.coords.compose(x_wrong, y)
       inputs_wrong = {
-          'data_key': {'u': cx.wrap(rng.randn(*x_wrong_y.shape), x_wrong_y)}
+          'data_key': {'u': cx.field(rng.randn(*x_wrong_y.shape), x_wrong_y)}
       }
       with self.assertRaisesRegex(
           ValueError, 'Coordinate axis .* does not match expected axis'
@@ -127,7 +127,7 @@ class ValidateInputsTest(parameterized.TestCase):
   def test_validate_inputs_with_shape_coord_spec(self):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.pi, num=5))
-    xy = cx.compose_coordinates(x, y)
+    xy = cx.coords.compose(x, y)
     coord_spec = data_specs.CoordSpec(
         xy, {'y': data_specs.AxisMatchRules.SHAPE}
     )
@@ -136,16 +136,16 @@ class ValidateInputsTest(parameterized.TestCase):
 
     # y-axis values doesn't match, but shape is the same.
     y_prime = cx.LabeledAxis('y', np.linspace(0, 1.0, num=5))
-    xy_prime = cx.compose_coordinates(x, y_prime)
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*xy_prime.shape), xy_prime)}}
+    xy_prime = cx.coords.compose(x, y_prime)
+    inputs = {'data_key': {'u': cx.field(rng.randn(*xy_prime.shape), xy_prime)}}
     data_specs.validate_inputs(inputs, inputs_spec)
 
     with self.subTest('y_shape_mismatch_raises'):
       y_different_shape = cx.LabeledAxis('y', np.linspace(0, 1.0, num=10))
-      xy_wrong_shape = cx.compose_coordinates(x, y_different_shape)
+      xy_wrong_shape = cx.coords.compose(x, y_different_shape)
       inputs_wrong_shape = {
           'data_key': {
-              'u': cx.wrap(rng.randn(*xy_wrong_shape.shape), xy_wrong_shape)
+              'u': cx.field(rng.randn(*xy_wrong_shape.shape), xy_wrong_shape)
           }
       }
       with self.assertRaisesRegex(
@@ -162,22 +162,22 @@ class ValidateInputsTest(parameterized.TestCase):
 
     x_dummy = cx.SizedAxis('x', 5)  # same shape as `x` --> will be replaced.
     t = coordinates.TimeDelta(np.arange(3) * np.timedelta64(1, 'h'))
-    in_coord = cx.compose_coordinates(t, x_dummy)
+    in_coord = cx.coords.compose(t, x_dummy)
     rng = np.random.RandomState(42)
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*in_coord.shape), in_coord)}}
+    inputs = {'data_key': {'u': cx.field(rng.randn(*in_coord.shape), in_coord)}}
     # a successful validation implies that `finalize_spec` produced a
     # coordinate that is compatible with `input_coord` and `coord_spec`.
     data_specs.validate_inputs(inputs, inputs_spec)
     # check that `finalize_spec` replaces the coordinate as expected.
     candidate_coord = data_specs.finalize_spec(coord_spec, in_coord)
-    self.assertEqual(candidate_coord, cx.compose_coordinates(t, x))
+    self.assertEqual(candidate_coord, cx.coords.compose(t, x))
 
     with self.subTest('x_shape_mismatch_raises'):
       x_dummy_bad_shape = cx.SizedAxis('x', 7)
-      tx_bad_shape = cx.compose_coordinates(t, x_dummy_bad_shape)
+      tx_bad_shape = cx.coords.compose(t, x_dummy_bad_shape)
       inputs_bad_shape = {
           'data_key': {
-              'u': cx.wrap(rng.randn(*tx_bad_shape.shape), tx_bad_shape)
+              'u': cx.field(rng.randn(*tx_bad_shape.shape), tx_bad_shape)
           }
       }
       with self.assertRaisesRegex(ValueError, 'does not match expected axis'):
@@ -193,13 +193,13 @@ class ValidateInputsTest(parameterized.TestCase):
             'v': data_specs.OptionalSpec(spec=y),
         }
     }
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*x.shape), x)}}
+    inputs = {'data_key': {'u': cx.field(rng.randn(*x.shape), x)}}
     data_specs.validate_inputs(inputs, inputs_spec)
 
     inputs_with_uv = {
         'data_key': {
-            'u': cx.wrap(rng.randn(*x.shape), x),
-            'v': cx.wrap(rng.randn(*y.shape), y),
+            'u': cx.field(rng.randn(*x.shape), x),
+            'v': cx.field(rng.randn(*y.shape), y),
         }
     }
     data_specs.validate_inputs(inputs_with_uv, inputs_spec)
@@ -207,8 +207,8 @@ class ValidateInputsTest(parameterized.TestCase):
     with self.subTest('optional_present_but_invalid'):
       inputs_wrong_v = {
           'data_key': {
-              'u': cx.wrap(rng.randn(*x.shape), x),
-              'v': cx.wrap(rng.randn(*x.shape), x),  # wrong coord.
+              'u': cx.field(rng.randn(*x.shape), x),
+              'v': cx.field(rng.randn(*x.shape), x),  # wrong coord.
           }
       }
       with self.assertRaisesRegex(
@@ -217,7 +217,7 @@ class ValidateInputsTest(parameterized.TestCase):
         data_specs.validate_inputs(inputs_wrong_v, inputs_spec)
 
     with self.subTest('non_optional_is_missing'):
-      inputs_no_u = {'data_key': {'v': cx.wrap(rng.randn(*y.shape), y)}}
+      inputs_no_u = {'data_key': {'v': cx.field(rng.randn(*y.shape), y)}}
       with self.assertRaisesWithLiteralMatch(
           ValueError, 'Missing non-optional variables "u"'
       ):
@@ -227,7 +227,7 @@ class ValidateInputsTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     wrong_x = cx.LabeledAxis('x', np.linspace(0, np.e, num=4))
     rng = np.random.RandomState(42)
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*x.shape), x)}}
+    inputs = {'data_key': {'u': cx.field(rng.randn(*x.shape), x)}}
     inputs_spec = {'data_key': {'u': wrong_x}}
     with self.assertRaisesRegex(
         ValueError, 'Coordinate axis .* does not match expected axis'
@@ -238,7 +238,7 @@ class ValidateInputsTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
     rng = np.random.RandomState(42)
-    inputs = {'data_key': {'u': cx.wrap(rng.randn(*x.shape), x)}}
+    inputs = {'data_key': {'u': cx.field(rng.randn(*x.shape), x)}}
     inputs_spec = {'data_key': {'u': data_specs.CoordSpec(y)}}
     with self.assertRaisesRegex(ValueError, 'CoordSpec .* have different dims'):
       data_specs.validate_inputs(inputs, inputs_spec)
@@ -266,8 +266,8 @@ class ConstructQueryTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
     rng = np.random.RandomState(42)
-    u = cx.wrap(rng.randn(*x.shape), x)
-    v = cx.wrap(rng.randn(*y.shape), y)
+    u = cx.field(rng.randn(*x.shape), x)
+    v = cx.field(rng.randn(*y.shape), y)
     inputs = {'data': {'u': u, 'v': v}}
     queries_spec = {
         'data': {
@@ -286,7 +286,7 @@ class CoordSpecTest(parameterized.TestCase):
     """Tests that missing dim_match_rules are not filled."""
     x = cx.LabeledAxis('x', np.arange(3))
     y = cx.LabeledAxis('y', np.arange(4))
-    coord = cx.compose_coordinates(x, y)
+    coord = cx.coords.compose(x, y)
     spec = data_specs.CoordSpec(
         coord, dim_match_rules={'x': data_specs.AxisMatchRules.SUPERSET}
     )

@@ -68,7 +68,7 @@ def ensure_unchanged_state_structure(
           cx.DummyAxis(ax.dims[0], 1) if ax.dims[0] in excluded_dims else ax
           for ax in c.axes
       ]
-      return cx.compose_coordinates(*axes)
+      return cx.coords.compose(*axes)
 
     field_struct = pytree_utils.shape_structure(pytree)
     coord_struct = jax.tree.map(to_coord, field_struct, is_leaf=cx.is_field)
@@ -116,7 +116,7 @@ def vectorize_module(
           'module state vectorization requires Field variables, but'
           f' encountered {type(x)=}'
       )
-    return x.broadcast_like(cx.compose_coordinates(coord, x.coordinate))
+    return x.broadcast_like(cx.coords.compose(coord, x.coordinate))
 
   for k, coord in vectorization_specs.items():
     k_state = jax.tree.map(
@@ -163,7 +163,7 @@ def untag_module_state(
   for state_filter, coord in vectorized_axes.items():
     untag_components = [ax for ax in coordinate.axes if ax in coord.axes]
     if untag_components:
-      untag_axis = cx.compose_coordinates(*untag_components)
+      untag_axis = cx.coords.compose(*untag_components)
       state_to_untag = nnx.state(module, state_filter)
       nnx.update(module, cx.untag(state_to_untag, untag_axis))
 
@@ -204,7 +204,7 @@ def tag_module_state(
   for state_filter, coord in vectorized_axes.items():
     tag_components = [ax for ax in coordinate.axes if ax in coord.axes]
     if tag_components:
-      tag_axis = cx.compose_coordinates(*tag_components)
+      tag_axis = cx.coords.compose(*tag_components)
       state_to_untag = nnx.state(module, state_filter)
       nnx.update(module, cx.tag(state_to_untag, tag_axis))
 
@@ -339,13 +339,13 @@ def merge_vectorized_axes(
   common_keys = head_keys.intersection(tail_keys)
   diff_head_keys = head_keys.difference(tail_keys)
   diff_tail_keys = tail_keys.difference(head_keys)
-  merged = {k: cx.compose_coordinates(head[k], tail[k]) for k in common_keys}
+  merged = {k: cx.coords.compose(head[k], tail[k]) for k in common_keys}
   diff_head = {
-      k: cx.compose_coordinates(head[k], tail_ellipsis_axes)
+      k: cx.coords.compose(head[k], tail_ellipsis_axes)
       for k in diff_head_keys
   }
   diff_tail = {
-      k: cx.compose_coordinates(head_ellipsis_axes, tail[k])
+      k: cx.coords.compose(head_ellipsis_axes, tail[k])
       for k in diff_tail_keys
   }
   if not all(
@@ -363,7 +363,7 @@ def merge_vectorized_axes(
     )
   merged.update(diff_head)
   merged.update(diff_tail)
-  combined_ellipsis = cx.compose_coordinates(
+  combined_ellipsis = cx.coords.compose(
       head_ellipsis_axes, tail_ellipsis_axes
   )
   # Add ellipsis back if we had it in either set of filters.
@@ -478,7 +478,7 @@ def vectorize_module_fn(
     """Wrapped function that applies vectorization."""
     vmap_axes = axes_to_vectorize
     if isinstance(vmap_axes, Sequence):
-      vmap_axes = cx.compose_coordinates(*axes_to_vectorize)
+      vmap_axes = cx.coords.compose(*axes_to_vectorize)
     if isinstance(vmap_axes, cx.Coordinate):
       axes_seq = vmap_axes.axes  # ensures that axes are 1d.
     else:
@@ -563,7 +563,7 @@ def vectorize_module_fn(
       untag_arrays = lambda x: untag_f(x) if cx.is_field(x) else x
       return jax.tree.map(untag_arrays, tree, is_leaf=cx.is_field)
 
-    coord = cx.compose_coordinates(*axes_seq)
+    coord = cx.coords.compose(*axes_seq)
     untagged_args = [_untag_coord_in_any_order(arg, coord) for arg in args]
     untag_module_state(module, coord, vector_axes, allow_non_vector_axes)
     result = vmapped_fn(module, *untagged_args)

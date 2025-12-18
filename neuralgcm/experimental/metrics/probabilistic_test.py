@@ -26,8 +26,8 @@ class ProbabilisticMetricsTest(parameterized.TestCase):
   def test_crps_metric(self):
     e, d = cx.SizedAxis('ensemble', 2), cx.SizedAxis('d', 4)
     rng = np.random.default_rng(seed=0)
-    predictions = {'x': cx.wrap(rng.random(e.shape + d.shape), e, d)}
-    targets = {'x': cx.wrap(rng.random(d.shape), d)}
+    predictions = {'x': cx.field(rng.random(e.shape + d.shape), e, d)}
+    targets = {'x': cx.field(rng.random(d.shape), d)}
     crps_metric = probabilistic_metrics.CRPS(ensemble_dim='ensemble')
     crps_statistics = {
         s.unique_name: s.compute(predictions, targets)

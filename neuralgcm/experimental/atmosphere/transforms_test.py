@@ -69,12 +69,12 @@ class AtmosphereTransformsTest(parameterized.TestCase):
     modal_grid = ylm_map.modal_grid
     shape_3d = sigma.shape + modal_grid.shape
     inputs = {
-        'u': cx.wrap(np.ones(shape_3d), sigma, modal_grid),
-        'v': cx.wrap(np.ones(shape_3d), sigma, modal_grid),
-        'vorticity': cx.wrap(np.ones(shape_3d), sigma, modal_grid),
-        'divergence': cx.wrap(np.ones(shape_3d), sigma, modal_grid),
-        'lsp': cx.wrap(np.ones(modal_grid.shape), modal_grid),
-        'time': cx.wrap(jdt.to_datetime('2025-01-09T15:00')),
+        'u': cx.field(np.ones(shape_3d), sigma, modal_grid),
+        'v': cx.field(np.ones(shape_3d), sigma, modal_grid),
+        'vorticity': cx.field(np.ones(shape_3d), sigma, modal_grid),
+        'divergence': cx.field(np.ones(shape_3d), sigma, modal_grid),
+        'lsp': cx.field(np.ones(modal_grid.shape), modal_grid),
+        'time': cx.field(jdt.to_datetime('2025-01-09T15:00')),
     }
     self._test_feature_module(features_grads, inputs)
 
@@ -92,7 +92,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         sigma=sigma,
     )
     inputs = {
-        'log_surface_pressure': cx.wrap(np.ones(ylm_grid.shape), ylm_grid),
+        'log_surface_pressure': cx.field(np.ones(ylm_grid.shape), ylm_grid),
     }
     self._test_feature_module(pressure_features, inputs)
 

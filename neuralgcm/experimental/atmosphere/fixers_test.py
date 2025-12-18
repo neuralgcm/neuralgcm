@@ -43,8 +43,8 @@ class EnergyFixersTest(parameterized.TestCase):
         partition_schema_key=None,
         mesh=self.mesh,
     )
-    full_modal = cx.compose_coordinates(self.sigma_levels, self.ylm_grid)
-    ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
+    full_modal = cx.coords.compose(self.sigma_levels, self.ylm_grid)
+    ones_like = lambda c: cx.field(jnp.ones(c.shape), c)
     self.prognostics = {
         'divergence': ones_like(full_modal),
         'vorticity': ones_like(full_modal),
@@ -63,7 +63,7 @@ class EnergyFixersTest(parameterized.TestCase):
         sim_units=self.sim_units,
     )
     imbalance = {
-        'imbalance': cx.wrap(
+        'imbalance': cx.field(
             jnp.ones(self.lon_lat_grid.shape), self.lon_lat_grid
         )
     }

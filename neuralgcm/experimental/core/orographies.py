@@ -54,7 +54,7 @@ class ModalOrography(nnx.Module):
     ylm_grid = self.ylm_map.modal_grid
     mask = ylm_grid.fields['mask']
     modal_orography_2d = jnp.zeros(ylm_grid.shape)
-    return cx.wrap(
+    return cx.field(
         modal_orography_2d.at[mask.data].set(self.orography[...]), ylm_grid
     )
 
@@ -80,7 +80,7 @@ class ModalOrography(nnx.Module):
     modal_orography = data_ylm_map.to_modal_array(nodal_orography)
     interpolator = interpolators.SpectralRegridder(self.ylm_map.modal_grid)
     modal_orography = interpolator(
-        cx.wrap(modal_orography, data_ylm_map.modal_grid)
+        cx.field(modal_orography, data_ylm_map.modal_grid)
     )
     modal_orography = modal_orography.unwrap(self.ylm_map.modal_grid)
     if isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
@@ -120,7 +120,7 @@ class ModalOrographyWithCorrection(ModalOrography):
     modal_orography_1d = (
         self.orography[...] + self.correction[...] * self.correction_scale
     )
-    return cx.wrap(
+    return cx.field(
         modal_orography_2d.at[mask.data].set(modal_orography_1d), ylm_grid
     )
 
@@ -140,7 +140,7 @@ class Orography(nnx.Module):
 
   @property
   def nodal_orography(self) -> cx.Field:
-    return cx.wrap(self.orography[...], self.grid)
+    return cx.field(self.orography[...], self.grid)
 
   def update_orography_from_data(
       self,

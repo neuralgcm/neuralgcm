@@ -545,7 +545,7 @@ class InferenceModel:
   ) -> typing.SimulationState:
     """Returns simulation state after assimilating inputs."""
     if isinstance(rng, typing.PRNGKeyArray):
-      rng = cx.wrap(rng, cx.Scalar())
+      rng = cx.field(rng, cx.Scalar())
     model = self._prepare_model(previous_estimate, dynamic_inputs, rng)
     model.assimilate(inputs)
     sim_state = model.simulation_state
@@ -723,7 +723,7 @@ def forecast_steps(
 ) -> tuple[typing.SimulationState, typing.Pytree]:
   """Runs a forecast from an inputs for a specified number of steps."""
   if rng is not None and not isinstance(rng, cx.Field):
-    rng = cx.wrap(rng, cx.Scalar())
+    rng = cx.field(rng, cx.Scalar())
   initial_state = forecast_system.assimilate(inputs, dynamic_inputs, rng)
   return unroll_from_advance(
       forecast_system=forecast_system,

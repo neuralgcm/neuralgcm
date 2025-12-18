@@ -30,7 +30,7 @@ class CoordinateMaskScalerTest(parameterized.TestCase):
     time_coord = coordinates.TimeDelta(
         np.array([0, 6, 12, 18]) * np.timedelta64(1, 'h')
     )
-    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    field = cx.field(np.ones(time_coord.shape), time_coord)
     mask_deltas = np.array([6, 18]) * np.timedelta64(1, 'h')
     mask_coord = coordinates.TimeDelta(mask_deltas)
     mask_scaler = scaling.CoordinateMaskScaler(
@@ -42,16 +42,16 @@ class CoordinateMaskScalerTest(parameterized.TestCase):
 
   def test_coordinate_mask_scaler_with_context(self):
     x = cx.SizedAxis('x', 4)
-    field = cx.wrap(np.ones(x.shape), x)
+    field = cx.field(np.ones(x.shape), x)
     mask_deltas = np.array([6, 18]) * np.timedelta64(1, 'h')
     mask_coord = coordinates.TimeDelta(mask_deltas)
     mask_scaler = scaling.CoordinateMaskScaler(mask_coord=mask_coord)
 
-    context_time_match = {'timedelta': cx.wrap(np.timedelta64(6, 'h'))}
+    context_time_match = {'timedelta': cx.field(np.timedelta64(6, 'h'))}
     scales_match = mask_scaler.scales(field, context=context_time_match)
     np.testing.assert_allclose(scales_match.data, 0.0)
 
-    context_time_no_match = {'timedelta': cx.wrap(np.timedelta64(3, 'h'))}
+    context_time_no_match = {'timedelta': cx.field(np.timedelta64(3, 'h'))}
     scales_no_match = mask_scaler.scales(field, context=context_time_no_match)
     np.testing.assert_allclose(scales_no_match.data, 1.0)
 
@@ -60,7 +60,7 @@ class CoordinateMaskScalerTest(parameterized.TestCase):
     time_coord = coordinates.TimeDelta(
         np.array([0, 6, 12, 18]) * np.timedelta64(1, 'h')
     )
-    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    field = cx.field(np.ones(time_coord.shape), time_coord)
     mask_coord = cx.SizedAxis('nondim', 2)
     with self.assertRaisesRegex(
         ValueError, "Coordinate for 'nondim' not found"
@@ -77,7 +77,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     time_coord = coordinates.TimeDelta(
         np.array([0, 3, 8, 15]) * np.timedelta64(1, 'h')
     )
-    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    field = cx.field(np.ones(time_coord.shape), time_coord)
     scaler = scaling.GeneralizedLeadTimeScaler(base_squared_error_in_hours=1.0)
     scales = scaler.scales(field)
     np.testing.assert_allclose(scales.data.mean(), 1.0, atol=1e-6)
@@ -86,7 +86,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     time_coord = coordinates.TimeDelta(
         np.array([0, 6, 12, 24]) * np.timedelta64(1, 'h')
     )
-    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    field = cx.field(np.ones(time_coord.shape), time_coord)
     scaler = scaling.GeneralizedLeadTimeScaler(
         base_squared_error_in_hours=4.0, weights_power=2.0
     )
@@ -95,15 +95,15 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
 
   def test_normalization_in_context(self):
     x = cx.SizedAxis('x', 1)
-    field = cx.wrap(np.ones(x.shape), x)
+    field = cx.field(np.ones(x.shape), x)
     scaler = scaling.GeneralizedLeadTimeScaler(base_squared_error_in_hours=7.0)
     step_delta = jdt.Timedelta.from_timedelta64(np.timedelta64(6, 'h'))
     n_steps = 4
     scaled_weights = []
     for i in range(n_steps):
       ctx = {
-          'timedelta': cx.wrap(step_delta * i),
-          'times': cx.wrap(step_delta * jnp.arange(n_steps)),
+          'timedelta': cx.field(step_delta * i),
+          'times': cx.field(step_delta * jnp.arange(n_steps)),
       }
       scaled_weights.append(scaler.scales(field, context=ctx).data)
     scaled_weights = np.array(scaled_weights)
@@ -113,7 +113,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     time_coord = coordinates.TimeDelta(
         np.array([0, 6, 12, 18]) * np.timedelta64(1, 'h')
     )
-    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    field = cx.field(np.ones(time_coord.shape), time_coord)
 
     # Case 1: max_t = 18. T_asymp = 18. Ratio = 1.
     # asymptotic_norm = 0.5.
@@ -134,7 +134,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     time_coord_long = coordinates.TimeDelta(
         np.linspace(0, 1800, 100) * np.timedelta64(1, 'h')
     )
-    field_long = cx.wrap(np.ones(time_coord_long.shape), time_coord_long)
+    field_long = cx.field(np.ones(time_coord_long.shape), time_coord_long)
     scales_long = scaler.scales(field_long)
     expected_long = (1 + 0.5 * (1800 / 18)) / (1 + 1800 / 18)
     np.testing.assert_allclose(
@@ -147,7 +147,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     time_coord_short = coordinates.TimeDelta(
         np.array([0, 6]) * np.timedelta64(1, 'm')
     )
-    field_short = cx.wrap(np.ones(time_coord_short.shape), time_coord_short)
+    field_short = cx.field(np.ones(time_coord_short.shape), time_coord_short)
     scales_short = scaler.scales(field_short)
     expected_short = (1 + 0.5 * (0.1 / 18)) / (1 + 0.1 / 18)
     np.testing.assert_allclose(
@@ -158,7 +158,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     time_coord = coordinates.TimeDelta(
         np.array([0, 6, 12, 18]) * np.timedelta64(1, 'h')
     )
-    field = cx.wrap(np.ones(time_coord.shape), time_coord)
+    field = cx.field(np.ones(time_coord.shape), time_coord)
     scaler = scaling.GeneralizedLeadTimeScaler(
         base_squared_error_in_hours=1.0,
         asymptotic_norm=0.5,
@@ -175,7 +175,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     time_coord_long = coordinates.TimeDelta(
         np.array([0, 36]) * np.timedelta64(1, 'h')
     )
-    field_long = cx.wrap(np.ones(time_coord_long.shape), time_coord_long)
+    field_long = cx.field(np.ones(time_coord_long.shape), time_coord_long)
     scales_long = scaler.scales(field_long)
     np.testing.assert_allclose(scales_long.data.mean(), 0.6, atol=1e-6)
 
@@ -183,7 +183,7 @@ class GeneralizedLeadTimeScalerTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, 'norm_transition_timescale_in_hours'
     ):
-      f = cx.wrap(np.zeros(1), coordinates.TimeDelta([np.timedelta64(1, 'h')]))
+      f = cx.field(np.zeros(1), coordinates.TimeDelta([np.timedelta64(1, 'h')]))
       scaling.GeneralizedLeadTimeScaler(
           base_squared_error_in_hours=1.0, asymptotic_norm=0.5
       ).scales(f)

@@ -72,7 +72,7 @@ class CumulativeDiagnostic(DiagnosticModule):
 
   def __post_init__(self):
     self.cumulatives = {
-        k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+        k: Diagnostic(cx.field(jnp.zeros(c.shape), c))
         for k, c in self.extract_coords.items()
     }
 
@@ -80,7 +80,7 @@ class CumulativeDiagnostic(DiagnosticModule):
     """Resets the internal diagnostic state."""
     for k, v in self.cumulatives.items():
       v = v.get_value()  # get the underlying Field.
-      self.cumulatives[k].set_value(cx.wrap_like(jnp.zeros(v.shape), v))
+      self.cumulatives[k].set_value(cx.field(jnp.zeros(v.shape), v.coordinate))
 
   def diagnostic_values(self) -> typing.Pytree:
     return {k: v.get_value() for k, v in self.cumulatives.items()}
@@ -100,7 +100,7 @@ class InstantDiagnostic(DiagnosticModule):
 
   def __post_init__(self):
     self.instants = {
-        k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+        k: Diagnostic(cx.field(jnp.zeros(c.shape), c))
         for k, c in self.extract_coords.items()
     }
 
@@ -108,7 +108,7 @@ class InstantDiagnostic(DiagnosticModule):
     """Resets the internal diagnostic state."""
     for k, v in self.instants.items():
       v = v.get_value()  # get the underlying Field.
-      self.instants[k].set_value(cx.wrap_like(jnp.zeros(v.shape), v))
+      self.instants[k].set_value(cx.field(jnp.zeros(v.shape), v.coordinate))
 
   def diagnostic_values(self) -> typing.Pytree:
     return {k: v.get_value() for k, v in self.instants.items()}
@@ -186,28 +186,28 @@ class IntervalDiagnostic(DiagnosticModule):
           'resolution must be an integer number of seconds, but '
           f'resolution({self.resolution}) has {float_seconds} seconds.'
       )
-    self.dt_mod_freq = typing.Diagnostic(cx.wrap(jdt.Timedelta()))
+    self.dt_mod_freq = typing.Diagnostic(cx.field(jdt.Timedelta()))
     self.since_last_update = {
-        k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+        k: Diagnostic(cx.field(jnp.zeros(c.shape), c))
         for k, c in self.extract_coords.items()
     }
     interval_deltas = np.arange(-periods, 0) * self.resolution
     self.interval_axis = coordinates.TimeDelta(interval_deltas)
-    with_intrvl = lambda c: cx.compose_coordinates(self.interval_axis, c)
+    with_intrvl = lambda c: cx.coords.compose(self.interval_axis, c)
     self.per_period = {
-        k: Diagnostic(cx.wrap(jnp.zeros(with_intrvl(c).shape), with_intrvl(c)))
+        k: Diagnostic(cx.field(jnp.zeros(with_intrvl(c).shape), with_intrvl(c)))
         for k, c in self.extract_coords.items()
     }
     if self.include_instant:
       self.instants = {
-          k: Diagnostic(cx.wrap(jnp.zeros(c.shape), c))
+          k: Diagnostic(cx.field(jnp.zeros(c.shape), c))
           for k, c in self.extract_coords.items()
       }
 
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
-    self.dt_mod_freq.set_value(cx.wrap(jdt.Timedelta()))
-    zeros_like = lambda v: cx.wrap_like(jnp.zeros_like(v.get_value().data), v.get_value())
+    self.dt_mod_freq.set_value(cx.field(jdt.Timedelta()))
+    zeros_like = lambda v: cx.field(jnp.zeros_like(v.get_value().data), v.get_value().coordinate)
     for k in self.extract_coords:
       self.since_last_update[k].set_value(zeros_like(self.since_last_update[k]))
       self.per_period[k].set_value(zeros_like(self.per_period[k]))
@@ -256,7 +256,7 @@ class IntervalDiagnostic(DiagnosticModule):
       updated_per_period = update_per_period(per_period, since_last).tag(i_ax)
       self.per_period[k].set_value(updated_per_period)
       self.since_last_update[k].set_value(jax.lax.cond(
-          is_update_step, cx.wrap(0.0).broadcast_like, lambda x: x, since_last
+          is_update_step, cx.field(0.0).broadcast_like, lambda x: x, since_last
       ))
 
   def diagnostic_values(self) -> typing.Pytree:

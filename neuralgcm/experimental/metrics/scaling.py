@@ -80,7 +80,7 @@ class ConstantScaler(ScaleFactor):
     if all(d in field.dims for d in self.constant.dims):
       return self.constant
     if self.skip_missing:
-      return cx.wrap(1.0)
+      return cx.field(1.0)
     else:
       raise ValueError(
           f'{field=} does not have all coordinates in {self.constant=}.'
@@ -124,7 +124,7 @@ class PerVariableScaler(ScaleFactor):
   ) -> PerVariableScaler:
     """Returns a PerVariableScaler with ConstantScalers."""
     scalers = {
-        name: ConstantScaler(constant=w if cx.is_field(w) else cx.wrap(w))
+        name: ConstantScaler(constant=w if cx.is_field(w) else cx.field(w))
         for name, w in variable_weights.items()
     }
     return cls(scalers_by_name=scalers, default_scaler=default_scaler)
@@ -159,9 +159,9 @@ class GridAreaScaler(ScaleFactor):
     lon_lat_dims = ('longitude', 'latitude')
     ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
     if all(d in field.axes for d in lon_lat_dims):
-      grid = cx.compose_coordinates(*[field.axes.get(d) for d in lon_lat_dims])
+      grid = cx.coords.compose(*[field.axes.get(d) for d in lon_lat_dims])
     elif all(d in field.axes for d in ylm_dims):
-      grid = cx.compose_coordinates(*[field.axes.get(d) for d in ylm_dims])
+      grid = cx.coords.compose(*[field.axes.get(d) for d in ylm_dims])
     else:
       grid = None
 
@@ -188,7 +188,7 @@ class GridAreaScaler(ScaleFactor):
       weights = grid.fields['mask'].astype(jnp.float32)
     else:
       if self.skip_missing:
-        weights = cx.wrap(1.0)
+        weights = cx.field(1.0)
       else:
         raise ValueError(f'No LonLatGrid or SphericalHarmonicGrid on {field=}')
     return weights
@@ -214,7 +214,7 @@ class PressureLevelAtmosphericMassScaler(ScaleFactor):
     """Return weights extracted from the pressure level coordinate."""
     del field_name, context  # unused.
     if 'pressure' not in field.dims:
-      return cx.wrap(1.0)
+      return cx.field(1.0)
 
     pressure = field.axes['pressure']
     padded = np.concatenate([
@@ -224,7 +224,7 @@ class PressureLevelAtmosphericMassScaler(ScaleFactor):
     ])
     # thickness is estimated as 0.5 * |p_{k+1} - p_{k-1}|.
     thickness = (np.roll(padded, -1) - np.roll(padded, 1))[1:-1] / 2
-    return cx.wrap(thickness, pressure)
+    return cx.field(thickness, pressure)
 
 
 @dataclasses.dataclass
@@ -251,14 +251,14 @@ class WavenumberScaler(ScaleFactor):
     del field_name, context  # unused.
     ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
     if all(d in field.axes for d in ylm_dims):
-      grid = cx.compose_coordinates(*[field.axes.get(d) for d in ylm_dims])
+      grid = cx.coords.compose(*[field.axes.get(d) for d in ylm_dims])
     else:
       grid = None
 
     if isinstance(grid, coordinates.SphericalHarmonicGrid):
-      return cx.wrap(grid.fields['mask'].data.sum() / (4 * np.pi))
+      return cx.field(grid.fields['mask'].data.sum() / (4 * np.pi))
     elif self.skip_missing:
-      return cx.wrap(1.0)
+      return cx.field(1.0)
     else:
       raise ValueError(f'No SphericalHarmonicGrid on {field=}')
 
@@ -329,7 +329,7 @@ class CoordinateMaskScaler(ScaleFactor):
           )
         mask_values = mask_values_field.untag(dim_name)
         is_present = (current_value == mask_values).data.any()
-        mask = cx.wrap(is_present)
+        mask = cx.field(is_present)
         all_masks.append(mask)
       elif in_field:
         coord_from_field = field.axes[dim_name]
@@ -340,7 +340,7 @@ class CoordinateMaskScaler(ScaleFactor):
         all_masks.append(mask_for_dim)
 
     if not all_masks:
-      return cx.wrap(self.unmasked_value)
+      return cx.field(self.unmasked_value)
 
     final_mask = functools.reduce(lambda x, y: x & y, all_masks)
     masked_v, unmasked_v = self.masked_value, self.unmasked_value
@@ -400,7 +400,7 @@ class LeadTimeScaler(ScaleFactor):
 
     if time_coord is None and not from_context:
       if self.skip_missing:
-        return cx.wrap(1.0)
+        return cx.field(1.0)
       raise ValueError(f'TimeDelta coord not found on {field=} or in context')
 
     one_hr_delta = np.timedelta64(1, 'h')
@@ -436,8 +436,8 @@ class LeadTimeScaler(ScaleFactor):
     if self.weights_power is not None:
       inv_variance_sqrt = inv_variance_sqrt**self.weights_power
     if from_context:
-      return cx.wrap(inv_variance_sqrt)
-    return cx.wrap(inv_variance_sqrt, time_coord)
+      return cx.field(inv_variance_sqrt)
+    return cx.field(inv_variance_sqrt, time_coord)
 
 
 @dataclasses.dataclass
@@ -519,7 +519,7 @@ class GeneralizedLeadTimeScaler(ScaleFactor):
 
     if time_coord is None and not from_context:
       if self.skip_missing:
-        return cx.wrap(1.0)
+        return cx.field(1.0)
       raise ValueError(f'TimeDelta coord not found on {field=} or in context')
 
     one_hr_delta = np.timedelta64(1, 'h')
@@ -550,5 +550,5 @@ class GeneralizedLeadTimeScaler(ScaleFactor):
     weights = weights * self._compute_normalization_scale(max_t) / norm_const
 
     if from_context:
-      return cx.wrap(weights)
-    return cx.wrap(weights, time_coord)
+      return cx.field(weights)
+    return cx.field(weights, time_coord)

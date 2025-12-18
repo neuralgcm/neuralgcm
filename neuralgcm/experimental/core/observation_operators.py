@@ -54,7 +54,7 @@ def _collect_coord_components(
     coord: cx.Coordinate, dim: str
 ) -> list[cx.Coordinate]:
   """Returns the coordinate component with the given name, if it exists."""
-  return [c for c in cx.canonicalize_coordinates(coord) if c.dims == (dim,)]
+  return [c for c in cx.coords.canonicalize(coord) if c.dims == (dim,)]
 
 
 def _subset_query_from_field(
@@ -306,8 +306,8 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
     lon, lat = grid.fields['longitude'].data, grid.fields['latitude'].data
     get_indices_fn = self._lon_lat_neighbor_indices
     lon_idx, lat_idx = cx.cmap(get_indices_fn)(lon_query, lat_query, lon, lat)
-    delta_lon = lon_query - cx.wrap_like(lon[lon_idx.data], lon_query)
-    delta_lat = lat_query - cx.wrap_like(lat[lat_idx.data], lat_query)
+    delta_lon = lon_query - cx.field(lon[lon_idx.data], lon_query.coordinate)
+    delta_lat = lat_query - cx.field(lat[lat_idx.data], lat_query.coordinate)
     displacement_inputs = {
         'delta_lon': delta_lon,
         'delta_lat': delta_lat,
@@ -323,7 +323,7 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
     }
     all_features = nearest_grid_features | displacement_inputs
     target_predictions = {
-        k: cx.compose_coordinates(v, sparse_coord)
+        k: cx.coords.compose(v, sparse_coord)
         for k, v in self.target_predictions.items()
     }
     observe_sparse_transform = learned_transforms.ForwardTowerTransform(

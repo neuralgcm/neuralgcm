@@ -50,8 +50,8 @@ class DiagnosticsTest(parameterized.TestCase):
   def test_cumulative_diagnostic(self):
     x_coord, y_coord = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     inputs = {
-        'fixed': cx.wrap(jnp.arange(3.0), x_coord),
-        'increasing': cx.wrap(jnp.zeros(5), y_coord),
+        'fixed': cx.field(jnp.arange(3.0), x_coord),
+        'increasing': cx.field(jnp.zeros(5), y_coord),
     }
     extract = lambda x, *args, **kwargs: x
     d_coords = {'fixed': x_coord, 'increasing': y_coord}
@@ -76,8 +76,8 @@ class DiagnosticsTest(parameterized.TestCase):
       # 2, 4, ..., 20. The sum is 2 * (1 + 2 + ... + 10) = 2*(1+10)*10/2 = 110.
       increasing_sum = 2 * n_steps * (n_steps + 1) / 2
       expected_cumulatives = {
-          'fixed': cx.wrap(fixed_sum, x_coord),
-          'increasing': cx.wrap(jnp.ones(5) * increasing_sum, y_coord),
+          'fixed': cx.field(fixed_sum, x_coord),
+          'increasing': cx.field(jnp.ones(5) * increasing_sum, y_coord),
       }
       actual_cumulatives = diagnostic.diagnostic_values()
       chex.assert_trees_all_close(actual_cumulatives, expected_cumulatives)
@@ -86,16 +86,16 @@ class DiagnosticsTest(parameterized.TestCase):
       diagnostic.reset_diagnostic_state()
       actual_cumulatives = diagnostic.diagnostic_values()
       expected_zeros = {
-          'fixed': cx.wrap(jnp.zeros(3), x_coord),
-          'increasing': cx.wrap(jnp.zeros(5), y_coord),
+          'fixed': cx.field(jnp.zeros(3), x_coord),
+          'increasing': cx.field(jnp.zeros(5), y_coord),
       }
       chex.assert_trees_all_close(actual_cumulatives, expected_zeros)
 
   def test_cumulative_diagnostic_callback_on_custom_method(self):
     x_coord, y_coord = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     inputs = {
-        'fixed': cx.wrap(jnp.arange(3.0), x_coord),
-        'increasing': cx.wrap(jnp.zeros(5), y_coord),
+        'fixed': cx.field(jnp.arange(3.0), x_coord),
+        'increasing': cx.field(jnp.zeros(5), y_coord),
     }
     extract = lambda x, *args, **kwargs: x | {'count': 1}
     d_coords = {'fixed': x_coord, 'increasing': y_coord, 'count': cx.Scalar()}
@@ -116,9 +116,9 @@ class DiagnosticsTest(parameterized.TestCase):
     # The sum is (2*n_steps) * (2*n_steps+1)/2 = 10 * 21 = 210.
     increasing_sum = n_calls * (n_calls + 1) / 2
     expected_cumulatives = {
-        'fixed': cx.wrap(fixed_sum, x_coord),
-        'increasing': cx.wrap(jnp.ones(5) * increasing_sum, y_coord),
-        'count': cx.wrap(n_calls, cx.Scalar()),
+        'fixed': cx.field(fixed_sum, x_coord),
+        'increasing': cx.field(jnp.ones(5) * increasing_sum, y_coord),
+        'count': cx.field(n_calls, cx.Scalar()),
     }
     actual_cumulatives = diagnostic.diagnostic_values()
     chex.assert_trees_all_close(actual_cumulatives, expected_cumulatives)
@@ -127,8 +127,8 @@ class DiagnosticsTest(parameterized.TestCase):
     x_coord = cx.LabeledAxis('x', np.arange(7))
     y_coord = cx.LabeledAxis('y', np.arange(5))
     inputs = {
-        'fixed': cx.wrap(jnp.arange(7.0), x_coord),
-        'increasing': cx.wrap(jnp.zeros(5), y_coord),
+        'fixed': cx.field(jnp.arange(7.0), x_coord),
+        'increasing': cx.field(jnp.zeros(5), y_coord),
     }
     extract = lambda x, *args, **kwargs: x
     d_coords = {'fixed': x_coord, 'increasing': y_coord}
@@ -152,8 +152,8 @@ class DiagnosticsTest(parameterized.TestCase):
       # `increasing` is incremented by 2 at each step for 10 steps.
       increasing_final = jnp.ones(5) * 2 * n_steps
       expected_final = {
-          'fixed': cx.wrap(fixed_final, x_coord),
-          'increasing': cx.wrap(increasing_final, y_coord),
+          'fixed': cx.field(fixed_final, x_coord),
+          'increasing': cx.field(increasing_final, y_coord),
       }
       actual_final = diagnostic.diagnostic_values()
       chex.assert_trees_all_close(expected_final, actual_final)
@@ -162,8 +162,8 @@ class DiagnosticsTest(parameterized.TestCase):
       diagnostic.reset_diagnostic_state()
       actual_cumulatives = diagnostic.diagnostic_values()
       expected_zeros = {
-          'fixed': cx.wrap(jnp.zeros(7), x_coord),
-          'increasing': cx.wrap(jnp.zeros(5), y_coord),
+          'fixed': cx.field(jnp.zeros(7), x_coord),
+          'increasing': cx.field(jnp.zeros(5), y_coord),
       }
       chex.assert_trees_all_close(actual_cumulatives, expected_zeros)
 
@@ -188,8 +188,8 @@ class DiagnosticsTest(parameterized.TestCase):
         module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
     )
     inputs = {
-        'fixed': cx.wrap(jnp.arange(3.0), x_coord),
-        'increasing': cx.wrap(jnp.zeros(5), y_coord),
+        'fixed': cx.field(jnp.arange(3.0), x_coord),
+        'increasing': cx.field(jnp.zeros(5), y_coord),
     }
     with self.subTest('does_not_change_outputs'):
       no_diagnostic_output = module(inputs)
@@ -212,8 +212,8 @@ class DiagnosticsTest(parameterized.TestCase):
       # `fixed` is constant arange(3). Sum over 6 steps is 6 * arange(3).
       expected_fixed = jnp.arange(3.0) * 6.0
       expected_values = {
-          'fixed': cx.wrap(expected_fixed, x_coord),
-          'increasing': cx.wrap(expected_increasing, y_coord),
+          'fixed': cx.field(expected_fixed, x_coord),
+          'increasing': cx.field(expected_increasing, y_coord),
       }
       chex.assert_trees_all_close(
           actual_interval_cumulatives['fixed'], expected_values['fixed']
@@ -231,8 +231,8 @@ class DiagnosticsTest(parameterized.TestCase):
       diagnostic.reset_diagnostic_state()
       actual_interval_cumulatives = diagnostic.diagnostic_values()
       expected_zeros = {
-          'fixed': cx.wrap(jnp.zeros(3), x_coord),
-          'increasing': cx.wrap(jnp.zeros(5), y_coord),
+          'fixed': cx.field(jnp.zeros(3), x_coord),
+          'increasing': cx.field(jnp.zeros(5), y_coord),
       }
       chex.assert_trees_all_close(
           actual_interval_cumulatives['fixed'], expected_zeros['fixed']
@@ -259,7 +259,7 @@ class DiagnosticsTest(parameterized.TestCase):
         (diagnostic, 'advance_diagnostic_clock'),
         method_name='pass_through',
     )
-    state = {'increasing': cx.wrap(jnp.zeros(5), y_coord)}
+    state = {'increasing': cx.field(jnp.zeros(5), y_coord)}
     explicit_timedelta = jdt.to_timedelta(np.timedelta64(1, 'h'))
     for _ in range(16):
       state = module_with_diagnostic(state)
@@ -272,7 +272,7 @@ class DiagnosticsTest(parameterized.TestCase):
     expected_increasing = jnp.ones(5) * 252
     chex.assert_trees_all_close(
         diag_values['increasing'],
-        cx.wrap(expected_increasing, y_coord),
+        cx.field(expected_increasing, y_coord),
         atol=1e-6,
     )
     # advancing a full sub-interval at a time also works:
@@ -282,7 +282,7 @@ class DiagnosticsTest(parameterized.TestCase):
     expected_increasing = jnp.ones(5) * (252 - 10 - 12 - 14 - 16)
     chex.assert_trees_all_close(
         diag_values['increasing'],
-        cx.wrap(expected_increasing, y_coord),
+        cx.field(expected_increasing, y_coord),
         atol=1e-6,
     )
 
@@ -302,7 +302,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module_with_diagnostic = module_utils.with_callback(
         module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
     )
-    output = {'increasing': cx.wrap(jnp.zeros(5), y_coord)}
+    output = {'increasing': cx.field(jnp.zeros(5), y_coord)}
     for _ in range(5):
       output = module_with_diagnostic(output)
     diag_values_after_5_steps = diagnostic.diagnostic_values()
@@ -310,7 +310,7 @@ class DiagnosticsTest(parameterized.TestCase):
     expected_increasing = jnp.ones(5) * 30.0
     chex.assert_trees_all_close(
         diag_values_after_5_steps['increasing'],
-        cx.wrap(expected_increasing, y_coord),
+        cx.field(expected_increasing, y_coord),
     )
 
     for _ in range(3):
@@ -320,7 +320,7 @@ class DiagnosticsTest(parameterized.TestCase):
     # Diagnostic values are expected to return values from a completed
     # sub-intervals, so we expect the same value as after 5 steps.
     chex.assert_trees_all_close(
-        diag_values['increasing'], cx.wrap(expected_increasing, y_coord)
+        diag_values['increasing'], cx.field(expected_increasing, y_coord)
     )
     # We can check that the timedelta_since_sub_interval is as expected.
     self.assertEqual(
@@ -345,7 +345,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module_with_diagnostic = module_utils.with_callback(
         module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
     )
-    inputs = {'increasing': cx.wrap(jnp.zeros(1), y_coord)}
+    inputs = {'increasing': cx.field(jnp.zeros(1), y_coord)}
 
     @nnx.jit
     def run_step(model, inputs):
@@ -360,7 +360,7 @@ class DiagnosticsTest(parameterized.TestCase):
     # accumulation over last step.
     chex.assert_trees_all_close(
         diag_values['increasing'],
-        cx.wrap(jnp.ones(1) * 6.0, y_coord),
+        cx.field(jnp.ones(1) * 6.0, y_coord),
     )
 
   def test_interval_diagnostic_resolution_not_int_seconds_raises_error(self):

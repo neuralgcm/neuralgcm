@@ -46,7 +46,7 @@ class MockModel(api.Model):
 
   def __post_init__(self):
     self.prognostics = typing.Prognostic({
-        k: cx.wrap(np.zeros(v.coord.shape), v.coord)
+        k: cx.field(np.zeros(v.coord.shape), v.coord)
         for k, v in self.inputs_spec['state'].items()
     })
 

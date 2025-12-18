@@ -198,7 +198,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
     n_samples = 500
     samples_axis = cx.DummyAxis(None, n_samples)
     unroll_length = 40
-    init_rngs = cx.wrap(
+    init_rngs = cx.field(
         jax.random.split(jax.random.key(5), n_samples), samples_axis
     )
 
@@ -519,7 +519,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
 
     ###
     grid = self.ylm_map.lon_lat_grid
-    init_rngs = cx.wrap(
+    init_rngs = cx.field(
         jax.random.split(jax.random.key(5), n_samples), samples_axis
     )
 

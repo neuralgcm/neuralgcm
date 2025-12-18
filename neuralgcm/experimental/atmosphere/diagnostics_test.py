@@ -57,8 +57,8 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     self.sim_units = units.DEFAULT_UNITS
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
-    full_modal = cx.compose_coordinates(sigma_levels, ylm_grid)
-    ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
+    full_modal = cx.coords.compose(sigma_levels, ylm_grid)
+    ones_like = lambda c: cx.field(jnp.ones(c.shape), c)
     self.prognostics = {
         'divergence': ones_like(full_modal),
         'vorticity': ones_like(full_modal),
@@ -84,7 +84,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
         levels=sigma,
         sim_units=self.sim_units,
     )
-    ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
+    ones_like = lambda c: cx.field(jnp.ones(c.shape), c)
     actual = precip_plus_evap(self.tendencies, prognostics=self.prognostics)
     expected_struct = {'precipitation_plus_evaporation_rate': ones_like(grid)}
     chex.assert_trees_all_equal_shapes_and_dtypes(actual, expected_struct)
@@ -135,7 +135,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
         prognostics_arg_key='prognostics',
         sim_units=self.sim_units,
     )
-    ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
+    ones_like = lambda c: cx.field(jnp.ones(c.shape), c)
     actual = precip_and_evap(self.tendencies, prognostics=self.prognostics)
     expected_struct = {
         'precipitation': ones_like(grid),
@@ -159,8 +159,8 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
         partition_schema_key=None,
         mesh=self.mesh,
     )
-    full_modal = cx.compose_coordinates(self.sigma_levels, self.ylm_grid)
-    ones_like = lambda c: cx.wrap(jnp.ones(c.shape), c)
+    full_modal = cx.coords.compose(self.sigma_levels, self.ylm_grid)
+    ones_like = lambda c: cx.field(jnp.ones(c.shape), c)
     self.prognostics = {
         'divergence': ones_like(full_modal),
         'vorticity': ones_like(full_modal),
@@ -187,7 +187,7 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
 
     self.observation_operator = observation_operators.DataObservationOperator(
         fields={
-            k: cx.wrap(jnp.ones(c.shape), c)
+            k: cx.field(jnp.ones(c.shape), c)
             for k, c in self.energy_query.items()
         }
     )

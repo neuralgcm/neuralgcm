@@ -227,7 +227,7 @@ class PerVariableLoss(Loss, PerVariableMetric):
   ) -> cx.Field:
     """Sums up the per-variable losses with optional weights."""
     if not metric_values:
-      return cx.wrap(0.0)
+      return cx.field(0.0)
 
     total_loss = 0.0
     ws = collections.defaultdict(lambda: 1.0) | (self.variable_weights or {})
@@ -421,4 +421,3 @@ def compute_metrics_from_statistics(
       metric_name: compute_metric_from_statistics(metric, statistic_values)
       for metric_name, metric in metrics.items()
   }
-

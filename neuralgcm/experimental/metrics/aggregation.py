@@ -226,14 +226,14 @@ class Aggregator:
       apply_scales: bool,
   ) -> cx.Field:
     """Applies configured reductions, (optional) weightings, and binnings."""
-    weights = cx.wrap(1)
+    weights = cx.field(1)
     for weighting_instance in self.weight_by:
       weights *= weighting_instance.weights(
           stat_field, field_name=field_name, context=self.context
       )
 
     if self.bin_by:
-      bin_mask = cx.wrap(1)
+      bin_mask = cx.field(1)
       for binner in self.bin_by:
         bin_mask *= binner.create_bin_mask(
             stat_field, field_name=field_name, context=self.context
@@ -266,7 +266,7 @@ class Aggregator:
       for term_name, stat_field in sorted(statistic_values.items()):
         # TODO(dkochkov): Could weights averaging be done more efficiently by
         # exposing the outer product structure?
-        weight_field = cx.wrap_like(np.ones(stat_field.shape), stat_field)
+        weight_field = cx.field(np.ones(stat_field.shape), stat_field.coordinate)
         if self.skipna:
 
           def _apply_nan_mask(x, nan_mask):

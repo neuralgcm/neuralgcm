@@ -81,12 +81,12 @@ class DynamicInputSlice(DynamicInputModule):
     self.time_axis = time_axis
     mock_dt = coordinates.TimeDelta(np.array([np.timedelta64(1, 'h')]))
     self.time = DynamicInput(
-        cx.wrap(jdt.to_datetime('1970-01-01T00')[np.newaxis], mock_dt)
+        cx.field(jdt.to_datetime('1970-01-01T00')[np.newaxis], mock_dt)
     )
     dummy_data = {}
     for k, v in self.keys_to_coords.items():
       value = jnp.nan * jnp.zeros(mock_dt.shape + v.shape)
-      dummy_data[k] = cx.wrap(value, mock_dt, v)
+      dummy_data[k] = cx.field(value, mock_dt, v)
     self.data = DynamicInput(dummy_data)
 
   def update_dynamic_inputs(
@@ -116,10 +116,10 @@ class DynamicInputSlice(DynamicInputModule):
       v = inputs[k]
       if v.axes.get('timedelta', None) != time.axes['timedelta']:
         raise ValueError(f'{v.axes=} does not contain {time.axes=}.')
-      data_coord = cx.compose_coordinates(
+      data_coord = cx.coords.compose(
           *[v.axes[d] for d in v.dims if d != 'timedelta']
       )
-      expected_coord = cx.compose_coordinates(
+      expected_coord = cx.coords.compose(
           *[self.data.get_value()[k].axes[d] for d in v.dims if d != 'timedelta']
       )
       if data_coord != expected_coord:

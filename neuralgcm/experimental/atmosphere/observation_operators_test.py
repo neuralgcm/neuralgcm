@@ -54,14 +54,14 @@ class ObservationOperatorsTest(parameterized.TestCase):
         rngs=nnx.Rngs(0),
     )
     self.ref_temperatures = np.linspace(220, 250, num=n_sigma)
-    zero_like = lambda c: cx.wrap(np.zeros(c.shape), c)
+    zero_like = lambda c: cx.field(np.zeros(c.shape), c)
     self.prognostic_fields = {
         'divergence': zero_like(self.source_coords),
         'vorticity': zero_like(self.source_coords),
         'specific_humidity': zero_like(self.source_coords),
         'temperature': zero_like(self.source_coords),
         'log_surface_pressure': zero_like(self.sh_grid),
-        'time': cx.wrap(jdt.to_datetime('2001-01-01')),
+        'time': cx.field(jdt.to_datetime('2001-01-01')),
     }
 
   def test_returns_pressure_level_outputs(self):

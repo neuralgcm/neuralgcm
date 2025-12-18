@@ -25,8 +25,8 @@ import numpy as np
 class DeterministicMetricsTest(parameterized.TestCase):
 
   def test_mse(self):
-    x = {'x': cx.wrap(2.0), 'y': cx.wrap(2.0)}
-    y = {'x': cx.wrap(1.0), 'y': cx.wrap(4.0)}
+    x = {'x': cx.field(2.0), 'y': cx.field(2.0)}
+    y = {'x': cx.field(1.0), 'y': cx.field(4.0)}
     mse = deterministic_metrics.MSE()
     mse_statistics = {
         s.unique_name: s.compute(x, y) for s in mse.statistics.values()
@@ -37,8 +37,8 @@ class DeterministicMetricsTest(parameterized.TestCase):
 
   def test_mse_loss_total_weighted(self):
     loss = deterministic_losses.MSE(variable_weights={'x': 2.0, 'y': 0.5})
-    x = {'x': cx.wrap(2.0), 'y': cx.wrap(2.0)}
-    y = {'x': cx.wrap(1.0), 'y': cx.wrap(4.0)}
+    x = {'x': cx.field(2.0), 'y': cx.field(2.0)}
+    y = {'x': cx.field(1.0), 'y': cx.field(4.0)}
     mse_statistics = {
         s.unique_name: s.compute(x, y) for s in loss.statistics.values()
     }
@@ -53,8 +53,8 @@ class DeterministicMetricsTest(parameterized.TestCase):
       np.testing.assert_almost_equal(debug_terms['relative_y'].data, 0.5)
 
   def test_mae(self):
-    x = {'x': cx.wrap(2.0), 'y': cx.wrap(2.0)}
-    y = {'x': cx.wrap(1.0), 'y': cx.wrap(4.0)}
+    x = {'x': cx.field(2.0), 'y': cx.field(2.0)}
+    y = {'x': cx.field(1.0), 'y': cx.field(4.0)}
     mae = deterministic_metrics.MAE()
     mae_statistics = {
         s.unique_name: s.compute(x, y) for s in mae.statistics.values()
@@ -65,8 +65,8 @@ class DeterministicMetricsTest(parameterized.TestCase):
 
   def test_mae_loss_total_weighted(self):
     mae_loss = deterministic_losses.MAE(variable_weights={'x': 0.4, 'y': 1.1})
-    x = {'x': cx.wrap(2.0), 'y': cx.wrap(2.0)}
-    y = {'x': cx.wrap(1.0), 'y': cx.wrap(4.0)}
+    x = {'x': cx.field(2.0), 'y': cx.field(2.0)}
+    y = {'x': cx.field(1.0), 'y': cx.field(4.0)}
     mae_statistics = {
         s.unique_name: s.compute(x, y) for s in mae_loss.statistics.values()
     }
@@ -84,8 +84,8 @@ class DeterministicMetricsTest(parameterized.TestCase):
     u_name = 'u'
     v_name = 'v'
     vector_name = 'test_wind'
-    x = {'u': cx.wrap(2.0), 'v': cx.wrap(1.0)}
-    y = {'u': cx.wrap(1.0), 'v': cx.wrap(3.0)}
+    x = {'u': cx.field(2.0), 'v': cx.field(1.0)}
+    y = {'u': cx.field(1.0), 'v': cx.field(3.0)}
     metric = deterministic_metrics.WindVectorRMSE(
         u_name=u_name, v_name=v_name, vector_name=vector_name
     )
@@ -107,8 +107,8 @@ class DeterministicMetricsTest(parameterized.TestCase):
         },
         term_weights={'mse': 0.3, 'mae': 0.7},
     )
-    x = {'x': cx.wrap(2.0), 'y': cx.wrap(2.0)}
-    y = {'x': cx.wrap(1.0), 'y': cx.wrap(4.0)}
+    x = {'x': cx.field(2.0), 'y': cx.field(2.0)}
+    y = {'x': cx.field(1.0), 'y': cx.field(4.0)}
     statistics = {
         s.unique_name: s.compute(x, y) for s in loss.statistics.values()
     }

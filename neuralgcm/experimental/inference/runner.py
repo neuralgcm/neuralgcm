@@ -342,7 +342,7 @@ class InferenceRunner:
       logging.info(f'no state checkpoint found for task {task_id=}')
       if self.ensemble_size is not None:
         base_key = jax.random.key(self.random_seed)
-        rng = cx.wrap(jax.random.fold_in(base_key, task_id))
+        rng = cx.field(jax.random.fold_in(base_key, task_id))
       else:
         rng = None
 

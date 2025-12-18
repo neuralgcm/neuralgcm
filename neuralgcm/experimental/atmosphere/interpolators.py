@@ -138,7 +138,7 @@ class LinearOnPressure(nnx.Module):
 
   def interpolate_f(self, f: cx.Field, surface_pressure: cx.Field) -> cx.Field:
     """Interpolate field `f` to `self.target_levels` levels."""
-    canonical = cx.canonicalize_coordinates(f.coordinate)
+    canonical = cx.coords.canonicalize(f.coordinate)
     levels = [c for c in canonical if type(c) in self.supported_level_types]
     if not levels:
       if self.allow_no_levels:
@@ -159,7 +159,7 @@ class LinearOnPressure(nnx.Module):
       pressure = level.fields['pressure'] * 100  # In Pascal.
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
-        pressure = cx.wrap(
+        pressure = cx.field(
             self.sim_units.nondimensionalize(pressure.data * typing.units.Pa),
             level,
         )
@@ -195,13 +195,13 @@ class LinearOnPressure(nnx.Module):
       desired = target_levels.fields['pressure'] * 100  # In Pascal.
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
-        desired = cx.wrap(
+        desired = cx.field(
             self.sim_units.nondimensionalize(desired.data * typing.units.Pa),
             target_levels,
         )
     else:
       raise ValueError(f'Unsupported {type(target_levels)=}.')
-    out_coord = cx.replace_axes_in_coordinate(
+    out_coord = cx.coords.replace_axes(
         f.coordinate, level, target_levels
     )
     # we specify out_axes to preserve the dimension order in the output.
@@ -262,7 +262,7 @@ class ConservativeOnPressure(nnx.Module):
 
   def interpolate_f(self, f: cx.Field, surface_pressure: cx.Field) -> cx.Field:
     """Interpolate field `f` to `self.sigma` levels."""
-    canonical = cx.canonicalize_coordinates(f.coordinate)
+    canonical = cx.coords.canonicalize(f.coordinate)
     levels = [c for c in canonical if type(c) in self.supported_level_types]
     if not levels:
       if self.allow_no_levels:
@@ -294,7 +294,7 @@ class ConservativeOnPressure(nnx.Module):
           [jnp.array([first]), midpoints, jnp.array([last])]
       )
       axis = cx.SizedAxis(f'{level.dims[0]}_boundaries', boundaries.shape[0])
-      source_bounds = cx.wrap(boundaries, axis)
+      source_bounds = cx.field(boundaries, axis)
     elif isinstance(level, coordinates.SigmaLevels):
       axis = level.to_sigma_boundaries()
       source_bounds = level.fields['sigma_boundaries'] * surface_pressure
@@ -350,7 +350,7 @@ def get_surface_pressure(
   Returns:
     Surface pressure field on a horizontal grid.
   """
-  canonical = cx.canonicalize_coordinates(geopotential.coordinate)
+  canonical = cx.coords.canonicalize(geopotential.coordinate)
   levels = [c for c in canonical if isinstance(c, coordinates.PressureLevels)]
   if len(levels) != 1:
     raise ValueError(
@@ -360,7 +360,7 @@ def get_surface_pressure(
   pressure = levels.fields['pressure'] * 100  # In Pascal.
   if sim_units is not None:
     assert isinstance(sim_units, units.SimUnits)
-    pressure = cx.wrap(
+    pressure = cx.field(
         sim_units.nondimensionalize(pressure.data * typing.units.Pa),
         levels,
     )
@@ -371,7 +371,7 @@ def get_surface_pressure(
   def find_intercept(relative_height, pressure):
     return _linear_interp_with_linear_extrap(0.0, relative_height, pressure)
 
-  out_coord = cx.replace_axes_in_coordinate(
+  out_coord = cx.coords.replace_axes(
       geopotential.coordinate, levels, cx.Scalar()  # levels are reduced.
   )
   out_axes = {d: i for i, d in enumerate(out_coord.dims)}

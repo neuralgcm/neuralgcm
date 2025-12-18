@@ -29,8 +29,8 @@ class AggregatorTest(parameterized.TestCase):
 
   def test_zeros_aggregation_state_constructor(self):
     dim = cx.SizedAxis('spatial', 2)
-    predictions = {'x': cx.wrap(np.array([2.0, 3.0]), dim)}
-    targets = {'x': cx.wrap(np.array([1.0, 1.0]), dim)}
+    predictions = {'x': cx.field(np.array([2.0, 3.0]), dim)}
+    targets = {'x': cx.field(np.array([1.0, 1.0]), dim)}
     mse = deterministic_metrics.MSE()
     rmse = deterministic_metrics.RMSE()
     aggregator = aggregation.Aggregator(
@@ -59,7 +59,7 @@ class AggregationUtilsTest(parameterized.TestCase):
     # Generate AggregationState with unique statistics for metrics below.
     stat_a = deterministic_metrics.SquaredError()
     stat_b = deterministic_metrics.AbsoluteError()
-    dummy_field = cx.wrap(np.array([1.0]))
+    dummy_field = cx.field(np.array([1.0]))
     agg_state = aggregation.AggregationState(
         sum_weighted_statistics={
             stat_a.unique_name: {'var_name': dummy_field},
@@ -90,7 +90,7 @@ class AggregationUtilsTest(parameterized.TestCase):
 
   def test_split_aggregation_state_missing_stats_raises(self):
     stat_a = deterministic_metrics.SquaredError()
-    dummy_field = cx.wrap(np.array([1.0]))
+    dummy_field = cx.field(np.array([1.0]))
     agg_state = aggregation.AggregationState(
         sum_weighted_statistics={stat_a.unique_name: {'var_name': dummy_field}},
         sum_weights={stat_a.unique_name: {'var_name': dummy_field}},

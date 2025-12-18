@@ -108,21 +108,21 @@ class SphericalTransformsTest(parameterized.TestCase):
 
   @parameterized.parameters(
       dict(
-          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          f=cx.field(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
           truncation_rule='cubic',
           spherical_harmonics_method='fast',
           expected_modal_shape=(44, 23),
           expected_nodal_shape=(64, 32),
       ),
       dict(
-          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          f=cx.field(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
           truncation_rule='linear',
           spherical_harmonics_method='fast',
           expected_modal_shape=(64, 33),
           expected_nodal_shape=(64, 32),
       ),
       dict(
-          f=cx.wrap(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
+          f=cx.field(np.ones((64, 32)), coordinates.LonLatGrid.T21()),
           truncation_rule='linear',
           spherical_harmonics_method='real',
           expected_modal_shape=(63, 33),
@@ -172,7 +172,7 @@ class SphericalTransformsTest(parameterized.TestCase):
       grid = coordinates.LonLatGrid.T21(
           mesh=mesh, partition_schema_key='spatial'
       )
-      f = cx.wrap(np.ones(grid.shape), grid)
+      f = cx.field(np.ones(grid.shape), grid)
       modal_f = ylm_mapper.to_modal(f)
       restored_nodal_f = ylm_mapper.to_nodal(modal_f)
       expected_modal_grid = coordinates.SphericalHarmonicGrid.T21(
@@ -190,7 +190,7 @@ class SphericalTransformsTest(parameterized.TestCase):
       grid = coordinates.LonLatGrid.T21(
           mesh=mesh, partition_schema_key='spatial'
       )
-      f = cx.wrap(np.ones(grid.shape), grid)
+      f = cx.field(np.ones(grid.shape), grid)
       modal_f = ylm_mapper.to_modal(f)
       restored_nodal_f = ylm_mapper.to_nodal(modal_f)
       expected_modal_grid = coordinates.SphericalHarmonicGrid.TL31(
@@ -228,18 +228,18 @@ class GeometryMethodsTest(chex.TestCase):
     mask = self.dinosaur_grid.mask
     modal_data = jax.random.normal(key, self.ylm_grid.shape) * mask
     nodal_data = jax.random.normal(key, self.lon_lat_grid.shape)
-    self.modal_field = cx.wrap(modal_data, self.ylm_grid)
-    self.nodal_field = cx.wrap(nodal_data, self.lon_lat_grid)
+    self.modal_field = cx.field(modal_data, self.ylm_grid)
+    self.nodal_field = cx.field(nodal_data, self.lon_lat_grid)
     # For vector fields
     u_key, v_key = jax.random.split(key, 2)
     modal_data_u = jax.random.normal(u_key, self.ylm_grid.shape) * mask
     modal_data_v = jax.random.normal(v_key, self.ylm_grid.shape) * mask
-    self.modal_field_u = cx.wrap(modal_data_u, self.ylm_grid)
-    self.modal_field_v = cx.wrap(modal_data_v, self.ylm_grid)
+    self.modal_field_u = cx.field(modal_data_u, self.ylm_grid)
+    self.modal_field_v = cx.field(modal_data_v, self.ylm_grid)
     nodal_data_u = jax.random.normal(u_key, self.lon_lat_grid.shape)
     nodal_data_v = jax.random.normal(v_key, self.lon_lat_grid.shape)
-    self.nodal_field_u = cx.wrap(nodal_data_u, self.lon_lat_grid)
-    self.nodal_field_v = cx.wrap(nodal_data_v, self.lon_lat_grid)
+    self.nodal_field_u = cx.field(nodal_data_u, self.lon_lat_grid)
+    self.nodal_field_v = cx.field(nodal_data_v, self.lon_lat_grid)
 
   def test_laplacian(self):
     expected_data = self.dinosaur_grid.laplacian(self.modal_field.data)

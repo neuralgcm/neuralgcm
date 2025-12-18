@@ -105,7 +105,7 @@ class TimeDelta(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'timedelta': cx.wrap(self.deltas, self)}
+    return {'timedelta': cx.field(self.deltas, self)}
 
   def to_xarray(self) -> dict[str, xarray.Variable]:
     variables = super().to_xarray()
@@ -115,19 +115,19 @@ class TimeDelta(cx.Coordinate):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'timedelta':
-      return cx.NoCoordinateMatch(f'dimension {dim!r} != "timedelta"')
+      return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "timedelta"')
     if 'timedelta' not in coords:
-      return cx.NoCoordinateMatch('no associated coordinate for timedelta')
+      return cx.coords.NoCoordinateMatch('no associated coordinate for timedelta')
 
     data = coords['timedelta'].data
     if data.ndim != 1:
-      return cx.NoCoordinateMatch('timedelta coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch('timedelta coordinate is not a 1D array')
 
     if not np.issubdtype(data.dtype, np.timedelta64):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'data must be a timedelta array, got {data.dtype=}'
       )
 
@@ -231,14 +231,14 @@ class LonLatGrid(cx.Coordinate):
     lons = np.rad2deg(np.pad(self._ylm_grid.longitudes, (0, lon_pad)))
     lats = np.rad2deg(np.pad(self._ylm_grid.latitudes, (0, lat_pad)))
     return {
-        'longitude': cx.wrap(lons, cx.SelectedAxis(self, axis=0)),
-        'latitude': cx.wrap(lats, cx.SelectedAxis(self, axis=1)),
+        'longitude': cx.field(lons, cx.SelectedAxis(self, axis=0)),
+        'latitude': cx.field(lats, cx.SelectedAxis(self, axis=1)),
     }
 
   @functools.cached_property
   def cos_lat(self) -> cx.Field:
     padded_lats = np.pad(self._ylm_grid.latitudes, (0, self.lon_lat_padding[1]))
-    return cx.wrap(np.cos(padded_lats), cx.SelectedAxis(self, axis=1))
+    return cx.field(np.cos(padded_lats), cx.SelectedAxis(self, axis=1))
 
   def integrate(
       self,
@@ -452,23 +452,23 @@ class LonLatGrid(cx.Coordinate):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     if dims[:2] != ('longitude', 'latitude'):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           "leading dimensions are not ('longitude', 'latitude')"
       )
 
     if coords['longitude'].dims != ('longitude',):
-      return cx.NoCoordinateMatch('longitude is not a 1D coordinate')
+      return cx.coords.NoCoordinateMatch('longitude is not a 1D coordinate')
 
     if coords['latitude'].dims != ('latitude',):
-      return cx.NoCoordinateMatch('latitude is not a 1D coordinate')
+      return cx.coords.NoCoordinateMatch('latitude is not a 1D coordinate')
 
     lon = coords['longitude'].data
     lat = coords['latitude'].data
 
     if lon.max() < 2 * np.pi:
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'expected longitude values in degrees, got {lon}'
       )
 
@@ -494,14 +494,14 @@ class LonLatGrid(cx.Coordinate):
     )
     result_lat = np.rad2deg(result._ylm_grid.latitudes)
     if not np.allclose(result_lat, lat, atol=1e-3):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'inferred latitudes with spacing={latitude_spacing!r} do not '
           f' match coordinate data: {result_lat} vs {lat}'
       )
 
     result_lon = np.rad2deg(result._ylm_grid.longitudes)
     if not np.allclose(result_lon, lon, atol=1e-3):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           'inferred longitudes do not match coordinate data:'
           f' {result_lon} vs {lon}'
       )
@@ -548,12 +548,12 @@ class SphericalHarmonicGrid(cx.Coordinate):
     ms = np.pad(unpadded_ms, (0, m_pad))
     ls = np.pad(unpadded_ls, (0, l_pad))
     axes_fields = {
-        k: cx.wrap(v, cx.SelectedAxis(self, i))
+        k: cx.field(v, cx.SelectedAxis(self, i))
         for i, (k, v) in enumerate(zip(self.dims, [ms, ls]))
     }
     unpadded_mask = self._ylm_grid.mask
     mask = np.pad(unpadded_mask, ((0, m_pad), (0, l_pad)))
-    mask_field = cx.wrap(mask, self)
+    mask_field = cx.field(mask, self)
     return axes_fields | {'mask': mask_field}
 
   def add_constant(
@@ -563,7 +563,7 @@ class SphericalHarmonicGrid(cx.Coordinate):
   ) -> cx.Field:
     """Adds the constant `c` to the field `x` in the spectral basis."""
     if not cx.is_field(c):
-      c = cx.wrap(jnp.squeeze(c))
+      c = cx.field(jnp.squeeze(c))
     assert isinstance(c, cx.Field)  # make pytype happy.
     if c.positional_shape:
       raise ValueError(
@@ -801,19 +801,19 @@ class SphericalHarmonicGrid(cx.Coordinate):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
 
     if dims[:2] != ('longitude_wavenumber', 'total_wavenumber'):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           "leading dimensions are not ('longitude_wavenumber',"
           " 'total_wavenumber')"
       )
 
     if coords['longitude_wavenumber'].dims != ('longitude_wavenumber',):
-      return cx.NoCoordinateMatch('longitude_wavenumber is not a 1D coordinate')
+      return cx.coords.NoCoordinateMatch('longitude_wavenumber is not a 1D coordinate')
 
     if coords['total_wavenumber'].dims != ('total_wavenumber',):
-      return cx.NoCoordinateMatch('total_wavenumber is not a 1D coordinate')
+      return cx.coords.NoCoordinateMatch('total_wavenumber is not a 1D coordinate')
 
     longitude_wavenumbers = (coords.sizes['longitude_wavenumber'] + 1) // 2
     wavenumber_padding = coords['longitude_wavenumber'].attrs.get(
@@ -832,7 +832,7 @@ class SphericalHarmonicGrid(cx.Coordinate):
     expected = candidate.fields['longitude_wavenumber'].data
     got = coords['longitude_wavenumber'].data
     if not np.array_equal(expected, got):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           'inferred longitude wavenumbers do not match coordinate data:'
           f' {expected} vs {got}. Perhaps you attempted to restore coordinate '
           ' data from FastSphericalHarmonics, which does not support '
@@ -842,7 +842,7 @@ class SphericalHarmonicGrid(cx.Coordinate):
     expected = candidate.fields['total_wavenumber'].data
     got = coords['total_wavenumber'].data
     if not np.array_equal(expected, got):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'inferred total wavenumbers do not match coordinate data: {expected}'
           f' vs {got}. Perhaps you attempted to restore coordinate '
           ' data from FastSphericalHarmonics, which does not support '
@@ -890,8 +890,8 @@ class SigmaLevels(cx.Coordinate):
   def fields(self):
     boundaries, centers = self.boundaries, self.sigma_levels.centers
     return {
-        'sigma': cx.wrap(centers, self),
-        'sigma_boundaries': cx.wrap(boundaries, SigmaBoundaries(boundaries)),
+        'sigma': cx.field(centers, self),
+        'sigma_boundaries': cx.field(boundaries, SigmaBoundaries(boundaries)),
     }
 
   @functools.cached_property
@@ -987,19 +987,19 @@ class SigmaLevels(cx.Coordinate):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'sigma':
-      return cx.NoCoordinateMatch(f'dimension {dim!r} != "sigma"')
+      return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "sigma"')
 
     if coords['sigma'].ndim != 1:
-      return cx.NoCoordinateMatch('sigma coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch('sigma coordinate is not a 1D array')
 
     centers = coords['sigma'].data
     candidate = cls.from_centers(centers)
     actual_centers = candidate.sigma_levels.centers
     if not np.array_equal(actual_centers, centers):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           'inferred sigma boundaries do not exactly match coordinate data:'
           f' {actual_centers} vs {centers}.'
       )
@@ -1023,8 +1023,8 @@ class SigmaBoundaries(SigmaLevels):
   def fields(self):
     boundaries, centers = self.boundaries, self.sigma_levels.centers
     return {
-        'sigma_boundaries': cx.wrap(boundaries, self),
-        'sigma': cx.wrap(centers, SigmaLevels(boundaries)),
+        'sigma_boundaries': cx.field(boundaries, self),
+        'sigma': cx.field(centers, SigmaLevels(boundaries)),
     }
 
   def __eq__(self, other):
@@ -1046,10 +1046,10 @@ class SigmaBoundaries(SigmaLevels):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'sigma_boundaries':
-      return cx.NoCoordinateMatch(f'dimension {dim!r} != "sigma_boundaries"')
+      return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "sigma_boundaries"')
     sigma_dim = dim.removesuffix('_boundaries')
     return cls.from_sigma_levels(SigmaLevels.from_xarray((sigma_dim,), coords))
 
@@ -1085,7 +1085,7 @@ class PressureLevels(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'pressure': cx.wrap(self.centers, self)}
+    return {'pressure': cx.field(self.centers, self)}
 
   def asdict(self) -> dict[str, Any]:
     return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}
@@ -1163,21 +1163,21 @@ class PressureLevels(cx.Coordinate):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim not in {'level', 'pressure'}:
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'dimension {dim!r} is not "pressure" or "level"'
       )
     if coords[dim].ndim != 1:
-      return cx.NoCoordinateMatch('pressure coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch('pressure coordinate is not a 1D array')
     centers = coords[dim].data
     if not 0 < centers[0] < 100:
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'pressure levels must start between 0 and 100, got: {centers}'
       )
     if not 900 < centers[-1] < 1025:
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'pressure levels must end between 900 and 1025, got: {centers}'
       )
     return cls(centers=centers)
@@ -1225,9 +1225,9 @@ class HybridLevels(cx.Coordinate):
     a = (self.a_boundaries[:-1] + self.a_boundaries[1:]) / 2.0
     b = (self.b_boundaries[:-1] + self.b_boundaries[1:]) / 2.0
     return {
-        'hybrid': cx.wrap(np.arange(1, self.shape[0] + 1), self),
-        'a': cx.wrap(a, self),
-        'b': cx.wrap(b, self),
+        'hybrid': cx.field(np.arange(1, self.shape[0] + 1), self),
+        'a': cx.field(a, self),
+        'b': cx.field(b, self),
     }
 
   def asdict(self) -> dict[str, Any]:
@@ -1274,7 +1274,7 @@ class HybridLevels(cx.Coordinate):
     """Returns pressure at layer centers given `surface_pressure`."""
     a = self.fields['a'] * 100  # In Pascal.
     if sim_units is not None:
-      a = cx.wrap(sim_units.nondimensionalize(a.data * typing.units.Pa), self)
+      a = cx.field(sim_units.nondimensionalize(a.data * typing.units.Pa), self)
     return a + self.fields['b'] * surface_pressure
 
   def integrate_over_pressure(
@@ -1357,20 +1357,20 @@ class HybridLevels(cx.Coordinate):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'hybrid':
-      return cx.NoCoordinateMatch(f'dimension {dim!r} != "hybrid"')
+      return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "hybrid"')
 
     if 'hybrid' not in coords:
-      return cx.NoCoordinateMatch('no associated coordinate for "hybrid"')
+      return cx.coords.NoCoordinateMatch('no associated coordinate for "hybrid"')
 
     if coords['hybrid'].ndim != 1:
-      return cx.NoCoordinateMatch('"hybrid" coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch('"hybrid" coordinate is not a 1D array')
 
     attrs = coords['hybrid'].attrs
     if 'a_boundaries' not in attrs or 'b_boundaries' not in attrs:
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           'a_boundaries or b_boundaries not in "hybrid" attributes'
       )
 
@@ -1380,9 +1380,9 @@ class HybridLevels(cx.Coordinate):
     # Check that the hybrid coordinate is just an index.
     n_layers = len(a_boundaries) - 1
     if coords.sizes[dim] != n_layers:
-      return cx.NoCoordinateMatch('level dimension size mismatch')
+      return cx.coords.NoCoordinateMatch('level dimension size mismatch')
     if not np.array_equal(coords['hybrid'].data, np.arange(1, n_layers + 1)):
-      return cx.NoCoordinateMatch('hybrid coordinate is not a simple index')
+      return cx.coords.NoCoordinateMatch('hybrid coordinate is not a simple index')
 
     return cls(a_boundaries=a_boundaries, b_boundaries=b_boundaries)
 
@@ -1405,23 +1405,23 @@ class LayerLevels(cx.Coordinate):
 
   @property
   def fields(self):
-    return {self.name: cx.wrap(np.arange(self.n_layers), self)}
+    return {self.name: cx.field(np.arange(self.n_layers), self)}
 
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'layer_index':
-      return cx.NoCoordinateMatch(f'dimension {dim!r} != "layer_index"')
+      return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "layer_index"')
 
     if coords['layer_index'].ndim != 1:
-      return cx.NoCoordinateMatch('layer_index coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch('layer_index coordinate is not a 1D array')
 
     n_layers = coords.sizes['layer_index']
     got = coords['layer_index'].data
     if not np.array_equal(got, np.arange(n_layers)):
-      return cx.NoCoordinateMatch(
+      return cx.coords.NoCoordinateMatch(
           f'unexpected layer_index coordinate is not sequential integers: {got}'
       )
     return cls(n_layers=n_layers)
@@ -1468,7 +1468,7 @@ class SoilLevels(cx.Coordinate):
 
   @property
   def fields(self):
-    return {'soil_levels': cx.wrap(self.centers, self)}
+    return {'soil_levels': cx.field(self.centers, self)}
 
   def asdict(self) -> dict[str, Any]:
     return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}
@@ -1499,13 +1499,13 @@ class SoilLevels(cx.Coordinate):
       cls,
       dims: tuple[str, ...],
       coords: xarray.Coordinates,
-  ) -> Self | cx.NoCoordinateMatch:
+  ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'soil_levels':
-      return cx.NoCoordinateMatch(f'Leading dimension {dim!r} != "soil_levels"')
+      return cx.coords.NoCoordinateMatch(f'Leading dimension {dim!r} != "soil_levels"')
     name = dim
     if coords[name].ndim != 1:
-      return cx.NoCoordinateMatch('SoilLevels coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch('SoilLevels coordinate is not a 1D array')
     got = coords[name].data
     return cls(centers=got)
 

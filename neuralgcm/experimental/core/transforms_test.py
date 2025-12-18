@@ -35,9 +35,9 @@ class TransformsTest(parameterized.TestCase):
     select_transform = transforms.Select(regex_patterns='field_a|field_c')
     x = cx.SizedAxis('x', 3)
     inputs = {
-        'field_a': cx.wrap(np.array([1, 2, 3]), x),
-        'field_b': cx.wrap(np.array([4, 5, 6]), x),
-        'field_c': cx.wrap(np.array([7, 8, 9]), x),
+        'field_a': cx.field(np.array([1, 2, 3]), x),
+        'field_b': cx.field(np.array([4, 5, 6]), x),
+        'field_c': cx.field(np.array([7, 8, 9]), x),
     }
     actual = select_transform(inputs)
     expected = {
@@ -48,18 +48,18 @@ class TransformsTest(parameterized.TestCase):
 
   def test_sel(self):
     x = cx.LabeledAxis('x', np.array([0.1, 0.5, 1.0, 1.5]))
-    inputs = {'field_a': cx.wrap(np.arange(4, dtype=np.float32) * 10, x)}
+    inputs = {'field_a': cx.field(np.arange(4, dtype=np.float32) * 10, x)}
 
     with self.subTest('exact_match_no_method'):
       sel_transform = transforms.Sel(sel_arg={'x': 0.5})
       actual = sel_transform(inputs)
-      expected = {'field_a': cx.wrap(10.0)}
+      expected = {'field_a': cx.field(10.0)}
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('nearest_match'):
       sel_transform = transforms.Sel(sel_arg={'x': 0.55}, method='nearest')
       actual = sel_transform(inputs)
-      expected = {'field_a': cx.wrap(10.0)}
+      expected = {'field_a': cx.field(10.0)}
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('no_match_no_method_raises'):
@@ -81,13 +81,13 @@ class TransformsTest(parameterized.TestCase):
     x = cx.SizedAxis('x', 3)
     y = cx.SizedAxis('y', 2)
     inputs = {
-        'field_a': cx.wrap(np.array([1, 2, 3]), x),
-        'field_b': cx.wrap(np.ones((2, 3)), y, x),
+        'field_a': cx.field(np.array([1, 2, 3]), x),
+        'field_b': cx.field(np.ones((2, 3)), y, x),
     }
     actual = broadcast_transform(inputs)
     expected = {
-        'field_a': cx.wrap(np.array([[1, 2, 3], [1, 2, 3]]), y, x),
-        'field_b': cx.wrap(np.ones((2, 3)), y, x),
+        'field_a': cx.field(np.array([[1, 2, 3], [1, 2, 3]]), y, x),
+        'field_b': cx.field(np.ones((2, 3)), y, x),
     }
     chex.assert_trees_all_close(actual, expected)
 
@@ -95,17 +95,17 @@ class TransformsTest(parameterized.TestCase):
     b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 3)
     rng = jax.random.PRNGKey(0)
     data = 0.3 + 0.5 * jax.random.normal(rng, shape=(b.shape + x.shape))
-    inputs = {'data': cx.wrap(data, b, x)}
+    inputs = {'data': cx.field(data, b, x)}
     normalize = transforms.ShiftAndNormalize(
-        shift=cx.wrap(np.mean(data)),
-        scale=cx.wrap(np.std(data)),
+        shift=cx.field(np.mean(data)),
+        scale=cx.field(np.std(data)),
     )
     out = normalize(inputs)
     np.testing.assert_allclose(np.mean(out['data'].data), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.std(out['data'].data), 1.0, atol=1e-6)
     inverse_normalize = transforms.ShiftAndNormalize(
-        shift=cx.wrap(np.mean(data)),
-        scale=cx.wrap(np.std(data)),
+        shift=cx.field(np.mean(data)),
+        scale=cx.field(np.std(data)),
         reverse=True,
     )
     reconstructed = inverse_normalize(out)
@@ -123,19 +123,19 @@ class TransformsTest(parameterized.TestCase):
         transforms=[transforms.Select(regex_patterns=r'(?!time).*'), AddOne()]
     )
     inputs = {
-        'a': cx.wrap(np.array([1, 2, 3]), x),
-        'time': cx.wrap(np.pi),
+        'a': cx.field(np.array([1, 2, 3]), x),
+        'time': cx.field(np.pi),
     }
     actual = sequential(inputs)
-    expected = {'a': cx.wrap(np.array([2, 3, 4]), x)}
+    expected = {'a': cx.field(np.array([2, 3, 4]), x)}
     chex.assert_trees_all_close(actual, expected)
 
   def test_mask_by_threshold(self):
     x = cx.LabeledAxis('x', np.linspace(0, 1, 10))
     inputs = {
         'mask': x.fields['x'],  # will mask by values of x coordinates.
-        'u': cx.wrap(np.ones(x.shape), x),
-        'v': cx.wrap(np.arange(x.shape[0]), x),
+        'u': cx.field(np.ones(x.shape), x),
+        'v': cx.field(np.arange(x.shape[0]), x),
     }
     with self.subTest('_below'):
       mask = transforms.Mask(
@@ -169,8 +169,8 @@ class TransformsTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, 1, 10))
     inputs = {
         'mask': x.fields['x'] ** 2 < 0.64,
-        'u': cx.wrap(np.ones(x.shape), x),
-        'v': cx.wrap(np.arange(x.shape[0]), x),
+        'u': cx.field(np.ones(x.shape), x),
+        'v': cx.field(np.arange(x.shape[0]), x),
     }
     mask = transforms.Mask(
         mask_key='mask',
@@ -187,13 +187,13 @@ class TransformsTest(parameterized.TestCase):
   def test_mask_nan_to_0(self):
     x = cx.LabeledAxis('x', np.linspace(0, 1, 4))
     y = cx.SizedAxis('y', 10)
-    mask = cx.wrap(np.array([0.1, np.nan, 10.4, np.nan]), x)
-    one_hot_mask = cx.wrap(np.array([1.0, np.nan, 1.0, np.nan]), x)
+    mask = cx.field(np.array([0.1, np.nan, 10.4, np.nan]), x)
+    one_hot_mask = cx.field(np.array([1.0, np.nan, 1.0, np.nan]), x)
     inputs = {
         'mask': mask,
-        'nan_at_mask': one_hot_mask * cx.wrap(np.ones(x.shape + y.shape), x, y),
-        'no_nans': cx.wrap(np.arange(x.shape[0]), x),  # no nan in v.
-        'all_nans': cx.wrap(np.ones(x.shape) * np.nan, x),
+        'nan_at_mask': one_hot_mask * cx.field(np.ones(x.shape + y.shape), x, y),
+        'no_nans': cx.field(np.arange(x.shape[0]), x),  # no nan in v.
+        'all_nans': cx.field(np.ones(x.shape) * np.nan, x),
     }
     mask = transforms.Mask(
         mask_key='mask',
@@ -220,9 +220,9 @@ class TransformsTest(parameterized.TestCase):
     ylm_grid_31 = coordinates.SphericalHarmonicGrid.TL31()
     ylm_dims = 'longitude_wavenumber', 'total_wavenumber'
     inputs = {
-        'u': cx.wrap(np.ones(ylm_grid_21.shape), ylm_grid_21),
-        'v': cx.wrap(np.ones(ylm_grid_31.shape), ylm_grid_31),
-        'skipped': cx.wrap(np.ones(ylm_grid_21.shape), *ylm_dims),
+        'u': cx.field(np.ones(ylm_grid_21.shape), ylm_grid_21),
+        'v': cx.field(np.ones(ylm_grid_31.shape), ylm_grid_31),
+        'skipped': cx.field(np.ones(ylm_grid_21.shape), *ylm_dims),
     }
     ls_21 = ylm_grid_21.fields['total_wavenumber']
     ls_31 = ylm_grid_31.fields['total_wavenumber']
@@ -254,7 +254,7 @@ class TransformsTest(parameterized.TestCase):
     mesh = parallelism.Mesh()
     nodal_grid = coordinates.LonLatGrid.T21()
     inputs = {
-        'u': cx.wrap(np.ones(nodal_grid.shape), nodal_grid),
+        'u': cx.field(np.ones(nodal_grid.shape), nodal_grid),
     }
     with self.subTest('fixed_ylm_mapping_cubic'):
       ylm_grid = coordinates.SphericalHarmonicGrid.T21()
@@ -299,10 +299,10 @@ class TransformsTest(parameterized.TestCase):
     cubic_ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     linear_ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
     cubic_inputs = {
-        'u': cx.wrap(np.ones(cubic_ylm_grid.shape), cubic_ylm_grid),
+        'u': cx.field(np.ones(cubic_ylm_grid.shape), cubic_ylm_grid),
     }
     linear_inputs = {
-        'u': cx.wrap(np.ones(linear_ylm_grid.shape), linear_ylm_grid),
+        'u': cx.field(np.ones(linear_ylm_grid.shape), linear_ylm_grid),
     }
     grid = coordinates.LonLatGrid.T21()
     with self.subTest('fixed_ylm_mapping'):
@@ -338,16 +338,16 @@ class TransformsTest(parameterized.TestCase):
   def test_apply_to_keys(self):
     x = cx.SizedAxis('x', 3)
     inputs = {
-        'a': cx.wrap(np.array([1.0, 2.0, 3.0]), x),
-        'b': cx.wrap(np.array([4.0, 5.0, 6.0]), x),
+        'a': cx.field(np.array([1.0, 2.0, 3.0]), x),
+        'b': cx.field(np.array([4.0, 5.0, 6.0]), x),
     }
     shift_and_norm = transforms.ShiftAndNormalize(
-        shift=cx.wrap(1.0), scale=cx.wrap(2.0)
+        shift=cx.field(1.0), scale=cx.field(2.0)
     )
     apply_to_a = transforms.ApplyToKeys(transform=shift_and_norm, keys=['a'])
     actual = apply_to_a(inputs)
     expected = {
-        'a': cx.wrap(np.array([0.0, 0.5, 1.0]), x),
+        'a': cx.field(np.array([0.0, 0.5, 1.0]), x),
         'b': inputs['b'],
     }
     chex.assert_trees_all_close(actual, expected)
@@ -355,13 +355,13 @@ class TransformsTest(parameterized.TestCase):
   def test_apply_fn_to_keys(self):
     x = cx.SizedAxis('x', 3)
     inputs = {
-        'a': cx.wrap(np.array([1.0, 2.0, 3.0]), x),
-        'b': cx.wrap(np.array([4.0, 5.0, 6.0]), x),
+        'a': cx.field(np.array([1.0, 2.0, 3.0]), x),
+        'b': cx.field(np.array([4.0, 5.0, 6.0]), x),
     }
     double_fn = lambda x: x * 2.0
     apply_to_a = transforms.ApplyFnToKeys(double_fn, ['a'])
     actual = apply_to_a(inputs)
-    expected = {'a': cx.wrap(np.array([2.0, 4.0, 6.0]), x)}
+    expected = {'a': cx.field(np.array([2.0, 4.0, 6.0]), x)}
     chex.assert_trees_all_close(actual, expected)
 
     apply_to_b_keep_a = transforms.ApplyFnToKeys(
@@ -369,8 +369,8 @@ class TransformsTest(parameterized.TestCase):
     )
     actual = apply_to_b_keep_a(inputs)
     expected = {
-        'a': cx.wrap(np.array([1.0, 2.0, 3.0]), x),
-        'b': cx.wrap(np.array([8.0, 10.0, 12.0]), x),
+        'a': cx.field(np.array([1.0, 2.0, 3.0]), x),
+        'b': cx.field(np.array([8.0, 10.0, 12.0]), x),
     }
     chex.assert_trees_all_close(actual, expected)
 
@@ -384,7 +384,7 @@ class TransformsTest(parameterized.TestCase):
     to_modal = transforms.ToModal(ylm_map)
     time = cx.SizedAxis('time', 5)
     inputs = {
-        'u': cx.wrap(np.ones(time.shape + nodal_grid.shape), time, nodal_grid),
+        'u': cx.field(np.ones(time.shape + nodal_grid.shape), time, nodal_grid),
     }
     expected = to_modal(inputs)
     scan_transform = transforms.ApplyOverAxisWithScan(
@@ -396,11 +396,11 @@ class TransformsTest(parameterized.TestCase):
   def test_regrid_conservative(self):
     source_grid = coordinates.LonLatGrid.TL63()
     target_grid = coordinates.LonLatGrid.T21()
-    inputs = {'u': cx.wrap(np.ones(source_grid.shape), source_grid)}
+    inputs = {'u': cx.field(np.ones(source_grid.shape), source_grid)}
     transform = transforms.Regrid(
         regridder=interpolators.ConservativeRegridder(target_grid)
     )
-    expected = {'u': cx.wrap(np.ones(target_grid.shape), target_grid)}
+    expected = {'u': cx.field(np.ones(target_grid.shape), target_grid)}
     actual = transform(inputs)
     chex.assert_trees_all_close(actual, expected)
 
@@ -408,7 +408,7 @@ class TransformsTest(parameterized.TestCase):
     b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 7)
     rng = jax.random.PRNGKey(0)
     inputs = {
-        's': cx.wrap(jax.random.normal(rng, shape=(b.shape + x.shape)), b, x),
+        's': cx.field(jax.random.normal(rng, shape=(b.shape + x.shape)), b, x),
     }
 
     feature_shapes = {'s': tuple()}
@@ -423,7 +423,7 @@ class TransformsTest(parameterized.TestCase):
     _ = streaming_norm_scalar(inputs)
     streaming_norm_scalar.update_stats = False
     out = streaming_norm_scalar(inputs)['s']
-    self.assertEqual(cx.get_coordinate(out), cx.compose_coordinates(b, x))
+    self.assertEqual(cx.get_coordinate(out), cx.coords.compose(b, x))
     np.testing.assert_allclose(np.mean(out.data), 0.0, atol=1e-6)
     np.testing.assert_allclose(out.data.var(ddof=1), 1.0, atol=1e-6)
 
@@ -435,8 +435,8 @@ class TransformsTest(parameterized.TestCase):
     x_size = 11
     x = cx.SizedAxis('x', x_size)
     inputs = {
-        'in_range': cx.wrap(np.linspace(-scale * 0.3, scale * 0.3, x_size), x),
-        'out_of_range': cx.wrap(np.linspace(-scale * 2, scale * 2, x_size), x),
+        'in_range': cx.field(np.linspace(-scale * 0.3, scale * 0.3, x_size), x),
+        'out_of_range': cx.field(np.linspace(-scale * 2, scale * 2, x_size), x),
     }
     transform_instance = transforms.TanhClip(scale=scale)
     clipped = transform_instance(inputs)
@@ -455,7 +455,7 @@ class TransformsTest(parameterized.TestCase):
     b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 7)
     rng = jax.random.PRNGKey(0)
     inputs = {
-        's': cx.wrap(jax.random.normal(rng, shape=(b.shape + x.shape)), b, x),
+        's': cx.field(jax.random.normal(rng, shape=(b.shape + x.shape)), b, x),
     }
 
     feature_shapes = {'s': x.shape}
@@ -470,7 +470,7 @@ class TransformsTest(parameterized.TestCase):
     _ = streaming_norm_scalar(inputs)
     streaming_norm_scalar.update_stats = False
     out = streaming_norm_scalar(inputs)['s']
-    self.assertEqual(cx.get_coordinate(out), cx.compose_coordinates(b, x))
+    self.assertEqual(cx.get_coordinate(out), cx.coords.compose(b, x))
     np.testing.assert_allclose(
         np.mean(out.data, axis=0), np.zeros(x.shape), atol=1e-6
     )
@@ -557,8 +557,8 @@ class TransformsTest(parameterized.TestCase):
     hres_grid = coordinates.LonLatGrid.TL63()
     coarse_grid = coordinates.LonLatGrid.T21()
     keys = ['precip', 'temp']
-    hres_ones = cx.wrap(np.ones(hres_grid.shape, dtype=np.float32), hres_grid)
-    coarse_twos = cx.wrap(
+    hres_ones = cx.field(np.ones(hres_grid.shape, dtype=np.float32), hres_grid)
+    coarse_twos = cx.field(
         np.ones(coarse_grid.shape, dtype=np.float32) * 2.0, coarse_grid
     )
     inputs = {
@@ -623,13 +623,13 @@ class TransformsTest(parameterized.TestCase):
     rng = jax.random.PRNGKey(42)
     u_data = jax.random.normal(rng, nodal_grid.shape)
     v_data = jax.random.normal(rng, nodal_grid.shape)
-    u = cx.wrap(u_data, nodal_grid)
-    v = cx.wrap(v_data, nodal_grid)
+    u = cx.field(u_data, nodal_grid)
+    v = cx.field(v_data, nodal_grid)
     nodal_inputs = {'u_component_of_wind': u, 'v_component_of_wind': v}
     to_modal = transforms.ToModal(ylm_map)
     l_ax = modal_grid.axes[1]
     scales = np.exp(-0.5 * np.arange(l_ax.sizes['total_wavenumber']))
-    scales = cx.wrap(scales, l_ax)
+    scales = cx.field(scales, l_ax)
     filter_fn = lambda in_dict: {k: v * scales for k, v in in_dict.items()}
     to_nodal = transforms.ToNodal(ylm_map)
     nodal_inputs = to_nodal(filter_fn(to_modal(nodal_inputs)))
@@ -663,8 +663,8 @@ class TransformsTest(parameterized.TestCase):
     evap_key = 'evaporation'
 
     with self.subTest('diagnose_precip'):
-      p_plus_e_val = cx.wrap(np.array([-2.0, -1.0, 0.5, 1.0]), x)
-      evap_in = cx.wrap(np.array([-3.0, -0.5, -1.0, 0.2]), x)
+      p_plus_e_val = cx.field(np.array([-2.0, -1.0, 0.5, 1.0]), x)
+      evap_in = cx.field(np.array([-3.0, -0.5, -1.0, 0.2]), x)
       p_plus_e_diag = diagnostics.InstantDiagnostic(
           extract=lambda *args, **kwargs: {
               'precipitation_plus_evaporation_rate': p_plus_e_val
@@ -684,17 +684,17 @@ class TransformsTest(parameterized.TestCase):
       # constrained_evap=min([-3,-2],[-0.5,-1],[-1,0],[0.2,0])
       expected_evap_val = np.array([-3.0, -1.0, -1.0, 0.0])
       cx.testing.assert_fields_allclose(
-          actual[evap_key], cx.wrap(expected_evap_val, x)
+          actual[evap_key], cx.field(expected_evap_val, x)
       )
       # diagnosed precip = p_plus_e - constrained_evap
       expected_precip_val = p_plus_e_val.data - expected_evap_val
       cx.testing.assert_fields_allclose(
-          actual[precip_key], cx.wrap(expected_precip_val, x)
+          actual[precip_key], cx.field(expected_precip_val, x)
       )
 
     with self.subTest('diagnose_evap'):
-      p_plus_e_val = cx.wrap(np.array([-1.0, 0.5, 2.0, 3.0]), x)
-      precip_in = cx.wrap(np.array([-2.0, -1.0, 1.0, 4.0]), x)
+      p_plus_e_val = cx.field(np.array([-1.0, 0.5, 2.0, 3.0]), x)
+      precip_in = cx.field(np.array([-2.0, -1.0, 1.0, 4.0]), x)
       p_plus_e_diag = diagnostics.InstantDiagnostic(
           extract=lambda *args, **kwargs: {
               'precipitation_plus_evaporation_rate': p_plus_e_val
@@ -714,11 +714,11 @@ class TransformsTest(parameterized.TestCase):
       # constrained_precip = max([-2,0],[-1,0.5],[1,2],[4,3]) = [0, 0.5, 2, 4]
       expected_precip_val = np.array([0.0, 0.5, 2.0, 4.0])
       cx.testing.assert_fields_allclose(
-          actual[precip_key], cx.wrap(expected_precip_val, x)
+          actual[precip_key], cx.field(expected_precip_val, x)
       )
       expected_evap_val = p_plus_e_val.data - expected_precip_val
       cx.testing.assert_fields_allclose(
-          actual[evap_key], cx.wrap(expected_evap_val, x)
+          actual[evap_key], cx.field(expected_evap_val, x)
       )
 
 

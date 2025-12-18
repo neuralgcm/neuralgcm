@@ -174,7 +174,7 @@ class ConservativeRegridder:
 
     x = inputs
     lon_lat_dims = ('longitude', 'latitude')
-    source_grid = cx.compose_coordinates(*[x.axes.get(d) for d in lon_lat_dims])
+    source_grid = cx.coords.compose(*[x.axes.get(d) for d in lon_lat_dims])
     x = inputs.untag(source_grid)
     regrid_fn = cx.cmap(self._regrid_2d, x.named_axes)
     x = regrid_fn(x, source_grid)

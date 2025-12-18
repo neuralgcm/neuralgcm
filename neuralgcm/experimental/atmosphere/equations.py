@@ -52,10 +52,10 @@ def get_temperature_linearization_transform(
       raise ValueError(
           '`levels` must be provided for sequence `ref_temperatures`'
       )
-    ref_temp_field = cx.wrap(np.array(ref_temperatures), levels)
+    ref_temp_field = cx.field(np.array(ref_temperatures), levels)
 
   def linearize_fn(abs_temp: cx.Field) -> cx.Field:
-    canonical = cx.canonicalize_coordinates(abs_temp.coordinate)
+    canonical = cx.coords.canonicalize(abs_temp.coordinate)
     ylm_set = set(
         c for c in canonical if isinstance(c, coordinates.SphericalHarmonicGrid)
     )
@@ -96,11 +96,11 @@ def get_temperature_delinearization_transform(
       raise ValueError(
           '`levels` must be provided for sequence `ref_temperatures`'
       )
-    ref_temp_field = cx.wrap(np.array(ref_temperatures), levels)
+    ref_temp_field = cx.field(np.array(ref_temperatures), levels)
 
   def delinearize_fn(del_temp: cx.Field) -> cx.Field:
     """Applies delinearization to `del_temp` field."""
-    canonical = cx.canonicalize_coordinates(del_temp.coordinate)
+    canonical = cx.coords.canonicalize(del_temp.coordinate)
     ylm_set = set(
         c for c in canonical if isinstance(c, coordinates.SphericalHarmonicGrid)
     )
@@ -259,19 +259,19 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
   ) -> dict[str, cx.Field]:
     sigma_levels, ylm_grid = self.levels, self.ylm_map.modal_grid
     tracers = {
-        k: cx.wrap(state.tracers[k], sigma_levels, ylm_grid)
+        k: cx.field(state.tracers[k], sigma_levels, ylm_grid)
         for k in self.tracer_names
     }
     volume_field_names = ['divergence', 'vorticity', 'temperature_variation']
     volume_fields = {
-        k: cx.wrap(getattr(state, k), sigma_levels, ylm_grid)
+        k: cx.field(getattr(state, k), sigma_levels, ylm_grid)
         for k in volume_field_names
     }
     if is_tendency:
       volume_fields = self.linear_to_absolute_rename(volume_fields)
     else:
       volume_fields = self.delinearize_transform(volume_fields)
-    lsp = cx.wrap(jnp.squeeze(state.log_surface_pressure, axis=0), ylm_grid)
+    lsp = cx.field(jnp.squeeze(state.log_surface_pressure, axis=0), ylm_grid)
     return volume_fields | tracers | {'log_surface_pressure': lsp}
 
   def explicit_terms(self, state: dict[str, cx.Field]) -> dict[str, cx.Field]:
@@ -415,11 +415,11 @@ class HeldSuarezForcing(time_integrators.ExplicitODE):
     levels, ylm_grid = self.levels, self.ylm_map.modal_grid
     volume_field_names = ['divergence', 'vorticity', 'temperature_variation']
     volume_fields = {
-        k: cx.wrap(getattr(state, k), levels, ylm_grid)
+        k: cx.field(getattr(state, k), levels, ylm_grid)
         for k in volume_field_names
     }
     volume_fields = self.linear_to_absolute_rename(volume_fields)
-    lsp = cx.wrap(jnp.squeeze(state.log_surface_pressure, axis=0), ylm_grid)
+    lsp = cx.field(jnp.squeeze(state.log_surface_pressure, axis=0), ylm_grid)
     return volume_fields | {'log_surface_pressure': lsp}
 
   def explicit_terms(

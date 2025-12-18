@@ -578,7 +578,7 @@ class Nondimensionalize(TransformABC):
 
   def _nondim_field(self, x: cx.Field, k: str):
     nondim_value = self._nondim_numeric(x.data, k)
-    return cx.wrap_like(nondim_value, x)
+    return cx.field(nondim_value, x.coordinate)
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     result = {}
@@ -608,7 +608,7 @@ class Redimensionalize(TransformABC):
 
   def _redim_field(self, x: cx.Field, k: str):
     dim_value = self._redim_numeric(x.data, k)
-    return cx.wrap_like(dim_value, x)
+    return cx.field(dim_value, x.coordinate)
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     result = {}
@@ -822,7 +822,7 @@ class StreamingStatsNormalization(TransformABC):
     )
     results = {}
     for k, v in inputs.items():
-      results[k] = cx.wrap_like(transforms[k](v.data, self.update_stats), v)
+      results[k] = cx.field(transforms[k](v.data, self.update_stats), v.coordinate)
     return results
 
   @classmethod

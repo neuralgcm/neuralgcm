@@ -1322,7 +1322,7 @@ class SphericalPositionalEncoder(nnx.Module):
   ) -> cx.Field:
     """Returns positional encodings for `inputs` over dimensions `dims`."""
     lon_lat_dims = ('longitude', 'latitude')
-    grid = cx.compose_coordinates(*[inputs.axes.get(d) for d in lon_lat_dims])
+    grid = cx.coords.compose(*[inputs.axes.get(d) for d in lon_lat_dims])
     if not isinstance(grid, coordinates.LonLatGrid):
       raise ValueError(
           'SphericalPositionalEncoder generates encoding for LonLatGrid data '
@@ -1331,7 +1331,7 @@ class SphericalPositionalEncoder(nnx.Module):
     l_max, l_min = self.l_max, self.l_min
     ylm_map = self.ylm_mapper.ylm_map(grid)
     pe = spherical_harmonic_lon_lat_encodings(ylm_map, l_max, l_min)
-    return cx.wrap(pe, encoding_dim_tag, grid)
+    return cx.field(pe, encoding_dim_tag, grid)
 
 
 @nnx_compat.dataclass

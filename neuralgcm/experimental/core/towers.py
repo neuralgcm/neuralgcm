@@ -124,7 +124,7 @@ class TransformerTower(nnx.Module):
   ) -> tuple[cx.Field | None, cx.Field | None]:
     if f is None:
       return None, None
-    axis = cx.tmp_axis_name(f)
+    axis = cx.new_axis_name(f)
     pe = pos_enc(f, dims[1:], axis).untag(axis, *dims[1:]) if pos_enc else None
     return f.untag(*dims), pe
 

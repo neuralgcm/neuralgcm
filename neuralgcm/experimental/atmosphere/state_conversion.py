@@ -43,7 +43,7 @@ def get_geopotential(
         inputs['specific_cloud_ice_water_content'].data
         + inputs['specific_cloud_liquid_water_content'].data
     )
-  canonical = cx.canonicalize_coordinates(temperature.coordinate)
+  canonical = cx.coords.canonicalize(temperature.coordinate)
   levels = [c for c in canonical if isinstance(c, coordinates.SigmaLevels)]
   if len(levels) != 1:
     raise ValueError(
@@ -66,7 +66,7 @@ def get_geopotential(
       specific_humidity=specific_humidity.data,
       clouds=clouds,
   )
-  geopotential = cx.wrap(geopotential, coord)
+  geopotential = cx.field(geopotential, coord)
   return geopotential
 
 

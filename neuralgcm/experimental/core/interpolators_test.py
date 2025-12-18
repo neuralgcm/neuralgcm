@@ -35,7 +35,7 @@ class InterpolatorsTest(parameterized.TestCase):
   )
   def test_spectral_regridder(self, target_grid, input_coords):
     regridder = interpolators.SpectralRegridder(target_grid)
-    inputs = cx.wrap(np.ones(input_coords.shape), input_coords)
+    inputs = cx.field(np.ones(input_coords.shape), input_coords)
     outputs = regridder(inputs)
     output_coords = cx.get_coordinate(outputs)
     self.assertEqual(output_coords, target_grid)
@@ -49,12 +49,12 @@ class InterpolatorsTest(parameterized.TestCase):
       ),
   )
   def test_conservative_regridder(self, input_grid, extra_coords, target_grid):
-    input_coords = cx.compose_coordinates(*extra_coords, input_grid)
-    inputs = cx.wrap(np.ones(input_coords.shape), input_coords)
+    input_coords = cx.coords.compose(*extra_coords, input_grid)
+    inputs = cx.field(np.ones(input_coords.shape), input_coords)
     regridder = interpolators.ConservativeRegridder(target_grid)
     outputs = regridder(inputs)
     actual_out_coords = cx.get_coordinate(outputs)
-    expected_out_coords = cx.compose_coordinates(*extra_coords, target_grid)
+    expected_out_coords = cx.coords.compose(*extra_coords, target_grid)
     self.assertEqual(actual_out_coords, expected_out_coords)
 
 

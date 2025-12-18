@@ -268,7 +268,7 @@ class TransformerLayersTest(parameterized.TestCase):
     lmin = 0
     pe = transformer_layers.SphericalPositionalEncoder(ylm_mapper, lmax, lmin)
     grid = coordinates.LonLatGrid.T21()
-    inputs = cx.wrap(np.ones(grid.shape), grid)
+    inputs = cx.field(np.ones(grid.shape), grid)
     pos_encoding = pe(inputs, ('longitude', 'latitude'))
     self.assertEqual(pos_encoding.shape, (lmax**2 - lmin**2,) + grid.shape)
 

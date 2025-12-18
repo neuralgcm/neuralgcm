@@ -57,7 +57,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     radiation_features = feature_transforms.RadiationFeatures(grid=grid)
     self._test_feature_module(
         radiation_features,
-        {'time': cx.wrap(jdt.to_datetime('2025-01-09T15:00'))},
+        {'time': cx.field(jdt.to_datetime('2025-01-09T15:00'))},
     )
 
   def test_latitude_features(self):
@@ -116,12 +116,12 @@ class FeatureTransformsTest(parameterized.TestCase):
         }
     }
     timedelta = coordinates.TimeDelta(np.arange(2, dtype='timedelta64[h]'))
-    grid_trajectory = cx.compose_coordinates(timedelta, grid)
+    grid_trajectory = cx.coords.compose(timedelta, grid)
     time = jdt.to_datetime('2000-01-01') + jdt.to_timedelta(
         12, 'h'
     ) * np.arange(timedelta.shape[0])
-    in_data = jax.tree.map(lambda x: cx.wrap(x, grid_trajectory), data)
-    in_data['abc']['time'] = cx.wrap(time, timedelta)
+    in_data = jax.tree.map(lambda x: cx.field(x, grid_trajectory), data)
+    in_data['abc']['time'] = cx.field(time, timedelta)
     dynamic_input.update_dynamic_inputs(in_data)
     with self.subTest('two_keys'):
       dynamic_input_features = feature_transforms.DynamicInputFeatures(
@@ -129,7 +129,7 @@ class FeatureTransformsTest(parameterized.TestCase):
       )
       self._test_feature_module(
           dynamic_input_features,
-          {'time': cx.wrap(jdt.to_datetime('2000-01-01T06'))},
+          {'time': cx.field(jdt.to_datetime('2000-01-01T06'))},
       )
 
   def test_dynamic_input_features_inder_jit(self):
@@ -147,12 +147,12 @@ class FeatureTransformsTest(parameterized.TestCase):
         }
     }
     timedelta = coordinates.TimeDelta(np.arange(2, dtype='timedelta64[h]'))
-    grid_trajectory = cx.compose_coordinates(timedelta, grid)
+    grid_trajectory = cx.coords.compose(timedelta, grid)
     time = jdt.to_datetime('2000-01-01') + jdt.to_timedelta(
         12, 'h'
     ) * np.arange(timedelta.shape[0])
-    in_data = jax.tree.map(lambda x: cx.wrap(x, grid_trajectory), data)
-    in_data['abc']['time'] = cx.wrap(time, timedelta)
+    in_data = jax.tree.map(lambda x: cx.field(x, grid_trajectory), data)
+    in_data['abc']['time'] = cx.field(time, timedelta)
 
     @nnx.jit
     def run(module, inputs, dynamic_inputs):
@@ -164,7 +164,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     )
     run(
         dynamic_input_features,
-        {'time': cx.wrap(jdt.to_datetime('2000-01-01T06'))},
+        {'time': cx.field(jdt.to_datetime('2000-01-01T06'))},
         in_data,
     )
 
@@ -172,7 +172,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     z = cx.SizedAxis('z', 8)
     grid = coordinates.LonLatGrid.T21()
     coords = {
-        'surface_embedings': cx.compose_coordinates(z, grid),
+        'surface_embedings': cx.coords.compose(z, grid),
         'land_sea_mask': grid,
     }
     coord_features = feature_transforms.CoordFeatures(coords, rngs=nnx.Rngs(1))

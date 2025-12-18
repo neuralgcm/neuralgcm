@@ -115,7 +115,7 @@ def time_field_from_xarray_coords(
     raise ValueError(f'No `time` in {coords.keys()=}')
   timedelta = coordinates.TimeDelta.from_xarray(('timedelta',), coords)
   time = coords['time']
-  return cx.wrap(jdt.to_datetime(time.data), timedelta)
+  return cx.field(jdt.to_datetime(time.data), timedelta)
 
 
 def xarray_to_fields(
@@ -185,7 +185,7 @@ def validate_xarray_inputs(
       if k in dataset:
         spec, _ = data_specs.unwrap_optional(var_spec)
         c_types = data_specs.get_coord_types(spec)
-        coords[data_key][k] = cx.coordinates_from_xarray(dataset[k], c_types)
+        coords[data_key][k] = cx.coords.from_xarray(dataset[k], c_types)
   data_specs.validate_inputs(coords, in_spec)
 
 
@@ -278,7 +278,7 @@ def read_sharded_from_xarray(
       return data_specs.OptionalSpec(wrap_coordinate_shard(coord_or_spec.spec))
     elif isinstance(coord_or_spec, data_specs.CoordSpec):
       coord = coord_or_spec.coord
-      coord = cx.compose_coordinates(*[_wrap_axis(ax) for ax in coord.axes])
+      coord = cx.coords.compose(*[_wrap_axis(ax) for ax in coord.axes])
       exact = data_specs.AxisMatchRules.EXACT
       replaced = data_specs.AxisMatchRules.REPLACED
       replace_dict = {exact: replaced}

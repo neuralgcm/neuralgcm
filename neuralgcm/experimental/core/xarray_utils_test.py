@@ -54,7 +54,7 @@ class CustomCoord(cx.Coordinate):
   @property
   def fields(self):
     return {
-        'pi': cx.wrap((np.pi * np.ones(self.sz)) ** np.arange(self.sz), self)
+        'pi': cx.field((np.pi * np.ones(self.sz)) ** np.arange(self.sz), self)
     }
 
   @classmethod
@@ -75,17 +75,17 @@ class ReadFromXarrayTest(parameterized.TestCase):
     volume_variables = ['geopotential', 'temperature']
     surface_variables = ['sst', '2m_temperature']
 
-    ones_like = lambda coord: cx.wrap(np.ones(coord.shape), coord)
-    volume_coord = cx.compose_coordinates(timedelta, levels, grid)
-    surface_coord = cx.compose_coordinates(timedelta, grid)
+    ones_like = lambda coord: cx.field(np.ones(coord.shape), coord)
+    volume_coord = cx.coords.compose(timedelta, levels, grid)
+    surface_coord = cx.coords.compose(timedelta, grid)
     volume_fields = {k: ones_like(volume_coord) for k in volume_variables}
     surface_fields = {k: ones_like(surface_coord) for k in surface_variables}
     other_fields = {
-        'global_scalar': cx.wrap(np.linspace(0, np.pi, 3), timedelta)
+        'global_scalar': cx.field(np.linspace(0, np.pi, 3), timedelta)
     }
 
     t0 = np.datetime64('2024-01-01')
-    time = cx.wrap(jdt.to_datetime(t0 + timedelta_values), timedelta)
+    time = cx.field(jdt.to_datetime(t0 + timedelta_values), timedelta)
     volume_fields['time'] = time
     surface_fields['time'] = time
     other_fields['time'] = time
@@ -116,9 +116,9 @@ class ReadFromXarrayTest(parameterized.TestCase):
   def test_read_from_xarray_with_basic_inputs_spec(self):
     t = coordinates.TimeDelta(np.arange(3) * np.timedelta64(1, 'h'))
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
-    tx = cx.compose_coordinates(t, x)
+    tx = cx.coords.compose(t, x)
     rng = np.random.RandomState(42)
-    fields = {'u': cx.wrap(rng.randn(*tx.shape), tx)}
+    fields = {'u': cx.field(rng.randn(*tx.shape), tx)}
     nested_data = xarray_utils.nested_fields_to_xarray({'data': fields})
     inputs_spec = {'data': {'u': tx}}
 
@@ -129,7 +129,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
     rng = np.random.RandomState(42)
-    fields = {'u': cx.wrap(rng.randn(*x.shape), x)}
+    fields = {'u': cx.field(rng.randn(*x.shape), x)}
     nested_data = xarray_utils.nested_fields_to_xarray({'data': fields})
     inputs_spec = {
         'data': {
@@ -145,7 +145,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
     rng = np.random.RandomState(42)
-    fields = {'u': cx.wrap(rng.randn(*x.shape), x)}
+    fields = {'u': cx.field(rng.randn(*x.shape), x)}
     nested_data = xarray_utils.nested_fields_to_xarray({'data': fields})
     inputs_spec = {'data': {'u': x, 'v': y}}
     with self.assertRaisesRegex(
@@ -157,7 +157,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
     rng = np.random.RandomState(42)
-    fields = {'u': cx.wrap(rng.randn(*x.shape), x)}
+    fields = {'u': cx.field(rng.randn(*x.shape), x)}
     nested_data = xarray_utils.nested_fields_to_xarray({'data': fields})
     inputs_spec = {'data': {'u': y}}
     with self.assertRaisesRegex(ValueError, '.* have different dims'):
@@ -166,8 +166,8 @@ class ReadFromXarrayTest(parameterized.TestCase):
   def test_read_from_xarray_new_coord_type(self):
     """Tests that read_fields_from_xarray works with new coordinate types."""
     custom_axis = CustomCoord(sz=3)
-    coords = cx.compose_coordinates(custom_axis, self.grid)
-    ones_like = lambda coord: cx.wrap(np.ones(coord.shape), coord)
+    coords = cx.coords.compose(custom_axis, self.grid)
+    ones_like = lambda coord: cx.field(np.ones(coord.shape), coord)
     a_b_vars = {'a': ones_like(coords), 'b': ones_like(custom_axis)}
     c_d_vars = {'c': ones_like(cx.Scalar()), 'd': ones_like(custom_axis)}
     e_f_vars = {'e': ones_like(coords), 'f': ones_like(cx.Scalar())}
@@ -186,7 +186,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
 
   def test_read_sharded_from_xarray(self):
     """Tests that read_sharded_from_xarray handles different shard sizes."""
-    coords = cx.compose_coordinates(self.levels, self.grid)
+    coords = cx.coords.compose(self.levels, self.grid)
     input_specs = {
         'era5': {
             'temperature': coords,
@@ -213,7 +213,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
           parallelism.CoordinateShard(ax, mesh_shape, partition)
           for ax in coord.axes
       ]
-      return cx.compose_coordinates(*axes)
+      return cx.coords.compose(*axes)
 
     with self.subTest('single_shard'):
       field_partition = {}
@@ -222,7 +222,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
       )
       self.assert_data_and_specs_keys_match(actual, input_specs)
       expected_coord = _with_shard_axes(
-          cx.compose_coordinates(self.timedelta, coords),
+          cx.coords.compose(self.timedelta, coords),
           mesh_shape,
           field_partition,
       )
@@ -243,7 +243,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
       )
       self.assert_data_and_specs_keys_match(actual, input_specs)
       expected_coord = _with_shard_axes(
-          cx.compose_coordinates(self.timedelta, coords),
+          cx.coords.compose(self.timedelta, coords),
           mesh_shape,
           field_partition,
       )
@@ -264,7 +264,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
       )
       self.assert_data_and_specs_keys_match(actual, input_specs)
       expected_coord = _with_shard_axes(
-          cx.compose_coordinates(self.timedelta, coords),
+          cx.coords.compose(self.timedelta, coords),
           mesh_shape,
           field_partition,
       )
@@ -285,7 +285,7 @@ class ReadFromXarrayTest(parameterized.TestCase):
       )
       self.assert_data_and_specs_keys_match(actual, input_specs)
       expected_coord = _with_shard_axes(
-          cx.compose_coordinates(self.timedelta, coords),
+          cx.coords.compose(self.timedelta, coords),
           mesh_shape,
           field_partition,
       )
@@ -300,12 +300,12 @@ class ValidateXarrayInputsTest(parameterized.TestCase):
     t = coordinates.TimeDelta(np.arange(3) * np.timedelta64(1, 'h'))
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
-    tx = cx.compose_coordinates(t, x)
-    ty = cx.compose_coordinates(t, y)
+    tx = cx.coords.compose(t, x)
+    ty = cx.coords.compose(t, y)
     rng = np.random.RandomState(42)
     fields = {
-        'u': cx.wrap(rng.randn(*tx.shape), tx),
-        'v': cx.wrap(rng.randn(*ty.shape), ty),
+        'u': cx.field(rng.randn(*tx.shape), tx),
+        'v': cx.field(rng.randn(*ty.shape), ty),
     }
     inputs = xarray_utils.nested_fields_to_xarray({'data_key': fields})
 
@@ -316,7 +316,7 @@ class ValidateXarrayInputsTest(parameterized.TestCase):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     wrong_x = cx.LabeledAxis('x', np.linspace(0, np.e, num=4))
     rng = np.random.RandomState(42)
-    fields = {'u': cx.wrap(rng.randn(*x.shape), x)}
+    fields = {'u': cx.field(rng.randn(*x.shape), x)}
     inputs = xarray_utils.nested_fields_to_xarray({'data_key': fields})
 
     inputs_spec = {'data_key': {'u': wrong_x}}

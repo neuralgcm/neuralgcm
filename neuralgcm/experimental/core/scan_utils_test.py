@@ -94,7 +94,7 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     grid = coordinates.LonLatGrid.TL31()
     data_dt = np.timedelta64(6, 'h')
     timedelta = coordinates.TimeDelta(range_from_one(4) * data_dt)
-    with_td = lambda c: cx.compose_coordinates(timedelta, c)
+    with_td = lambda c: cx.coords.compose(timedelta, c)
     inputs_spec = {'data': {'u': with_td(x), 'v': with_td(grid)}}
     actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec, dt)
     # empty dict is the `dt` scan step.
@@ -115,7 +115,7 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     x = cx.SizedAxis('x', 4)
     data_dt = np.timedelta64(6, 'h')
     timedelta = coordinates.TimeDelta(range_from_one(6) * data_dt)
-    with_td = lambda c: cx.compose_coordinates(timedelta, c)
+    with_td = lambda c: cx.coords.compose(timedelta, c)
     inputs_spec = {'data': {'u': with_td(x)}}
     actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec)
     expected_scan_specs = ({'data': {'u': with_td(x)}},)
@@ -140,8 +140,8 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     l_steps = s_steps // long_factor
     short_td = coordinates.TimeDelta(range_from_one(s_steps) * data_dt)
     long_td = coordinates.TimeDelta(range_from_one(l_steps) * data_long_dt)
-    with_s_td = lambda c: cx.compose_coordinates(short_td, c)
-    with_l_td = lambda c: cx.compose_coordinates(long_td, c)
+    with_s_td = lambda c: cx.coords.compose(short_td, c)
+    with_l_td = lambda c: cx.coords.compose(long_td, c)
     inputs_spec = {'data': {'u': with_s_td(x), 'sst': with_l_td(grid)}}
     actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec, dt)
     expected_scan_specs = (
@@ -169,7 +169,7 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     dt = np.timedelta64(2, 'h')
     data_dt = np.timedelta64(3, 'h')
     timedelta = coordinates.TimeDelta(range_from_one(4) * data_dt)
-    with_td = lambda c: cx.compose_coordinates(timedelta, c)
+    with_td = lambda c: cx.coords.compose(timedelta, c)
     inputs_spec = {'data': {'u': with_td(x)}}
     with self.assertRaises(ValueError):
       scan_utils.nested_scan_specs(inputs_spec, dt)
@@ -184,8 +184,8 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     data_long_dt = np.timedelta64(15, 'h')  # not divisible by data_dt
     small_timedelta = coordinates.TimeDelta(range_from_one(5) * data_dt)
     large_timedelta = coordinates.TimeDelta(range_from_one(2) * data_long_dt)
-    with_s_td = lambda c: cx.compose_coordinates(small_timedelta, c)
-    with_l_td = lambda c: cx.compose_coordinates(large_timedelta, c)
+    with_s_td = lambda c: cx.coords.compose(small_timedelta, c)
+    with_l_td = lambda c: cx.coords.compose(large_timedelta, c)
     inputs_spec = {'data': {'u': with_s_td(x), 'sst': with_l_td(grid)}}
     with self.assertRaises(ValueError):
       scan_utils.nested_scan_specs(inputs_spec, dt)
@@ -200,8 +200,8 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     data_long_dt = np.timedelta64(12, 'h')
     small_timedelta = coordinates.TimeDelta(range_from_one(4) * data_dt)
     large_timedelta = coordinates.TimeDelta(range_from_one(3) * data_long_dt)
-    with_s_td = lambda c: cx.compose_coordinates(small_timedelta, c)
-    with_l_td = lambda c: cx.compose_coordinates(large_timedelta, c)
+    with_s_td = lambda c: cx.coords.compose(small_timedelta, c)
+    with_l_td = lambda c: cx.coords.compose(large_timedelta, c)
     inputs_spec = {'data': {'u': with_s_td(x), 'sst': with_l_td(grid)}}
     with self.assertRaises(ValueError):
       scan_utils.nested_scan_specs(inputs_spec, dt)
@@ -222,8 +222,8 @@ class NestDataForScansUtilsTest(parameterized.TestCase):
     x = cx.SizedAxis('x', 4)
     data_dt = np.timedelta64(6, 'h')
     timedelta = coordinates.TimeDelta(range_from_one(4) * data_dt)
-    with_td = lambda c: cx.compose_coordinates(timedelta, c)
-    ones_like = lambda c: cx.wrap(np.ones(c.shape), c)
+    with_td = lambda c: cx.coords.compose(timedelta, c)
+    ones_like = lambda c: cx.field(np.ones(c.shape), c)
     inputs = {'data': {'u': ones_like(with_td(x))}}
     with self.subTest('smaller_dt'):
       nested_data = scan_utils.nest_data_for_scans(inputs, dt)
@@ -253,7 +253,7 @@ class NestDataForScansUtilsTest(parameterized.TestCase):
     a_td = coordinates.TimeDelta(range_from_one(full_td / a_dt) * a_dt)
     b_td = coordinates.TimeDelta(range_from_one(full_td / b_dt) * b_dt)
     c_td = coordinates.TimeDelta(range_from_one(full_td / c_dt) * c_dt)
-    ones_like = lambda *cs: cx.wrap(
+    ones_like = lambda *cs: cx.field(
         np.ones(sum([c.shape for c in cs], start=())), *cs
     )
     inputs = {
@@ -301,17 +301,17 @@ class NestedScanExampleTest(parameterized.TestCase):
     x_td = make_time_axis(data_x_dt)
     inputs_spec = {
         'snapshots': {
-            'a': cx.compose_coordinates(a_td),
-            'b': cx.compose_coordinates(b_td),
+            'a': cx.coords.compose(a_td),
+            'b': cx.coords.compose(b_td),
         },
-        'averaged': {'x': cx.compose_coordinates(x_td)},
+        'averaged': {'x': cx.coords.compose(x_td)},
     }
 
     scan_steps = scan_utils.nested_scan_steps(inputs_spec, dt)
     self.assertEqual(scan_steps, (6, 4, 2, 5))
     nested_scan_specs = scan_utils.nested_scan_specs(inputs_spec, dt)
     is_coord = lambda c: isinstance(c, cx.Coordinate)
-    remove_timedelta = lambda c: cx.compose_coordinates(
+    remove_timedelta = lambda c: cx.coords.compose(
         *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
     )
     # In training experiment queries do not contain timedeltas to begin with.
@@ -339,10 +339,10 @@ class NestedScanExampleTest(parameterized.TestCase):
     # Outputs contain `arange` with time granularity specified by inputs_spec.
     expected_fields = {
         'snapshots': {
-            'a': cx.wrap(range_from_one(240 // 6) * 6, a_td),
-            'b': cx.wrap(range_from_one(240 // 24) * 24, b_td),
+            'a': cx.field(range_from_one(240 // 6) * 6, a_td),
+            'b': cx.field(range_from_one(240 // 24) * 24, b_td),
         },
-        'averaged': {'x': cx.wrap(range_from_one(240 // 48) * 48, x_td)},
+        'averaged': {'x': cx.field(range_from_one(240 // 48) * 48, x_td)},
     }
     expected_flat_data = jax.tree.map(
         lambda x: x.data, expected_fields, is_leaf=cx.is_field

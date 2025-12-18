@@ -30,7 +30,7 @@ class BoundariesTest(parameterized.TestCase):
     grid = coordinates.LonLatGrid.T21()  # [64, 32].
     grid_sizes = np.prod(grid.shape)
     # reshape to lat,lon and transpose to make range increment along longitude.
-    f = cx.wrap(np.arange(grid_sizes).reshape(grid.shape[::-1]).T, grid)
+    f = cx.field(np.arange(grid_sizes).reshape(grid.shape[::-1]).T, grid)
     pad_sizes = {'longitude': (1, 1), 'latitude': (2, 2)}
     padded_f = bc.pad(f, pad_sizes)
 
@@ -93,7 +93,7 @@ class BoundariesTest(parameterized.TestCase):
     data = jax.random.normal(rng, grid.shape)
 
     with self.subTest('on_field_inputs'):
-      f = cx.wrap(data, grid)
+      f = cx.field(data, grid)
       padded = bc.pad(f, pad_sizes)
       self.assertEqual(padded.shape, expected_padded_shape)
       trimmed = bc.trim(padded)

@@ -146,7 +146,7 @@ class Evaluator(Generic[M]):
       )
     if agg_states is None:
       agg_states = self.evaluate(predictions, targets)
-    total_loss = cx.wrap(0.0)
+    total_loss = cx.field(0.0)
     for loss_key, loss in sorted(self.metrics.items()):
       assert isinstance(loss, base.Loss)  # make pytype happy.
       metric_values = agg_states[loss_key].metric_values(loss)
@@ -375,7 +375,7 @@ class NestedEvaluators:
       raise TypeError('evaluate_total() requires all evaluators to be losses.')
     if agg_states is None:
       agg_states = self.evaluate(predictions, targets)
-    total_loss = cx.wrap(0.0)
+    total_loss = cx.field(0.0)
     weights = self.evaluator_weights or {}
     for key, states in sorted(agg_states.items()):
       evaluator = self.evaluators.get(key, self.default_evaluator)

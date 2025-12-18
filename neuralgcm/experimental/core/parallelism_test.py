@@ -126,8 +126,8 @@ class MeshTest(parameterized.TestCase):
         spmd_mesh=spmd_mesh, field_partitions=field_partitions
     )
     shape = (16, 8, 14)
-    input_level_field = cx.wrap(np.ones(shape), 'level', 'lon', 'lat')
-    input_layer_field = cx.wrap(np.ones(shape), 'layer', 'lon', 'lat')
+    input_level_field = cx.field(np.ones(shape), 'level', 'lon', 'lat')
+    input_layer_field = cx.field(np.ones(shape), 'layer', 'lon', 'lat')
 
     field_vertical = mesh.with_sharding_constraint(
         input_level_field, 'vertical'
@@ -164,10 +164,10 @@ class MeshTest(parameterized.TestCase):
     )
     input_pytree = {
         'a': np.ones((16, 7)),
-        'b': cx.wrap(np.ones((16, 7)), 'level', 'y'),
+        'b': cx.field(np.ones((16, 7)), 'level', 'y'),
         'c': np.zeros((32, 7)),
-        'd': cx.wrap(np.zeros((2, 16, 7)), 'b', 'level', 'x'),
-        'e': cx.wrap(np.arange(32), 'layer'),
+        'd': cx.field(np.zeros((2, 16, 7)), 'b', 'level', 'x'),
+        'e': cx.field(np.arange(32), 'layer'),
     }
     sharded_pytree = mesh.with_sharding_constraint(input_pytree, 'vertical')
     a_shard_shape = sharded_pytree['a'].sharding.shard_shape((16, 7))

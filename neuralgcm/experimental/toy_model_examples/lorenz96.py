@@ -157,10 +157,10 @@ class Lorenz96WithTwoScales(Lorenz96Base):
 
   def __post_init__(self):
     ks, js = self.k_axis, self.j_axis
-    kjs = cx.compose_coordinates(ks, js)
-    self.x = typing.Prognostic(cx.wrap(jnp.zeros(ks.shape), ks))
-    self.y = typing.Prognostic(cx.wrap(jnp.zeros(kjs.shape), kjs))
-    self.time = typing.Prognostic(cx.wrap(jdt.Datetime(jdt.Timedelta())))
+    kjs = cx.coords.compose(ks, js)
+    self.x = typing.Prognostic(cx.field(jnp.zeros(ks.shape), ks))
+    self.y = typing.Prognostic(cx.field(jnp.zeros(kjs.shape), kjs))
+    self.time = typing.Prognostic(cx.field(jdt.Datetime(jdt.Timedelta())))
     super().__post_init__()
 
   @module_utils.ensure_unchanged_state_structure
@@ -247,9 +247,9 @@ class Lorenz96(Lorenz96Base):
 
   def __post_init__(self):
     self.x = typing.Prognostic(
-        cx.wrap(jnp.zeros(self.k_axis.shape), self.k_axis)
+        cx.field(jnp.zeros(self.k_axis.shape), self.k_axis)
     )
-    self.time = typing.Prognostic(cx.wrap(jdt.Datetime(jdt.Timedelta())))
+    self.time = typing.Prognostic(cx.field(jdt.Datetime(jdt.Timedelta())))
     super().__post_init__()
 
   @module_utils.ensure_unchanged_state_structure
@@ -287,9 +287,9 @@ class Lorenz96FastMode(Lorenz96Base):
   time: typing.Prognostic = dataclasses.field(init=False)
 
   def __post_init__(self):
-    kjs = cx.compose_coordinates(self.k_axis, self.j_axis)
-    self.y = typing.Prognostic(cx.wrap(jnp.zeros(kjs.shape), kjs))
-    self.time = typing.Prognostic(cx.wrap(jdt.Datetime(jdt.Timedelta())))
+    kjs = cx.coords.compose(self.k_axis, self.j_axis)
+    self.y = typing.Prognostic(cx.field(jnp.zeros(kjs.shape), kjs))
+    self.time = typing.Prognostic(cx.field(jdt.Datetime(jdt.Timedelta())))
     super().__post_init__()
 
   @module_utils.ensure_unchanged_state_structure
@@ -303,7 +303,7 @@ class Lorenz96FastMode(Lorenz96Base):
     c, b = self.c, self.b
     y, time = self.y.value, self.time.value
     y_dot_fn = cx.cpmap(functools.partial(lorenz96_y_term, b=b, c=c))
-    kjs = cx.compose_coordinates(self.k_axis, self.j_axis)
+    kjs = cx.coords.compose(self.k_axis, self.j_axis)
     y_ode = time_integrators.ExplicitODE.from_functions(
         lambda s: y_dot_fn(s.untag(kjs)).tag(kjs)
     )

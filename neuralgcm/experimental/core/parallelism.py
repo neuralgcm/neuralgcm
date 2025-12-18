@@ -132,8 +132,8 @@ class CoordinateShard(cx.Coordinate):
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
-  ) -> Self | cx.NoCoordinateMatch:
-    return cx.NoCoordinateMatch(
+  ) -> Self | cx.coords.NoCoordinateMatch:
+    return cx.coords.NoCoordinateMatch(
         'CoordinateShard cannot be deterministically inferred from xarray.'
     )
 
@@ -141,9 +141,9 @@ class CoordinateShard(cx.Coordinate):
 def get_unsharded(coordinate: cx.Coordinate) -> cx.Coordinate:
   """Returns the unsharded coordinate of a CoordinateShard."""
   unsharded = []
-  for c in cx.canonicalize_coordinates(coordinate):
+  for c in cx.coords.canonicalize(coordinate):
     unsharded.append(c.coordinate if isinstance(c, CoordinateShard) else c)
-  return cx.compose_coordinates(*unsharded)
+  return cx.coords.compose(*unsharded)
 
 
 def rearrange_spmd_mesh(

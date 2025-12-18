@@ -89,7 +89,7 @@ class UniformUncorrelated(RandomProcessModule):
     self.maxval = maxval
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
-    self.rng_step = Randomness(cx.wrap(0))
+    self.rng_step = Randomness(cx.field(0))
     self.core = Randomness(self._sample_core(k))
 
   def _sample_core(self, rng: cx.Field) -> cx.Field:
@@ -106,7 +106,7 @@ class UniformUncorrelated(RandomProcessModule):
   def unconditional_sample(self, rng: cx.Field) -> None:
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
     self.state_rng.set_value(rng)
-    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
     self.core.set_value(self._sample_core(k))
 
   def advance(self) -> None:
@@ -142,7 +142,7 @@ class NormalUncorrelated(RandomProcessModule):
     self.std = std
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
-    self.rng_step = Randomness(cx.wrap(0))
+    self.rng_step = Randomness(cx.field(0))
     self.core = Randomness(self._sample_core(k))
 
   def _sample_core(self, rng: cx.Field) -> cx.Field:
@@ -156,7 +156,7 @@ class NormalUncorrelated(RandomProcessModule):
   def unconditional_sample(self, rng: cx.Field):
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
     self.state_rng.set_value(rng)
-    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
     self.core.set_value(self._sample_core(k))
 
   def advance(self):
@@ -389,7 +389,7 @@ class GaussianRandomField(RandomProcessModule):
     self.ylm_map = ylm_map
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
-    self.rng_step = Randomness(cx.wrap(0))
+    self.rng_step = Randomness(cx.field(0))
     self.core = Randomness(
         cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid)
     )
@@ -398,7 +398,7 @@ class GaussianRandomField(RandomProcessModule):
     """Returns a randomly initialized state for the autoregressive process."""
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
     self.state_rng.set_value(rng)
-    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
     self.core.set_value(cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid))
 
   def advance(self) -> None:
@@ -484,7 +484,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     # Initializing the state of the process.
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
-    self.rng_step = Randomness(cx.wrap(0))
+    self.rng_step = Randomness(cx.field(0))
     self.core = Randomness(self._sample_core(k))
 
   @property
@@ -504,7 +504,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
   def unconditional_sample(self, rng: cx.Field) -> None:
     k, next_rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rng)
     self.state_rng.set_value(next_rng)
-    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
     self.core.set_value(self._sample_core(k))
 
   def advance(self) -> None:

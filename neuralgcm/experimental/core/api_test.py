@@ -48,8 +48,8 @@ class MockModel(api.Model):
 
   def __post_init__(self):
     self.prognostics = typing.Prognostic({
-        'time': cx.wrap(jdt.Datetime.from_isoformat('2000-01-01')),
-        self.prognostic_var_key: cx.wrap(np.zeros(self.x.shape), self.x),
+        'time': cx.field(jdt.Datetime.from_isoformat('2000-01-01')),
+        self.prognostic_var_key: cx.field(np.zeros(self.x.shape), self.x),
     })
 
   @module_utils.ensure_unchanged_state_structure
@@ -128,31 +128,31 @@ class ModelApiTest(parameterized.TestCase):
     as_jnp = lambda x: jax.tree.map(jnp.asarray, x)
     self.inputs = as_jnp({
         'prognostics': {
-            'population': cx.wrap(np.ones(self.x.shape), self.x),
-            'time': cx.wrap(self.t0),
+            'population': cx.field(np.ones(self.x.shape), self.x),
+            'time': cx.field(self.t0),
         }
     })
     self.dynamic_inputs = as_jnp({
         'modulation': {
-            'modulation': cx.wrap(
+            'modulation': cx.field(
                 np.ones(self.timedelta.shape + self.x.shape),
                 self.timedelta,
                 self.x,
             ),
-            'time': cx.wrap(self.t0 + self.timedelta.deltas, self.timedelta),
+            'time': cx.field(self.t0 + self.timedelta.deltas, self.timedelta),
         },
     })
     self.batch_axis = cx.SizedAxis('batch', 5)
     self.ensemble_axis = cx.SizedAxis('ensemble', 3)
     self.batched_inputs = jax.tree.map(
         lambda x: x.broadcast_like(
-            cx.compose_coordinates(self.batch_axis, x.coordinate)
+            cx.coords.compose(self.batch_axis, x.coordinate)
         ),
         self.inputs,
         is_leaf=cx.is_field,
     )
-    self.rng = cx.wrap(jax.random.key(0), cx.Scalar())
-    self.ensemble_rng = cx.wrap(
+    self.rng = cx.field(jax.random.key(0), cx.Scalar())
+    self.ensemble_rng = cx.field(
         jax.random.split(jax.random.key(0), self.ensemble_axis.size),
         self.ensemble_axis,
     )
@@ -197,7 +197,7 @@ class ModelApiTest(parameterized.TestCase):
     obs = v_model.observe(self.query)
     self.assertEqual(
         obs['prognostics']['population'].coordinate,
-        cx.compose_coordinates(self.batch_axis, self.x),
+        cx.coords.compose(self.batch_axis, self.x),
     )
 
   def test_ensemble_vectorized_api_methods(self):
@@ -218,7 +218,7 @@ class ModelApiTest(parameterized.TestCase):
     obs = v_model.observe(self.query)
     self.assertEqual(
         obs['prognostics']['population'].coordinate,
-        cx.compose_coordinates(self.ensemble_axis, self.x),
+        cx.coords.compose(self.ensemble_axis, self.x),
     )
 
   def test_raises_on_pytree_state_change(self):
@@ -261,22 +261,22 @@ class InferenceModelApiTest(parameterized.TestCase):
     )
     self.inputs = {
         'prognostics': {
-            'population': cx.wrap(np.ones(self.x.shape), self.x),
-            'time': cx.wrap(self.t0),
+            'population': cx.field(np.ones(self.x.shape), self.x),
+            'time': cx.field(self.t0),
         }
     }
     self.dynamic_inputs = {
         'modulation': {
-            'modulation': cx.wrap(
+            'modulation': cx.field(
                 np.ones(self.timedelta.shape + self.x.shape),
                 self.timedelta,
                 self.x,
             ),
-            'time': cx.wrap(self.t0 + self.timedelta.deltas, self.timedelta),
+            'time': cx.field(self.t0 + self.timedelta.deltas, self.timedelta),
         },
     }
     self.query = {'prognostics': {'population': self.x}}
-    self.rng = cx.wrap(jax.random.key(0))
+    self.rng = cx.field(jax.random.key(0))
 
   def test_api_methods(self):
     """Tests assimilate, advance, and observe methods."""

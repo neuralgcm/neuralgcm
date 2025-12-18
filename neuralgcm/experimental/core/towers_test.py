@@ -38,7 +38,7 @@ class ForwardTowerTest(parameterized.TestCase):
     super().setUp()
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SigmaLevels.equidistant(12)
-    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.coord = cx.coords.compose(self.levels, self.grid)
 
   def test_mlp_over_grid_default_constructor(self):
     rngs = nnx.Rngs(0)
@@ -52,7 +52,7 @@ class ForwardTowerTest(parameterized.TestCase):
         neural_net=mlp,
     )
     # Note: inputs must be compatible with the `mlp`.
-    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    inputs = cx.field(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
     out = tower(inputs)
     self.assertEqual(out.shape, (13,) + self.grid.shape)
     self.assertEqual(out.dims, ('dout',) + self.grid.dims)
@@ -73,7 +73,7 @@ class ForwardTowerTest(parameterized.TestCase):
         neural_net_factory=mlp_factory,
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    inputs = cx.field(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
     out = tower(inputs)
     self.assertEqual(out.shape, (13,) + self.grid.shape)
     self.assertEqual(out.dims, ('dout',) + self.grid.dims)
@@ -94,7 +94,7 @@ class ForwardTowerTest(parameterized.TestCase):
         neural_net_factory=cnn_level_factory,
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(jnp.ones((6,) + self.coord.shape), 'din', self.coord)
+    inputs = cx.field(jnp.ones((6,) + self.coord.shape), 'din', self.coord)
     out = tower(inputs)
     self.assertEqual(out.shape, (4,) + self.coord.shape)
     self.assertEqual(out.dims, ('dout',) + self.coord.dims)
@@ -117,10 +117,10 @@ class ForwardTowerTest(parameterized.TestCase):
         neural_net_factory=cnn_lon_lat_factory,
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(jnp.ones(self.coord.shape), self.coord)
+    inputs = cx.field(jnp.ones(self.coord.shape), self.coord)
     out = tower(inputs)
     self.assertEqual(out.shape, level_bounds.shape + self.grid.shape)
-    expected_coord = cx.compose_coordinates(level_bounds, self.grid)
+    expected_coord = cx.coords.compose(level_bounds, self.grid)
     self.assertEqual(cx.get_coordinate(out), expected_coord)
 
   def test_epd_over_batch_coords(self):
@@ -148,7 +148,7 @@ class ForwardTowerTest(parameterized.TestCase):
         neural_net_factory=epd_factory,
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(jnp.ones((2, 6) + self.grid.shape), 'b', 'd', self.grid)
+    inputs = cx.field(jnp.ones((2, 6) + self.grid.shape), 'b', 'd', self.grid)
     out = tower(inputs)
     self.assertEqual(out.shape, (2, 2) + self.grid.shape)
     self.assertEqual(out.dims, ('b', 'dout') + self.grid.dims)
@@ -169,7 +169,7 @@ class ForwardTowerTest(parameterized.TestCase):
         neural_net_factory=cnn_level_factory,
         rngs=nnx.Rngs(0),
     )
-    transposed_inputs = cx.wrap(  # despite suitable shape, axes are misaligned.
+    transposed_inputs = cx.field(  # despite suitable shape, axes are misaligned.
         jnp.ones(self.levels.shape + (8,) + self.grid.shape),
         self.levels,
         'd',
@@ -186,7 +186,7 @@ class TransformerTowerTest(parameterized.TestCase):
     super().setUp()
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SigmaLevels.equidistant(12)
-    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.coord = cx.coords.compose(self.levels, self.grid)
 
   def test_transformer_blocks_over_levels(self):
     input_size, output_size, num_heads = 6, 3, 2
@@ -213,14 +213,14 @@ class TransformerTowerTest(parameterized.TestCase):
         positional_encoder=None,
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(
+    inputs = cx.field(
         jnp.ones(din.shape + self.levels.shape + vectorized_x.shape),
         din,
         self.levels,
         vectorized_x,
     )
     out = tower(inputs)
-    expected_out_coord = cx.compose_coordinates(dout, self.levels, vectorized_x)
+    expected_out_coord = cx.coords.compose(dout, self.levels, vectorized_x)
     self.assertEqual(cx.get_coordinate(out), expected_out_coord)
     x_slice_0 = cx.cmap(lambda x: x[0])(out.untag(vectorized_x)).data
     x_slice_1 = cx.cmap(lambda x: x[1])(out.untag(vectorized_x)).data
@@ -250,15 +250,15 @@ class TransformerTowerTest(parameterized.TestCase):
         latents_in_dims=('din', latents_levels),
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(
+    inputs = cx.field(
         jnp.ones((input_size,) + self.levels.shape), 'din', self.levels
     )
-    latents = cx.wrap(
+    latents = cx.field(
         jnp.ones((input_size,) + latents_levels.shape), 'din', latents_levels
     )
     out = tower(inputs, latents=latents)
     dout = cx.DummyAxis('dout', output_size)
-    expected_out_coord = cx.compose_coordinates(dout, self.levels)
+    expected_out_coord = cx.coords.compose(dout, self.levels)
     self.assertEqual(cx.get_coordinate(out), expected_out_coord)
 
   def test_transformer_blocks_raises_on_inconsistent_vectorized_dims(self):
@@ -286,14 +286,14 @@ class TransformerTowerTest(parameterized.TestCase):
         rngs=nnx.Rngs(0),
     )
     vectorize_axis_1 = cx.SizedAxis('x', 3)
-    inputs = cx.wrap(
+    inputs = cx.field(
         jnp.ones((input_size,) + self.levels.shape + vectorize_axis_1.shape),
         'din',
         self.levels,
         vectorize_axis_1,
     )
     vectorize_axis_2 = cx.SizedAxis('y', 3)
-    latents = cx.wrap(
+    latents = cx.field(
         jnp.ones((input_size,) + latents_levels.shape + vectorize_axis_2.shape),
         'din',
         latents_levels,
@@ -341,12 +341,12 @@ class TransformerTowerTest(parameterized.TestCase):
         positional_encoder=positional_encoder,
         rngs=rngs,
     )
-    inputs = cx.wrap(
+    inputs = cx.field(
         jnp.ones((input_size,) + self.grid.shape), 'din', self.grid
     )
     out = tower(inputs)
     dout = cx.DummyAxis('dout', output_size)
-    expected_out_coord = cx.compose_coordinates(dout, self.grid)
+    expected_out_coord = cx.coords.compose(dout, self.grid)
     self.assertEqual(cx.get_coordinate(out), expected_out_coord)
 
 

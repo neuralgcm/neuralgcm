@@ -33,7 +33,7 @@ def _add_dummy_timedelta(
   """Adds a dummy timedelta dimension to all fields in a pytree."""
   t_del = coordinates.TimeDelta(np.zeros(1) * np.timedelta64(1, 'h'))
   add_td = lambda f: f.broadcast_like(
-      cx.compose_coordinates(t_del, f.coordinate)
+      cx.coords.compose(t_del, f.coordinate)
   )
   return jax.tree.map(add_td, inputs, is_leaf=cx.is_field)
 
@@ -46,8 +46,8 @@ def _make_x_l96_inputs(
   x_init = abs(10 * np.sin(np.linspace(0, 13 * 2 * np.pi, k.sizes['k'])))
   inputs = {
       'slow': {
-          'x': cx.wrap(x_init[None, :], dt, k),
-          'time': cx.wrap(t0[None], dt),
+          'x': cx.field(x_init[None, :], dt, k),
+          'time': cx.field(t0[None], dt),
       }
   }
   return inputs
@@ -58,12 +58,12 @@ def _make_y_l96_inputs(
 ) -> dict[str, dict[str, cx.Field]]:
   """Helper to generate 'fast' inputs for Lorenz96 models."""
   dt = coordinates.TimeDelta(np.zeros(1) * np.timedelta64(1, 'h'))
-  kj = cx.compose_coordinates(k, j)
+  kj = cx.coords.compose(k, j)
   rng = np.random.RandomState(0)
   inputs = {
       'fast': {
-          'y': cx.wrap(rng.uniform(-0.5, 0.5, dt.shape + kj.shape), dt, kj),
-          'time': cx.wrap(t0[None], dt),
+          'y': cx.field(rng.uniform(-0.5, 0.5, dt.shape + kj.shape), dt, kj),
+          'time': cx.field(t0[None], dt),
       }
   }
   return inputs
@@ -88,7 +88,7 @@ class Lorenz96Test(parameterized.TestCase):
   def test_lorenz96_with_two_scales(self):
     """Tests Lorenz96WithTwoScales model methods produce expected outputs."""
     k, j, t0 = self.k, self.j, self.t0
-    kj = cx.compose_coordinates(k, j)
+    kj = cx.coords.compose(k, j)
     l96_model = lorenz96.Lorenz96WithTwoScales(k_axis=k, j_axis=j)
     self.assertEqual(l96_model.x.coordinate, k)
     self.assertEqual(l96_model.y.coordinate, kj)
@@ -120,7 +120,7 @@ class Lorenz96Test(parameterized.TestCase):
     self.assertEqual(l96_model.x.coordinate, k)
 
     inputs = _make_x_l96_inputs(k, t0)
-    key = cx.wrap(jax.random.key(0))
+    key = cx.field(jax.random.key(0))
     l96_model.initialize_random_processes(key)
     l96_model.assimilate(inputs)
     self.assertEqual(l96_model.x.coordinate, k)
@@ -134,7 +134,7 @@ class Lorenz96Test(parameterized.TestCase):
   def test_lorenz96_fast_mode(self):
     """Tests Lorenz96FastMode model methods produce expected outputs."""
     k, j, t0 = self.k, self.j, self.t0
-    kj = cx.compose_coordinates(k, j)
+    kj = cx.coords.compose(k, j)
     l96_model = lorenz96.Lorenz96FastMode(k_axis=k, j_axis=j)
     self.assertEqual(l96_model.y.coordinate, kj)
 

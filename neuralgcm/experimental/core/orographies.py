@@ -73,19 +73,18 @@ class ModalOrography(nnx.Module):
     nodal_orography = xarray_utils.xarray_nondimensionalize(
         nodal_orography, sim_units
     )
+    grid = data_ylm_map.nodal_grid
     nodal_orography = xarray_utils.field_from_xarray(nodal_orography)
-    nodal_orography = nodal_orography.unwrap(data_ylm_map.nodal_grid)
+    nodal_orography.untag(grid).tag(grid)  # ensure that coordinates match.
     if not isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       nodal_orography = spatial_filter(nodal_orography)
-    modal_orography = data_ylm_map.to_modal_array(nodal_orography)
+    modal_orography = data_ylm_map.to_modal(nodal_orography)
     interpolator = interpolators.SpectralRegridder(self.ylm_map.modal_grid)
-    modal_orography = interpolator(
-        cx.field(modal_orography, data_ylm_map.modal_grid)
-    )
-    modal_orography = modal_orography.unwrap(self.ylm_map.modal_grid)
+    modal_orography = interpolator(modal_orography)
     if isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       modal_orography = spatial_filter.filter_modal(modal_orography)
-    self.orography.set_value(modal_orography[
+    modal_orography_data = modal_orography.data
+    self.orography.set_value(modal_orography_data[
         self.ylm_map.modal_grid.fields['mask'].data
     ])
 
@@ -157,9 +156,8 @@ class Orography(nnx.Module):
         nodal_orography, sim_units
     )
     nodal_orography = xarray_utils.field_from_xarray(nodal_orography)
-    data_grid = cx.get_coordinate(nodal_orography)
-    nodal_orography = nodal_orography.data
+    data_grid = nodal_orography.coordinate
     nodal_orography = spatial_filter(nodal_orography)
     if data_grid != self.grid:
       raise ValueError(f'{data_grid=} does not match {self.grid=}.')
-    self.orography.set_value(nodal_orography)
+    self.orography.set_value(nodal_orography.data)

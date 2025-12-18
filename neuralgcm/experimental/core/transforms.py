@@ -99,24 +99,36 @@ def _masked_nan_to_num(
     x: cx.Field, mask: cx.Field, num: float = 0.0
 ) -> cx.Field:
   """Replaces NaNs in `x` with `num` where mask is True."""
-
   mask_coord = cx.get_coordinate(mask)
   masked_nan_to_num = lambda x, m: jnp.where(m, jnp.nan_to_num(x, nan=num), x)
   result = cx.cpmap(masked_nan_to_num)(*cx.untag([x, mask], mask_coord))
   return result.tag(mask_coord)
 
 
-ApplyMaskMethods = Literal['multiply', 'nan_to_0']
+def _masked_to_mean(x: cx.Field, mask: cx.Field) -> cx.Field:
+  """Replaces masked entries in `x` with the mean of non-masked values."""
+  mask_coord = cx.get_coordinate(mask)
+  mean_over_valid_fn = lambda x, m: jnp.mean(x, where=~m)
+  mean_values = cx.cmap(mean_over_valid_fn)(*cx.untag([x, mask], mask_coord))
+  replace_masked_with_mean = lambda x, means, mask: jnp.where(mask, means, x)
+  result = cx.cpmap(replace_masked_with_mean)(
+      x.untag(mask_coord), mean_values, mask.untag(mask_coord)
+  )
+  return result.tag(mask_coord)
+
+
+ApplyMaskMethods = Literal['multiply', 'nan_to_0', 'nan_to_mean']
 ComputeMaskMethods = Literal['isnan', 'isinf', 'above', 'below', 'take']
 APPLY_MASK_FNS = {
     'multiply': lambda x, mask: x * mask,
     'nan_to_0': _masked_nan_to_num,
+    'nan_to_mean': _masked_to_mean,
 }
 COMPUTE_MASK_FNS = {
     'isnan': lambda x, t: cx.cmap(jnp.isnan)(x),
     'isinf': lambda x, t: cx.cmap(jnp.isinf)(x),
-    'above': lambda x, t: cx.cmap(jnp.where)(x > t, 1, 0),
-    'below': lambda x, t: cx.cmap(jnp.where)(x < t, 1, 0),
+    'above': lambda x, t: cx.cmap(jnp.where)(x > t, True, False),
+    'below': lambda x, t: cx.cmap(jnp.where)(x < t, True, False),
     'take': lambda x, t: x,
 }
 
@@ -133,6 +145,16 @@ class Empty(TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return {}
+
+
+@nnx_compat.dataclass
+class Prescribed(TransformABC):
+  """Returns a prescribed dict of fields."""
+
+  prescribed_fields: dict[str, cx.Field]
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    return self.prescribed_fields
 
 
 class Broadcast(TransformABC):
@@ -526,6 +548,51 @@ class ClipWavenumbers(TransformABC):
 
 
 @nnx_compat.dataclass
+class InpaintMaskForHarmonics(TransformABC):
+  """Inpaints `inputs` over `mask` with smoothed spherical harmonics.
+
+  A variation of PGA (Papoulis-Gerchberg Algorithm) that iteratively inpaints,
+  spatial signal imposing limited spherical harmonics bandwidth prior. It works
+  by repeatedly transforming to modal space, applying a low-pass filter,
+  transforming back to nodal space and restoring non masked entries to their
+  original values. At the start, masked values are initialized with
+  the mean of the valid values.
+
+  Attributes:
+    ylm_map: Mapping between nodal and modal representations.
+    get_masks_transform: Transform that returns a mask for each input field. The
+      True mask values indicate entries to be inpainted.
+    lowpass_filter: Filter to apply in modal space to smooth the inpainting.
+    n_iter: Number of iterations to perform.
+  """
+
+  ylm_map: spherical_harmonics.YlmMapper | spherical_harmonics.FixedYlmMapping
+  get_masks_transform: Transform
+  lowpass_filter: spatial_filters.ModalSpatialFilter
+  n_iter: int = 2
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    masks = self.get_masks_transform(inputs)
+    # Initialize masked values with mean of valid data.
+    current_guess = {k: _masked_to_mean(v, masks[k]) for k, v in inputs.items()}
+
+    # Helper to reset valid pixels: where(mask, current, original)
+    # mask is True for pixels to be inpainted, False is to be reset with inputs.
+    update_guess_fn = cx.cmap(lambda c, o, m: jnp.where(m, c, o))
+
+    for _ in range(self.n_iter):
+      modal = {k: self.ylm_map.to_modal(v) for k, v in current_guess.items()}
+      filtered_modal = self.lowpass_filter.filter_modal(modal)
+      filtered_nodal = self.ylm_map.to_nodal(filtered_modal)
+      current_guess = {
+          k: update_guess_fn(filtered_nodal[k], inputs[k], masks[k])
+          for k in inputs
+      }
+
+    return current_guess
+
+
+@nnx_compat.dataclass
 class Regrid(TransformABC):
   """Applies `self.regridder` to `inputs`."""
 
@@ -534,6 +601,24 @@ class Regrid(TransformABC):
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     """Returns `inputs` regridded with `self.regridder`."""
     return self.regridder(inputs)
+
+
+@nnx_compat.dataclass
+class MakeBoolMasks(TransformABC):
+  """Transforms inputs to a boolean masks for keys in `mask_keys`."""
+
+  compute_mask_method: ComputeMaskMethods = 'take'
+  threshold_value: float | None = None
+  mask_keys: tuple[str, ...] | None = None
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    mask_keys = self.mask_keys
+    if mask_keys is None:
+      mask_keys = inputs.keys()
+    compute_mask_fn = COMPUTE_MASK_FNS[self.compute_mask_method]
+    return {
+        k: compute_mask_fn(inputs[k], self.threshold_value) for k in mask_keys
+    }
 
 
 @nnx_compat.dataclass
@@ -837,10 +922,12 @@ class StreamingStatsNormalization(TransformABC):
       rngs: nnx.Rngs | None = None,
   ):
     """Custom constructor based on input shapes that should be normalized."""
+    # pylint: disable=undefined-variable
     feature_shapes = {
         k: tuple(v.shape[i] for i in feature_axes) if v.ndim > 2 else tuple()
         for k, v in input_shapes.items()
     }
+    # pylint: enable=undefined-variable
     if exclude_regex is not None:
       feature_shapes = {
           k: v
@@ -932,9 +1019,14 @@ class ToModalWithFilteredGradients:
         del2_key = typing.KeyWithCosLatFactor(
             name + f'_del2_{att}', cos_lat_order
         )
-        features[dlon_key] = filter_module.filter_modal(r * d_x_dlon)
-        features[dlat_key] = filter_module.filter_modal(r * d_x_dlat)
-        features[del2_key] = filter_module.filter_modal(r * r * laplacian)
+        # pytype: disable=wrong-arg-types
+        grads = {
+            dlon_key: r * d_x_dlon,
+            dlat_key: r * d_x_dlat,
+            del2_key: r * r * laplacian,
+        }
+        features |= filter_module.filter_modal(grads)
+        # pytype: enable=wrong-arg-types
     return features
 
   def output_shapes(
@@ -1005,6 +1097,11 @@ class ConstrainPrecipitationAndEvaporation(TransformABC):
           self.var_to_constrain: constrained_observation,
           diagnosed_key: p_plus_e - constrained_observation,
       }
+    else:
+      raise ValueError(
+          f'{self.var_to_constrain=} should be either'
+          f' {self.precipitation_key=} or {self.evaporation_key=}.'
+      )
     outputs = inputs.copy()
     outputs.update(precipitation_and_evaporation)
     return outputs

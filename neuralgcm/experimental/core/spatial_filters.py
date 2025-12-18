@@ -17,8 +17,11 @@
 import abc
 from typing import Sequence
 
-from dinosaur import filtering
+import coordax as cx
 from flax import nnx
+import jax
+import jax.numpy as jnp
+from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
@@ -45,24 +48,38 @@ class ModalSpatialFilter(SpatialFilter):
 class ExponentialModalFilter(ModalSpatialFilter):
   """Modal filter that removes high frequency components."""
 
-  ylm_map: spherical_harmonics.FixedYlmMapping
+  ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
   attenuation: float = 16.0
   order: int = 18
   cutoff: float = 0.0
+  skip_missing: bool = False
+
+  def _filter_field(self, x: cx.Field) -> cx.Field:
+    """Returns filtered ``x``."""
+    # TODO(dkochkov): Consider adding helper function to coordax for such logic.
+    ylm_grids = [  # can be at most 1, since the axes names are fixed.
+        c for c in cx.coords.canonicalize(x.coordinate)
+        if isinstance(c, coordinates.SphericalHarmonicGrid)
+    ]
+    if not ylm_grids:
+      raise ValueError(
+          f'No spherical harmonic grid found on coordinates of {x.coordinate=}.'
+      )
+    [ylm_grid] = list(ylm_grids)  # if there are any, there would be only one.
+    ls = ylm_grid.fields['total_wavenumber']
+    k = ls / ls.data.max()
+    a = self.attenuation
+    c = self.cutoff
+    p = self.order
+    scale = cx.cpmap(jnp.exp)((k > c) * (-a * (((k - c) / (1 - c)) ** (2 * p))))
+    return x * scale
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:
-    filter_fn = filtering.exponential_filter(
-        grid=self.ylm_map.dinosaur_grid,
-        attenuation=self.attenuation,
-        order=self.order,
-        cutoff=self.cutoff,
-    )
-    return filter_fn(inputs)
+    return jax.tree.map(self._filter_field, inputs, is_leaf=cx.is_field)
 
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
-    return self.ylm_map.dinosaur_grid.to_nodal(
-        self.filter_modal(self.ylm_map.dinosaur_grid.to_modal(inputs))
-    )
+    ylm_map = self.ylm_map
+    return ylm_map.to_nodal(self.filter_modal(ylm_map.to_modal(inputs)))
 
   @classmethod
   def from_timescale(

@@ -23,6 +23,7 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 import numpy as np
@@ -720,6 +721,46 @@ class TransformsTest(parameterized.TestCase):
       cx.testing.assert_fields_allclose(
           actual[evap_key], cx.field(expected_evap_val, x)
       )
+
+  def test_inpaint_mask_for_harmonics(self):
+    mesh = parallelism.Mesh()
+    grid = coordinates.LonLatGrid.T21()
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid, mesh, None)
+
+    # Use a middle latitudinal band as a demo mask.
+    mask_data = np.zeros(grid.shape, dtype=bool)
+    lat_idx = grid.shape[1] // 2
+    mask_data[:, lat_idx] = True  # these values will be inpainted.
+    mask = cx.wrap(mask_data, grid)
+
+    # Corrupt the data under the mask
+    u_data = np.ones(grid.shape)
+    u_corrupted_data = u_data.copy()
+    u_corrupted_data[:, lat_idx] = 100.0  # Large outlier to be inpainted.
+    u_corrupted = cx.wrap(u_corrupted_data, grid)
+    inputs = {'u': u_corrupted}
+
+    lowpass = spatial_filters.ExponentialModalFilter(
+        ylm_map, attenuation=2.0, order=1
+    )
+    prescirbed_mask = transforms.Prescribed({'u': mask})
+    inpaint = transforms.InpaintMaskForHarmonics(
+        ylm_map=ylm_map,
+        get_masks_transform=prescirbed_mask,
+        lowpass_filter=lowpass,
+        n_iter=5,
+    )
+    output = inpaint(inputs)
+
+    valid_mask = ~mask_data
+    np.testing.assert_allclose(
+        output['u'].data[valid_mask], u_corrupted.data[valid_mask]
+    )
+
+    inpainted_values = output['u'].data[mask_data]
+    np.testing.assert_array_less(inpainted_values, 50.0)
+    np.testing.assert_allclose(inpainted_values, 1.0, atol=1e-5)
 
 
 if __name__ == '__main__':

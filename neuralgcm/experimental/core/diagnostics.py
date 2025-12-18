@@ -79,16 +79,16 @@ class CumulativeDiagnostic(DiagnosticModule):
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
     for k, v in self.cumulatives.items():
-      v = v.value  # get the underlying Field.
-      self.cumulatives[k].value = cx.wrap_like(jnp.zeros(v.shape), v)
+      v = v.get_value()  # get the underlying Field.
+      self.cumulatives[k].set_value(cx.wrap_like(jnp.zeros(v.shape), v))
 
   def diagnostic_values(self) -> typing.Pytree:
-    return {k: v.value for k, v in self.cumulatives.items()}
+    return {k: v.get_value() for k, v in self.cumulatives.items()}
 
   def __call__(self, inputs, *args, **kwargs):
     diagnostics = self.extract(inputs, *args, **kwargs)
     for k, v in diagnostics.items():
-      self.cumulatives[k].value += v
+      self.cumulatives[k].set_value(v + self.cumulatives[k].get_value())
 
 
 @nnx_compat.dataclass
@@ -107,16 +107,16 @@ class InstantDiagnostic(DiagnosticModule):
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
     for k, v in self.instants.items():
-      v = v.value  # get the underlying Field.
-      self.instants[k].value = cx.wrap_like(jnp.zeros(v.shape), v)
+      v = v.get_value()  # get the underlying Field.
+      self.instants[k].set_value(cx.wrap_like(jnp.zeros(v.shape), v))
 
   def diagnostic_values(self) -> typing.Pytree:
-    return {k: v.value for k, v in self.instants.items()}
+    return {k: v.get_value() for k, v in self.instants.items()}
 
   def __call__(self, inputs, *args, **kwargs):
     diagnostics = self.extract(inputs, *args, **kwargs)
     for k, v in diagnostics.items():
-      self.instants[k].value = v
+      self.instants[k].set_value(v)
 
 
 @nnx_compat.dataclass
@@ -206,13 +206,13 @@ class IntervalDiagnostic(DiagnosticModule):
 
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
-    self.dt_mod_freq.value = cx.wrap(jdt.Timedelta())
-    zeros_like = lambda v: cx.wrap_like(jnp.zeros_like(v.value.data), v.value)
+    self.dt_mod_freq.set_value(cx.wrap(jdt.Timedelta()))
+    zeros_like = lambda v: cx.wrap_like(jnp.zeros_like(v.get_value().data), v.get_value())
     for k in self.extract_coords:
-      self.since_last_update[k].value = zeros_like(self.since_last_update[k])
-      self.per_period[k].value = zeros_like(self.per_period[k])
+      self.since_last_update[k].set_value(zeros_like(self.since_last_update[k]))
+      self.per_period[k].set_value(zeros_like(self.per_period[k]))
       if self.include_instant:
-        self.instants[k].value = zeros_like(self.instants[k])
+        self.instants[k].set_value(zeros_like(self.instants[k]))
 
   def advance_diagnostic_clock(self, inputs, *args, **kwargs):
     """Advances the internal clock and updates interval accumulations."""
@@ -234,17 +234,17 @@ class IntervalDiagnostic(DiagnosticModule):
     if not isinstance(timedelta, jdt.Timedelta):
       raise ValueError(f'timedelta must be Timedelta, got {type(timedelta)}')
 
-    dt = self.dt_mod_freq.value + timedelta
+    dt = self.dt_mod_freq.get_value() + timedelta
     is_update_step = (dt >= self.resolution).data
     recenter_timedelta = lambda t: t - self.resolution
     keep_timedelta = lambda t: t
-    self.dt_mod_freq.value = jax.lax.cond(
+    self.dt_mod_freq.set_value(jax.lax.cond(
         is_update_step, recenter_timedelta, keep_timedelta, dt
-    )
+    ))
 
     for k in self.extract_coords:
-      per_period = self.per_period[k].value
-      since_last = self.since_last_update[k].value
+      per_period = self.per_period[k].get_value()
+      since_last = self.since_last_update[k].get_value()
 
       def _update_per_period(per_period, since_last):
         updated = jnp.concatenate([per_period[1:], since_last[None]])
@@ -254,22 +254,22 @@ class IntervalDiagnostic(DiagnosticModule):
       per_period = per_period.untag(i_ax)
       update_per_period = cx.cmap(_update_per_period, per_period.named_axes)
       updated_per_period = update_per_period(per_period, since_last).tag(i_ax)
-      self.per_period[k].value = updated_per_period
-      self.since_last_update[k].value = jax.lax.cond(
+      self.per_period[k].set_value(updated_per_period)
+      self.since_last_update[k].set_value(jax.lax.cond(
           is_update_step, cx.wrap(0.0).broadcast_like, lambda x: x, since_last
-      )
+      ))
 
   def diagnostic_values(self) -> typing.Pytree:
     """Returns formatted diagnostics computed from the internal module state."""
     values = {}
     for k, v in self.per_period.items():
       sum_fn = lambda x: jnp.sum(x, axis=0) if x.ndim > 0 else x
-      sum_over_intervals = cx.cmap(sum_fn)(v.value.untag(self.interval_axis))
+      sum_over_intervals = cx.cmap(sum_fn)(v.get_value().untag(self.interval_axis))
       values[k] = sum_over_intervals
     if self.include_instant:
       for k, v in self.instants.items():
-        values[k + '_instant'] = v.value
-    values['timedelta_since_sub_interval'] = self.dt_mod_freq.value
+        values[k + '_instant'] = v.get_value()
+    values['timedelta_since_sub_interval'] = self.dt_mod_freq.get_value()
     return values
 
   def __call__(self, inputs, *args, **kwargs):
@@ -277,6 +277,6 @@ class IntervalDiagnostic(DiagnosticModule):
     diagnostics = self.extract(inputs, *args, **kwargs)
     for k, v in diagnostics.items():
       if k in self.extract_coords:
-        self.since_last_update[k].value += v
+        self.since_last_update[k].set_value(self.since_last_update[k].get_value() + v)
         if self.include_instant:
-          self.instants[k].value = v
+          self.instants[k].set_value(v)

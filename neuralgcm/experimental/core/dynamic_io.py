@@ -105,7 +105,7 @@ class DynamicInputSlice(DynamicInputModule):
           f" required 'time' variable: {inputs.keys()}"
       )
     time = inputs['time']
-    self.time.value = time
+    self.time.set_value(time)
     data_dict = {}
     for k in self.keys_to_coords:
       if k not in inputs:
@@ -120,7 +120,7 @@ class DynamicInputSlice(DynamicInputModule):
           *[v.axes[d] for d in v.dims if d != 'timedelta']
       )
       expected_coord = cx.compose_coordinates(
-          *[self.data.value[k].axes[d] for d in v.dims if d != 'timedelta']
+          *[self.data.get_value()[k].axes[d] for d in v.dims if d != 'timedelta']
       )
       if data_coord != expected_coord:
         raise ValueError(
@@ -128,7 +128,7 @@ class DynamicInputSlice(DynamicInputModule):
             f' {expected_coord=}'
         )
       data_dict[k] = v
-    self.data.value = data_dict
+    self.data.set_value(data_dict)
 
   def _slice_data_at_time(
       self,
@@ -146,10 +146,10 @@ class DynamicInputSlice(DynamicInputModule):
   def __call__(self, time: cx.Field) -> typing.Fields:
     """Returns covariates at the specified time."""
     outputs = {}
-    for k, v in self.data.value.items():
+    for k, v in self.data.get_value().items():
       field_index_fn = cx.cmap(self._slice_data_at_time)
       outputs[k] = field_index_fn(
-          time, self.time.value.untag('timedelta'), v.untag('timedelta')
+          time, self.time.get_value().untag('timedelta'), v.untag('timedelta')
       )
     return outputs
 

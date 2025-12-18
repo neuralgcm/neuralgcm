@@ -105,14 +105,14 @@ class UniformUncorrelated(RandomProcessModule):
 
   def unconditional_sample(self, rng: cx.Field) -> None:
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
-    self.state_rng.value = rng
-    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
-    self.core.value = self._sample_core(k)
+    self.state_rng.set_value(rng)
+    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.core.set_value(self._sample_core(k))
 
   def advance(self) -> None:
-    k = cx.cmap(_advance_prng_key)(self.state_rng.value, self.rng_step.value)
-    self.rng_step.value += 1
-    self.core.value = self._sample_core(k)
+    k = cx.cmap(_advance_prng_key)(self.state_rng.get_value(), self.rng_step.get_value())
+    self.rng_step.set_value(self.rng_step.get_value() + 1)
+    self.core.set_value(self._sample_core(k))
 
   def state_values(
       self,
@@ -124,7 +124,7 @@ class UniformUncorrelated(RandomProcessModule):
       raise ValueError(
           f'Interpolation is not supported yet: {coords=} {self.coords=}'
       )
-    return self.core.value
+    return self.core.get_value()
 
 
 class NormalUncorrelated(RandomProcessModule):
@@ -155,14 +155,14 @@ class NormalUncorrelated(RandomProcessModule):
 
   def unconditional_sample(self, rng: cx.Field):
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
-    self.state_rng.value = rng
-    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
-    self.core.value = self._sample_core(k)
+    self.state_rng.set_value(rng)
+    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.core.set_value(self._sample_core(k))
 
   def advance(self):
-    k = cx.cmap(_advance_prng_key)(self.state_rng.value, self.rng_step.value)
-    self.rng_step.value += 1
-    self.core.value = self._sample_core(k)
+    k = cx.cmap(_advance_prng_key)(self.state_rng.get_value(), self.rng_step.get_value())
+    self.rng_step.set_value(self.rng_step.get_value() + 1)
+    self.core.set_value(self._sample_core(k))
 
   def state_values(
       self,
@@ -174,7 +174,7 @@ class NormalUncorrelated(RandomProcessModule):
       raise ValueError(
           f'Interpolation is not supported yet: {coords=} {self.coords=}'
       )
-    return self.core.value
+    return self.core.get_value()
 
 
 class GaussianRandomFieldCore(nnx.Module):
@@ -278,17 +278,17 @@ class GaussianRandomFieldCore(nnx.Module):
     Returns:
       Numeric estimate of pointwise variance.
     """
-    return self._variance.value
+    return self._variance[...]
 
   @property
   def phi(self) -> jax.Array:
     """Correlation coefficient between two timesteps."""
-    return jnp.exp(-self.dt / self.corr_time.value)
+    return jnp.exp(-self.dt / self.corr_time[...])
 
   @property
   def relative_corr_len(self):
     """Correlation length of the random process relative to the radius."""
-    return self.corr_length.value / self.ylm_map.radius
+    return self.corr_length[...] / self.ylm_map.radius
 
   def _integrated_grf_variance(self):
     """Integral of the GRF's variance over the earth's surface."""
@@ -317,7 +317,7 @@ class GaussianRandomFieldCore(nnx.Module):
     # We do not include the extra fator of 2 in the denominator. I do not know
     # why [Palmer] has this factor.
     # In sampling, phi appears as 1 - phi**2 = 1 - exp(-2 dt / tau)
-    one_minus_phi2 = -jnp.expm1(-2 * self.dt / self.corr_time.value)
+    one_minus_phi2 = -jnp.expm1(-2 * self.dt / self.corr_time)
     normalization = jnp.sqrt(
         self._integrated_grf_variance() * one_minus_phi2 / sum_unnormed_vars
     )
@@ -335,7 +335,7 @@ class GaussianRandomFieldCore(nnx.Module):
         jax.random.truncated_normal(rng, -self.clip, self.clip, modal_shape),
         jnp.zeros(modal_shape),
     )
-    one_minus_phi2 = -jnp.expm1(-2 * self.dt / self.corr_time.value)
+    one_minus_phi2 = -jnp.expm1(-2 * self.dt / self.corr_time)
     return one_minus_phi2 ** (-0.5) * sigmas * weights
 
   def advance_core(
@@ -397,18 +397,18 @@ class GaussianRandomField(RandomProcessModule):
   def unconditional_sample(self, rng: cx.Field) -> None:
     """Returns a randomly initialized state for the autoregressive process."""
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
-    self.state_rng.value = rng
-    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
-    self.core.value = cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid)
+    self.state_rng.set_value(rng)
+    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.core.set_value(cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid))
 
   def advance(self) -> None:
     """Updates the CoreRandomState of a random gaussian field."""
-    self.core.value = cx.cmap(self.grf.advance_core)(
-        self.core.value.untag(self.grf.core_grid),
-        self.state_rng.value,
-        self.rng_step.value,
-    ).tag(self.grf.core_grid)
-    self.rng_step.value += 1
+    self.core.set_value(cx.cmap(self.grf.advance_core)(
+        self.core.get_value().untag(self.grf.core_grid),
+        self.state_rng.get_value(),
+        self.rng_step.get_value(),
+    ).tag(self.grf.core_grid))
+    self.rng_step.set_value(self.rng_step.get_value() + 1)
 
   def state_values(
       self,
@@ -421,7 +421,7 @@ class GaussianRandomField(RandomProcessModule):
           f'Interpolation is not supported yet, requested {coords=} '
           f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
-    return self.ylm_map.to_nodal(self.core.value)
+    return self.ylm_map.to_nodal(self.core.get_value())
 
 
 class VectorizedGaussianRandomField(RandomProcessModule):
@@ -503,12 +503,12 @@ class VectorizedGaussianRandomField(RandomProcessModule):
 
   def unconditional_sample(self, rng: cx.Field) -> None:
     k, next_rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rng)
-    self.state_rng.value = next_rng
-    self.rng_step.value = cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k)
-    self.core.value = self._sample_core(k)
+    self.state_rng.set_value(next_rng)
+    self.rng_step.set_value(cx.wrap_like(jnp.zeros(k.shape, jnp.uint32), k))
+    self.core.set_value(self._sample_core(k))
 
   def advance(self) -> None:
-    rng, step = self.state_rng.value, self.rng_step.value
+    rng, step = self.state_rng.get_value(), self.rng_step.get_value()
     split = lambda k: jax.random.split(k, self.n_fields)
     rngs = cx.cmap(split)(rng).tag(self.axis)
     advance_keys = cx.cmap(_advance_prng_key)(rngs, step)
@@ -516,12 +516,12 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     advance_collection = nnx.vmap(advance_single, in_axes=(0, 0, 0, None))
     next_core = cx.cmap(advance_collection, vmap=nnx.vmap)(
         self.batch_grf_core,
-        self.core.value.untag(self.axis, self.batch_grf_core.core_grid),
+        self.core.get_value().untag(self.axis, self.batch_grf_core.core_grid),
         advance_keys.untag(self.axis),
         step,
     ).tag(self.axis, self.batch_grf_core.core_grid)
-    self.rng_step.value += 1
-    self.core.value = next_core
+    self.rng_step.set_value(self.rng_step.get_value() + 1)
+    self.core.set_value(next_core)
 
   def state_values(
       self,
@@ -534,7 +534,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
           f'Interpolation is not supported yet, requested {coords=} '
           f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
-    return self.ylm_map.to_nodal(self.core.value)
+    return self.ylm_map.to_nodal(self.core.get_value())
 
   @classmethod
   def with_range_of_scales(

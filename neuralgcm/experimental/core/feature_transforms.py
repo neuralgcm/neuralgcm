@@ -187,7 +187,7 @@ class CoordFeatures(transforms.TransformABC):
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
     return {
-        k: cx.wrap(v.value, self.coords[k]) for k, v in self.features.items()
+        k: cx.wrap(v[...], self.coords[k]) for k, v in self.features.items()
     }
 
   def update_features_from_data(
@@ -202,4 +202,4 @@ class CoordFeatures(transforms.TransformABC):
         data_units = units.parse_units(da.attrs['units'])
         da = da.copy(data=sim_units.nondimensionalize(da.values * data_units))
         candidate = xarray_utils.field_from_xarray(da)
-        feature.value = candidate.order_as(self.coords[key]).data
+        feature.set_value(candidate.order_as(self.coords[key]).data)

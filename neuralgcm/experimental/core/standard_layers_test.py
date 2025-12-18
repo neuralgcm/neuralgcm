@@ -85,7 +85,7 @@ class StandardLayersTest(parameterized.TestCase):
     if num_hidden_layers > 1:
       with self.subTest('independent_params'):
         for previous_layer, layer in zip(mlp.layers[1:-3], mlp.layers[2:-2]):
-          kernel_diff = previous_layer.kernel.value - layer.kernel.value
+          kernel_diff = previous_layer.kernel.get_value() - layer.kernel.get_value()
           self.assertGreater(jnp.linalg.norm(kernel_diff), 1e-1)
 
   def test_sequential(self):
@@ -326,7 +326,7 @@ class StandardLayersTest(parameterized.TestCase):
           jnp.array([[0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
           axis=(-1, -2),
       )
-      conv.conv_layer.kernel.value = kernel_select_above
+      conv.conv_layer.kernel.set_value(kernel_select_above)
       output = conv(test_in_wrap)
       np.testing.assert_allclose(output[:, 0], test_in_wrap[:, -1])
     with self.subTest('reflect_padding'):
@@ -334,7 +334,7 @@ class StandardLayersTest(parameterized.TestCase):
           jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
           axis=(-1, -2),
       )
-      conv.conv_layer.kernel.value = kernel_select_left
+      conv.conv_layer.kernel.set_value(kernel_select_left)
       output = conv(test_in_reflect)
       rotated_on_lon = jnp.roll(test_in_reflect, lon_size // 2, axis=1)
       np.testing.assert_allclose(output[:, :, 0], rotated_on_lon[:, :, 0])

@@ -55,15 +55,15 @@ class MockModel(api.Model):
   @module_utils.ensure_unchanged_state_structure
   def assimilate(self, observations: typing.Observation) -> None:
     data = observations[self.data_key]
-    self.prognostics.value = {
+    self.prognostics.set_value({
         'time': data['time'],
         self.prognostic_var_key: data[self.prognostic_var_key],
-    }
+    })
 
   @module_utils.ensure_unchanged_state_structure
   def advance(self) -> None:
-    time = self.prognostics.value['time']
-    population = self.prognostics.value[self.prognostic_var_key]
+    time = self.prognostics.get_value()['time']
+    population = self.prognostics.get_value()[self.prognostic_var_key]
     modulation = 1.0
     if self.modulation_factor is not None:
       modulation = self.modulation_factor(time)[self.dynamic_modulation_key]
@@ -72,14 +72,14 @@ class MockModel(api.Model):
       noise = self.random_increment.state_values(coords=self.x)
       self.random_increment.advance()
     next_population = population * modulation + self.steady_increment + noise
-    self.prognostics.value = {
+    self.prognostics.set_value({
         'time': time + self.timestep,
         self.prognostic_var_key: next_population,
-    }
+    })
 
   @module_utils.ensure_unchanged_state_structure
   def observe(self, query: typing.Query) -> typing.Observation:
-    prognostic = self.prognostics.value
+    prognostic = self.prognostics.get_value()
     operators = {
         self.data_key: observation_operators.DataObservationOperator(prognostic)
     }
@@ -169,18 +169,18 @@ class ModelApiTest(parameterized.TestCase):
     with self.subTest('assimilate'):
       self.model.assimilate(self.inputs)
       np.testing.assert_allclose(
-          self.model.prognostics.value['population'].data,
+          self.model.prognostics.get_value()['population'].data,
           self.inputs['prognostics']['population'].data,
       )
     with self.subTest('advance'):
-      initial_population = self.model.prognostics.value['population'].data
+      initial_population = self.model.prognostics.get_value()['population'].data
       self.model.advance()
-      final_population = self.model.prognostics.value['population'].data
+      final_population = self.model.prognostics.get_value()['population'].data
       self.assertFalse(np.all(initial_population == final_population))
 
     with self.subTest('observe'):
       obs = self.model.observe(self.query)
-      model_population = self.model.prognostics.value['population'].data
+      model_population = self.model.prognostics.get_value()['population'].data
       np.testing.assert_allclose(
           obs['prognostics']['population'].data,
           model_population,

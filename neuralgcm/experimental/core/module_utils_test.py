@@ -44,15 +44,15 @@ class MockModule(nnx.Module):
 
   @module_utils.ensure_unchanged_state_structure
   def always_preserves_state(self, u: cx.Field):
-    self.u_sum.value += jnp.sum(u.data)
+    self.u_sum.set_value(self.u_sum.get_value() + jnp.sum(u.data))
 
   @module_utils.ensure_unchanged_state_structure
   def preserves_state_if_same_coords(self, u: cx.Field):
-    self.u.value += u
+    self.u.set_value(self.u.get_value() + u)
 
   @module_utils.ensure_unchanged_state_structure(excluded_dims=['timedelta'])
   def allowed_to_change_only_along_time(self, u: cx.Field):
-    self.u_trajectory.value = u
+    self.u_trajectory.set_value(u)
 
 
 class ModuleUtilsTest(parameterized.TestCase):
@@ -420,7 +420,7 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     )
     v_fn(module)
     expected = cx.wrap(jnp.ones(3), b)
-    chex.assert_trees_all_close(module.u_sum.value, expected)
+    chex.assert_trees_all_close(module.u_sum.get_value(), expected)
 
   def test_vectorize_fn_with_arg_state_update(self):
     b = cx.SizedAxis('batch', 3)
@@ -439,7 +439,7 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     )
     v_fn(module, arg)
     expected = arg
-    chex.assert_trees_all_close(module.u.value, expected)
+    chex.assert_trees_all_close(module.u.get_value(), expected)
 
   def test_vectorize_fn_with_return_value(self):
     b = cx.SizedAxis('batch', 3)
@@ -448,12 +448,12 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     module_utils.vectorize_module(module, vector_axes)
 
     def get_u_plus_arg(module, arg_field):
-      return module.u.value + arg_field
+      return module.u.get_value() + arg_field
 
     arg = cx.wrap(jnp.ones((b.size, module.x.size)), b, module.x)
     v_fn = module_utils.vectorize_module_fn(get_u_plus_arg, vector_axes, b)
     result = v_fn(module, arg)
-    expected = module.u.value + arg
+    expected = module.u.get_value() + arg
     chex.assert_trees_all_close(result, expected)
 
   def test_vectorize_fn_nested_axes_with_state_update(self):
@@ -478,7 +478,7 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     )
     v_fn(module, arg)
     expected = arg
-    chex.assert_trees_all_close(module.u.value, expected)
+    chex.assert_trees_all_close(module.u.get_value(), expected)
 
   @parameterized.named_parameters(
       dict(
@@ -538,7 +538,7 @@ class VectorizeModuleFnTest(parameterized.TestCase):
       )
 
       def __call__(self, x: cx.Field) -> cx.Field:
-        return x * self.param.value
+        return x * self.param.get_value()
 
     e, b = cx.SizedAxis('e', 2), cx.SizedAxis('b', 4)
     eb = cx.compose_coordinates(e, b)
@@ -547,7 +547,7 @@ class VectorizeModuleFnTest(parameterized.TestCase):
     module = ScaleDemoModule()
     vector_axes = {nnx.Param: e}  # vectorize module for dimension `e`.
     module_utils.vectorize_module(module, vector_axes)
-    module.param.value = cx.wrap(1 + np.arange(e.size), e)  # update scales.
+    module.param.set_value(cx.wrap(1 + np.arange(e.size), e))  # update scales.
     fn = lambda module, x: module(x)
     eb_vectorized_fn = module_utils.vectorize_module_fn(
         fn, vector_axes, eb, allow_non_vector_axes=True

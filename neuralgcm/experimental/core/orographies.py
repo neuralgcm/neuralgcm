@@ -55,7 +55,7 @@ class ModalOrography(nnx.Module):
     mask = ylm_grid.fields['mask']
     modal_orography_2d = jnp.zeros(ylm_grid.shape)
     return cx.wrap(
-        modal_orography_2d.at[mask.data].set(self.orography.value), ylm_grid
+        modal_orography_2d.at[mask.data].set(self.orography[...]), ylm_grid
     )
 
   def update_orography_from_data(
@@ -85,9 +85,9 @@ class ModalOrography(nnx.Module):
     modal_orography = modal_orography.unwrap(self.ylm_map.modal_grid)
     if isinstance(spatial_filter, spatial_filters.ModalSpatialFilter):
       modal_orography = spatial_filter.filter_modal(modal_orography)
-    self.orography.value = modal_orography[
+    self.orography.set_value(modal_orography[
         self.ylm_map.modal_grid.fields['mask'].data
-    ]
+    ])
 
 
 class ModalOrographyWithCorrection(ModalOrography):
@@ -118,7 +118,7 @@ class ModalOrographyWithCorrection(ModalOrography):
     mask = ylm_grid.fields['mask']
     modal_orography_2d = jnp.zeros(mask.shape)
     modal_orography_1d = (
-        self.orography.value + self.correction.value * self.correction_scale
+        self.orography[...] + self.correction[...] * self.correction_scale
     )
     return cx.wrap(
         modal_orography_2d.at[mask.data].set(modal_orography_1d), ylm_grid
@@ -140,7 +140,7 @@ class Orography(nnx.Module):
 
   @property
   def nodal_orography(self) -> cx.Field:
-    return cx.wrap(self.orography.value, self.grid)
+    return cx.wrap(self.orography[...], self.grid)
 
   def update_orography_from_data(
       self,
@@ -162,4 +162,4 @@ class Orography(nnx.Module):
     nodal_orography = spatial_filter(nodal_orography)
     if data_grid != self.grid:
       raise ValueError(f'{data_grid=} does not match {self.grid=}.')
-    self.orography.value = nodal_orography
+    self.orography.set_value(nodal_orography)

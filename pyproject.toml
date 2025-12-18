@@ -51,7 +51,7 @@ experimental = [
     "etils",
     # TODO(shoyer): use pypi version when there is a newer release than 0.3.0
     "fiddle @ git+https://github.com/google/fiddle.git",
-    "flax>=0.12.0",
+    "flax>=0.12.1",
     "grain",
     "jax-datetime @ git+https://github.com/google/jax-datetime.git",
     "jax-solar",

@@ -425,7 +425,7 @@ class ShiftAndNormalize(TransformABC):
       scale_fn = lambda x, shift, scale: x * scale + shift
     else:
       scale_fn = lambda x, shift, scale: (x - shift) / scale
-    shift, scale = self.shift.value, self.scale.value
+    shift, scale = self.shift.get_value(), self.scale.get_value()
     return {k: scale_fn(v, shift, scale) for k, v in inputs.items()}
 
 
@@ -453,13 +453,13 @@ class ShiftAndNormalizePerKey(TransformABC):
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     shifts = pytree_utils.replace_with_matching_or_default(
         inputs,
-        self.shifts.value,
+        self.shifts.get_value(),
         default=None,
         check_used_all_replace_keys=False,
     )
     scales = pytree_utils.replace_with_matching_or_default(
         inputs,
-        self.scales.value,
+        self.scales.get_value(),
         default=None,
         check_used_all_replace_keys=False,
     )

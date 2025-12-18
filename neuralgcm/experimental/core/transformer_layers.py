@@ -312,7 +312,7 @@ class DyT(nnx.Module):
     )
 
   def __call__(self, x: typing.Array) -> typing.Array:
-    return jnp.tanh(self.alpha.value * x) * self.gamma.value + self.beta.value
+    return jnp.tanh(self.alpha * x) * self.gamma + self.beta
 
 
 def no_gating(skip, x):

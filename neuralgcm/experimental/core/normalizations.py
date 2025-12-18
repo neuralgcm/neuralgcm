@@ -59,15 +59,15 @@ class StreamNorm(nnx.Module):
   epsilon: float = 1e-6
 
   def __post_init__(self):
-    self.counter = StreamingCounter(0, dtype=jnp.uint32)
+    self.counter = StreamingCounter(jnp.array(0, dtype=jnp.uint32))
     self.mean = StreamingValue(jnp.zeros(self.feature_shape))
     self.m2 = StreamingValue(jnp.zeros(self.feature_shape))
 
   def stats(self, ddof: float = 1) -> tuple[typing.Array, typing.Array]:
-    counter = self.counter.value - ddof
-    mean = self.mean.value
-    var = self.m2.value / counter
-    var = jnp.where(self.counter.value > 0, var, jnp.ones_like(var))
+    counter = self.counter[...] - ddof
+    mean = self.mean[...]
+    var = self.m2[...] / counter
+    var = jnp.where(self.counter[...] > 0, var, jnp.ones_like(var))
     return mean, var
 
   def _batch_axes(self, inputs: typing.Array) -> tuple[int, ...]:
@@ -81,17 +81,17 @@ class StreamNorm(nnx.Module):
   def update_stats(self, inputs: typing.Array):
     """Updates the streaming statistics estimates using parallel algorithm."""
     batch_axes = self._batch_axes(inputs)
-    original_counter = self.counter.value
+    original_counter = self.counter[...]
     batch_shape = [inputs.shape[i] for i in batch_axes]
     batch_size = math.prod(batch_shape)
     counter = original_counter + batch_size
-    delta = inputs.mean(batch_axes) - self.mean.value
-    m2 = self.m2.value
+    delta = inputs.mean(batch_axes) - self.mean[...]
+    m2 = self.m2[...]
     del_m2 = inputs.var(batch_axes) * batch_size
     m2 += del_m2 + delta * delta * batch_size * original_counter / counter
-    self.counter.value = counter
-    self.mean.value += delta * batch_size / counter
-    self.m2.value = m2
+    self.counter[...] = counter
+    self.mean[...] += delta * batch_size / counter
+    self.m2[...] = m2
 
   def __call__(
       self,

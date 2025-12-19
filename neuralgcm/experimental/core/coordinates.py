@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import functools
-from typing import Any, cast, Iterable, Literal, Self, Sequence, TYPE_CHECKING
+from typing import Any, Iterable, Literal, Self, Sequence, TYPE_CHECKING, cast
 
 import coordax as cx
 from dinosaur import coordinate_systems as dinosaur_coordinates
@@ -120,11 +120,15 @@ class TimeDelta(cx.Coordinate):
     if dim != 'timedelta':
       return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "timedelta"')
     if 'timedelta' not in coords:
-      return cx.coords.NoCoordinateMatch('no associated coordinate for timedelta')
+      return cx.coords.NoCoordinateMatch(
+          'no associated coordinate for timedelta'
+      )
 
     data = coords['timedelta'].data
     if data.ndim != 1:
-      return cx.coords.NoCoordinateMatch('timedelta coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch(
+          'timedelta coordinate is not a 1D array'
+      )
 
     if not np.issubdtype(data.dtype, np.timedelta64):
       return cx.coords.NoCoordinateMatch(
@@ -158,14 +162,13 @@ class TimeDelta(cx.Coordinate):
 
   def __treescope_repr__(self, path: str | None, subtree_renderer: Any):
     """Treescope handler for Field."""
-    to_str = lambda x: str(datetime.timedelta(seconds=int(x.astype(int))))
-    dts = np.apply_along_axis(to_str, axis=1, arr=self.deltas[:, np.newaxis])
-    if dts.size < 6:
-      deltas = '[' + ', '.join([str(x) for x in dts]) + ']'
+    dts = [str(x) for x in self.deltas.tolist()]
+    if len(dts) < 6:
+      deltas = '[' + ', '.join(dts) + ']'
     else:
-      deltas = '[' + ', '.join([str(x) for x in dts[:2]])
+      deltas = '[' + ', '.join(dts[:2])
       deltas += ', ..., '
-      deltas += ', '.join([str(x) for x in dts[-2:]]) + ']'
+      deltas += ', '.join(dts[-2:]) + ']'
     heading = f'<{type(self).__name__}'
     return treescope.rendering_parts.siblings(
         heading, treescope.rendering_parts.text(deltas), '>'
@@ -810,10 +813,14 @@ class SphericalHarmonicGrid(cx.Coordinate):
       )
 
     if coords['longitude_wavenumber'].dims != ('longitude_wavenumber',):
-      return cx.coords.NoCoordinateMatch('longitude_wavenumber is not a 1D coordinate')
+      return cx.coords.NoCoordinateMatch(
+          'longitude_wavenumber is not a 1D coordinate'
+      )
 
     if coords['total_wavenumber'].dims != ('total_wavenumber',):
-      return cx.coords.NoCoordinateMatch('total_wavenumber is not a 1D coordinate')
+      return cx.coords.NoCoordinateMatch(
+          'total_wavenumber is not a 1D coordinate'
+      )
 
     longitude_wavenumbers = (coords.sizes['longitude_wavenumber'] + 1) // 2
     wavenumber_padding = coords['longitude_wavenumber'].attrs.get(
@@ -1049,7 +1056,9 @@ class SigmaBoundaries(SigmaLevels):
   ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'sigma_boundaries':
-      return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "sigma_boundaries"')
+      return cx.coords.NoCoordinateMatch(
+          f'dimension {dim!r} != "sigma_boundaries"'
+      )
     sigma_dim = dim.removesuffix('_boundaries')
     return cls.from_sigma_levels(SigmaLevels.from_xarray((sigma_dim,), coords))
 
@@ -1170,7 +1179,9 @@ class PressureLevels(cx.Coordinate):
           f'dimension {dim!r} is not "pressure" or "level"'
       )
     if coords[dim].ndim != 1:
-      return cx.coords.NoCoordinateMatch('pressure coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch(
+          'pressure coordinate is not a 1D array'
+      )
     centers = coords[dim].data
     if not 0 < centers[0] < 100:
       return cx.coords.NoCoordinateMatch(
@@ -1261,6 +1272,7 @@ class HybridLevels(cx.Coordinate):
 
     def _boundaries(p_surface: jax.Array) -> jax.Array:
       return a_boundaries + b_boundaries * p_surface
+
     # TODO(dkochkov): Consider adding HybridLevelsBoundaries coordinate and
     # tagging this output with it.
     out_axes = {k: v + 1 for k, v in surface_pressure.named_axes}
@@ -1363,10 +1375,14 @@ class HybridLevels(cx.Coordinate):
       return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "hybrid"')
 
     if 'hybrid' not in coords:
-      return cx.coords.NoCoordinateMatch('no associated coordinate for "hybrid"')
+      return cx.coords.NoCoordinateMatch(
+          'no associated coordinate for "hybrid"'
+      )
 
     if coords['hybrid'].ndim != 1:
-      return cx.coords.NoCoordinateMatch('"hybrid" coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch(
+          '"hybrid" coordinate is not a 1D array'
+      )
 
     attrs = coords['hybrid'].attrs
     if 'a_boundaries' not in attrs or 'b_boundaries' not in attrs:
@@ -1382,7 +1398,9 @@ class HybridLevels(cx.Coordinate):
     if coords.sizes[dim] != n_layers:
       return cx.coords.NoCoordinateMatch('level dimension size mismatch')
     if not np.array_equal(coords['hybrid'].data, np.arange(1, n_layers + 1)):
-      return cx.coords.NoCoordinateMatch('hybrid coordinate is not a simple index')
+      return cx.coords.NoCoordinateMatch(
+          'hybrid coordinate is not a simple index'
+      )
 
     return cls(a_boundaries=a_boundaries, b_boundaries=b_boundaries)
 
@@ -1416,7 +1434,9 @@ class LayerLevels(cx.Coordinate):
       return cx.coords.NoCoordinateMatch(f'dimension {dim!r} != "layer_index"')
 
     if coords['layer_index'].ndim != 1:
-      return cx.coords.NoCoordinateMatch('layer_index coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch(
+          'layer_index coordinate is not a 1D array'
+      )
 
     n_layers = coords.sizes['layer_index']
     got = coords['layer_index'].data
@@ -1502,10 +1522,14 @@ class SoilLevels(cx.Coordinate):
   ) -> Self | cx.coords.NoCoordinateMatch:
     dim = dims[0]
     if dim != 'soil_levels':
-      return cx.coords.NoCoordinateMatch(f'Leading dimension {dim!r} != "soil_levels"')
+      return cx.coords.NoCoordinateMatch(
+          f'Leading dimension {dim!r} != "soil_levels"'
+      )
     name = dim
     if coords[name].ndim != 1:
-      return cx.coords.NoCoordinateMatch('SoilLevels coordinate is not a 1D array')
+      return cx.coords.NoCoordinateMatch(
+          'SoilLevels coordinate is not a 1D array'
+      )
     got = coords[name].data
     return cls(centers=got)
 

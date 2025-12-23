@@ -113,6 +113,67 @@ class StandardLayersTest(parameterized.TestCase):
 
   @parameterized.parameters(
       dict(
+          cell_cls=standard_layers.LSTMCell,
+          input_size=10,
+          output_size=5,
+          batch_size=3,
+          param_multiplier=4,
+      ),
+      dict(
+          cell_cls=standard_layers.OptimizedLSTMCell,
+          input_size=10,
+          output_size=5,
+          batch_size=3,
+          param_multiplier=4,
+      ),
+      dict(
+          cell_cls=standard_layers.GRUCell,
+          input_size=10,
+          output_size=5,
+          batch_size=3,
+          param_multiplier=3,
+      ),
+      dict(
+          cell_cls=standard_layers.SimpleCell,
+          input_size=10,
+          output_size=5,
+          batch_size=3,
+          param_multiplier=1,
+      ),
+  )
+  def test_rnn_cell_shapes_and_params(
+      self,
+      cell_cls,
+      input_size: int,
+      output_size: int,
+      batch_size: int,
+      param_multiplier: int,
+  ):
+    """Tests RNN cell output shapes and parameter count."""
+    cell = cell_cls(
+        input_size=input_size,
+        output_size=output_size,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = jnp.ones((batch_size, input_size))
+    carry = cell.initialize_carry(inputs.shape, rngs=nnx.Rngs(1))
+    new_carry, output = cell(carry, inputs)
+
+    with self.subTest('output_shape'):
+      self.assertEqual(output.shape, (batch_size, output_size))
+      if isinstance(new_carry, tuple):
+        for c in new_carry:
+          self.assertEqual(c.shape, (batch_size, output_size))
+      else:
+        self.assertEqual(new_carry.shape, (batch_size, output_size))
+
+    with self.subTest('total_params_count'):
+      expected = param_multiplier * output_size * (input_size + output_size + 1)
+      actual = count_actual_params(cell)
+      self.assertEqual(actual, expected)
+
+  @parameterized.parameters(
+      dict(
           input_size=8,
           output_size=2,
           kernel_size=3,

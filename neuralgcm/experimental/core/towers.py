@@ -15,10 +15,11 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 import coordax as cx
 from flax import nnx
+import jax
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import transformer_layers
@@ -31,14 +32,13 @@ class ForwardTower(nnx.Module):
 
   The output Field is computed by applying vectorized `neural_net` to inputs
   followed by an optional `final_activation` performed element-wise.
-  `inputs_in_dims` determines the dimensions that are processed by the
-  `neural_net` while all other axes are vectorized over. `out_dims` specified
-  dimension or coordinates to be used for the axes produced by the `neural_net`.
 
   Attributes:
     neural_net: The neural network to be applied to the input.
-    inputs_in_dims: Dims or coordinates over which `neural_net` is applied.
-    out_dims: Dims or coordinates to attach to non-vectorized axes.
+    inputs_in_dims: Dims or coordinates over which `neural_net` is applied. All
+      other axes are vectorized over.
+    out_dims: Dims or coordinates to attach to non-vectorized axes produced by
+      the `neural_net`.
     apply_remat: Whether to apply nnx.remat to the neural network.
     final_activation: The activation function to be applied to the output.
   """
@@ -79,6 +79,111 @@ class ForwardTower(nnx.Module):
 
 # Factory typically expects input_size, output_size args, and rngs kwarg.
 ForwardTowerFactory = Callable[..., ForwardTower]
+
+
+@nnx_compat.dataclass
+class RecurrentTower(nnx.Module):
+  """Applies RNN cell to inputs and carry state.
+
+  The output carry and field are computed by applying vectorized `rnn_cell`
+  to inputs and carry.
+
+  Attributes:
+    rnn_cell: The RNN cell to be applied.
+    inputs_in_dims: Dims or coordinates over which `rnn_cell` is applied to
+      inputs. All other axes are vectorized over.
+    state_dims: Dims or coordinates for RNN state. All other axes are vectorized
+      over.
+    out_dims: Dims or coordinates to attach to non-vectorized axes of output
+      produced by `rnn_cell`.
+    apply_remat: Whether to apply nnx.remat to the RNN cell.
+  """
+
+  rnn_cell: nnx.Module
+  inputs_in_dims: tuple[str | cx.Coordinate, ...]
+  state_dims: tuple[str | cx.Coordinate, ...]
+  out_dims: tuple[str | cx.Coordinate, ...]
+  apply_remat: bool = False
+
+  def __call__(
+      self,
+      carry: Any,
+      inputs: cx.Field,
+  ) -> tuple[Any, cx.Field]:
+    inputs_untagged = inputs.untag(*self.inputs_in_dims)
+
+    def untag(x):
+      return x.untag(*self.state_dims)
+
+    is_field = lambda x: isinstance(x, cx.Field)
+    carry_untagged = jax.tree_util.tree_map(untag, carry, is_leaf=is_field)
+    batch_axes = inputs_untagged.named_axes
+
+    # Verify that all parts of carry have matching batch axes
+    for leaf in jax.tree_util.tree_leaves(carry_untagged, is_leaf=is_field):
+      if leaf.named_axes != batch_axes:
+        raise ValueError(
+            f'Vectorized dimensions on inputs {batch_axes} and carry leaf'
+            f' {leaf.named_axes} do not match'
+        )
+
+    def apply_cell(cell, carry, inputs):
+      return cell(carry, inputs)
+
+    cmap_apply_cell = cx.cmap(apply_cell, batch_axes, vmap=nnx.vmap)
+    if self.apply_remat:
+      cmap_apply_cell = nnx.remat(cmap_apply_cell)
+
+    out_carry, output = cmap_apply_cell(
+        self.rnn_cell, carry_untagged, inputs_untagged
+    )
+
+    def tag(x):
+      return x.tag(*self.state_dims)
+
+    new_carry = jax.tree_util.tree_map(tag, out_carry, is_leaf=is_field)
+    output = output.tag(*self.out_dims)
+    return new_carry, output
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_size: int,
+      output_size: int,
+      *,
+      inputs_in_dims: tuple[str | cx.Coordinate, ...],
+      state_dims: tuple[str | cx.Coordinate, ...],
+      out_dims: tuple[str | cx.Coordinate, ...],
+      apply_remat: bool = False,
+      rnn_cell_factory: Callable[..., nnx.Module],
+      rngs: nnx.Rngs,
+      **kwargs,
+  ):
+    """Builds a RecurrentTower using a factory for the RNN cell.
+
+    Args:
+      input_size: The input size of the RNN cell.
+      output_size: The output size of the RNN cell.
+      inputs_in_dims: Dims or coordinates over which `rnn_cell` is applied to
+        inputs. All other axes are vectorized over.
+      state_dims: Dims or coordinates for RNN state. All other axes are
+        vectorized over.
+      out_dims: Dims or coordinates to attach to non-vectorized axes of output
+        produced by `rnn_cell`.
+      apply_remat: Whether to apply nnx.remat to the RNN cell.
+      rnn_cell_factory: A factory function that creates the RNN cell. It should
+        accept input_size, output_size, and rngs as arguments.
+      rngs: The random number generators for the RNN cell.
+      **kwargs: Additional keyword arguments for the rnn_cell_factory.
+
+    Returns:
+      A RecurrentTower instance.
+    """
+    cell = rnn_cell_factory(input_size, output_size, rngs=rngs, **kwargs)
+    return cls(cell, inputs_in_dims, state_dims, out_dims, apply_remat)
+
+
+RecurrentTowerFactory = Callable[..., RecurrentTower]
 
 
 @nnx_compat.dataclass

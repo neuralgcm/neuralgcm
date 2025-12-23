@@ -179,6 +179,103 @@ class ForwardTowerTest(parameterized.TestCase):
       tower(transposed_inputs)
 
 
+class RecurrentTowerTest(parameterized.TestCase):
+  """Tests RecurrentTower implementation."""
+
+  def setUp(self):
+    super().setUp()
+    self.grid = coordinates.LonLatGrid.T21()
+    self.levels = coordinates.SigmaLevels.equidistant(12)
+    self.coord = cx.compose_coordinates(self.levels, self.grid)
+
+  @parameterized.parameters(
+      dict(rnn_cell_factory=standard_layers.LSTMCell, is_tuple_carry=True),
+      dict(
+          rnn_cell_factory=standard_layers.OptimizedLSTMCell,
+          is_tuple_carry=True,
+      ),
+      dict(rnn_cell_factory=standard_layers.GRUCell, is_tuple_carry=False),
+      dict(rnn_cell_factory=standard_layers.SimpleCell, is_tuple_carry=False),
+  )
+  def test_recurrent_tower_over_grid(self, rnn_cell_factory, is_tuple_carry):
+    tower = towers.RecurrentTower.build_using_factories(
+        input_size=7,
+        output_size=13,
+        inputs_in_dims=('din',),
+        state_dims=('dout',),
+        out_dims=('dout',),
+        apply_remat=False,
+        rnn_cell_factory=rnn_cell_factory,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    c = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+    h = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+    carry = (c, h) if is_tuple_carry else h
+    new_carry, out = tower(carry, inputs)
+
+    with self.subTest('output_shape'):
+      self.assertEqual(out.shape, (13,) + self.grid.shape)
+      if is_tuple_carry:
+        self.assertEqual(new_carry[0].shape, (13,) + self.grid.shape)
+        self.assertEqual(new_carry[1].shape, (13,) + self.grid.shape)
+      else:
+        self.assertEqual(new_carry.shape, (13,) + self.grid.shape)
+    with self.subTest('output_dims'):
+      self.assertEqual(out.dims, ('dout',) + self.grid.dims)
+      if is_tuple_carry:
+        self.assertEqual(new_carry[0].dims, ('dout',) + self.grid.dims)
+        self.assertEqual(new_carry[1].dims, ('dout',) + self.grid.dims)
+      else:
+        self.assertEqual(new_carry.dims, ('dout',) + self.grid.dims)
+    with self.subTest('output_coordinates'):
+      self.assertEqual(cx.get_coordinate(out, missing_axes='skip'), self.grid)
+      if is_tuple_carry:
+        self.assertEqual(
+            cx.get_coordinate(new_carry[0], missing_axes='skip'), self.grid
+        )
+        self.assertEqual(
+            cx.get_coordinate(new_carry[1], missing_axes='skip'), self.grid
+        )
+      else:
+        self.assertEqual(
+            cx.get_coordinate(new_carry, missing_axes='skip'), self.grid
+        )
+
+  @parameterized.parameters(
+      dict(rnn_cell_factory=standard_layers.LSTMCell, is_tuple_carry=True),
+      dict(
+          rnn_cell_factory=standard_layers.OptimizedLSTMCell,
+          is_tuple_carry=True,
+      ),
+      dict(rnn_cell_factory=standard_layers.GRUCell, is_tuple_carry=False),
+      dict(rnn_cell_factory=standard_layers.SimpleCell, is_tuple_carry=False),
+  )
+  def test_raises_on_wrong_alignment(self, rnn_cell_factory, is_tuple_carry):
+    tower = towers.RecurrentTower.build_using_factories(
+        input_size=7,
+        output_size=13,
+        inputs_in_dims=('din',),
+        state_dims=('dout',),
+        out_dims=('dout',),
+        apply_remat=False,
+        rnn_cell_factory=rnn_cell_factory,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    if is_tuple_carry:
+      c = cx.wrap(jnp.ones((13,)), 'dout')  # c lacks grid dims
+      h = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+      carry = (c, h)
+    else:
+      carry = cx.wrap(jnp.ones((13,)), 'dout')  # carry lacks grid dims
+
+    with self.assertRaisesRegex(
+        ValueError, 'Vectorized dimensions on inputs .* do not match'
+    ):
+      tower(carry, inputs)
+
+
 class TransformerTowerTest(parameterized.TestCase):
   """Tests TransformerTower implementation."""
 

@@ -20,6 +20,7 @@ from typing import Callable, Literal, Protocol, Sequence
 
 from flax import nnx
 from flax import typing as flax_typing
+from flax.nnx.nn import recurrent as nnx_recurrent
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import boundaries
@@ -239,6 +240,94 @@ def conv_dilated_ncw(
 
 
 # TODO(dkochkov) Investigate performance of this layer.
+
+
+class LSTMCell(nnx_recurrent.LSTMCell, pytree=False):
+  """LSTM cell layer."""
+
+  def __init__(
+      self,
+      input_size: int,
+      output_size: int,
+      *,
+      rngs: nnx.Rngs,
+      **kwargs,
+  ):
+    super().__init__(
+        in_features=input_size,
+        hidden_features=output_size,
+        rngs=rngs,
+        **kwargs,
+    )
+
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
+
+class OptimizedLSTMCell(nnx_recurrent.OptimizedLSTMCell, pytree=False):
+  """Optimized LSTM cell layer."""
+
+  def __init__(
+      self,
+      input_size: int,
+      output_size: int,
+      *,
+      rngs: nnx.Rngs,
+      **kwargs,
+  ):
+    super().__init__(
+        in_features=input_size,
+        hidden_features=output_size,
+        rngs=rngs,
+        **kwargs,
+    )
+
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
+
+class GRUCell(nnx_recurrent.GRUCell, pytree=False):
+  """GRU cell layer."""
+
+  def __init__(
+      self,
+      input_size: int,
+      output_size: int,
+      *,
+      rngs: nnx.Rngs,
+      **kwargs,
+  ):
+    super().__init__(
+        in_features=input_size,
+        hidden_features=output_size,
+        rngs=rngs,
+        **kwargs,
+    )
+
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
+
+class SimpleCell(nnx_recurrent.SimpleCell, pytree=False):
+  """Simple cell layer."""
+
+  def __init__(
+      self,
+      input_size: int,
+      output_size: int,
+      *,
+      rngs: nnx.Rngs,
+      **kwargs,
+  ):
+    super().__init__(
+        in_features=input_size,
+        hidden_features=output_size,
+        rngs=rngs,
+        **kwargs,
+    )
+
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
 
 
 class ConvLevel(nnx.Conv):

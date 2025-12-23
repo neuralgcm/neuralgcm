@@ -123,6 +123,126 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
 
 
 @nnx_compat.dataclass
+class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
+  """Transforms fields with RecurrentTower and splits the output to fields.
+
+  Attributes:
+    targets: A dictionary mapping output names to their coordinates.
+    tower: The RecurrentTower module to apply to the combined inputs.
+    dims_to_align: A tuple of dimsension names or coordinates used to align
+      fields when combining inputs and splitting outputs.
+    in_transform: Optional transform to be applied to inputs.
+    out_transform: Optional transform to be applied to module outputs.
+    state_keys: Keys for recurrence state in input dict, default ('lstm_c',
+      'lstm_h').
+    feature_sharding_schema: Optional features sharding schema.
+    result_sharding_schema: Optional result sharding schema.
+    mesh: The `parallelism.Mesh` used for sharding.
+  """
+
+  targets: dict[str, cx.Coordinate]
+  tower: towers.RecurrentTower
+  dims_to_align: tuple[str | cx.Coordinate, ...]
+  in_transform: transforms.Transform = transforms.Identity()
+  out_transform: transforms.Transform = transforms.Identity()
+  state_keys: tuple[str, ...] = ('lstm_c', 'lstm_h')
+  feature_sharding_schema: str | None = None
+  result_sharding_schema: str | None = None
+  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    apply_sharding = self.mesh.with_sharding_constraint
+    in_features_with_state = self.in_transform(inputs)
+    in_features_with_state = apply_sharding(
+        in_features_with_state, self.feature_sharding_schema
+    )
+    in_features = in_features_with_state.copy()
+    tag = self.tower.inputs_in_dims[0]
+    carry_parts = [in_features.pop(key) for key in self.state_keys]
+    carry = tuple(carry_parts) if len(carry_parts) > 1 else carry_parts[0]
+    in_field = field_utils.combine_fields(in_features, self.dims_to_align, tag)
+    out_carry, out_field = self.tower(carry, in_field)
+    out_fields = field_utils.split_to_fields(out_field, self.targets)
+    out_fields = self.out_transform(out_fields)
+
+    if len(self.state_keys) > 1:
+      for key, val in zip(self.state_keys, out_carry):
+        out_fields[key] = val
+    else:
+      out_fields[self.state_keys[0]] = out_carry
+
+    out_fields = apply_sharding(out_fields, self.result_sharding_schema)
+    return out_fields
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_shapes: dict[str, cx.Field],
+      targets: dict[str, cx.Coordinate],
+      tower_factory: towers.RecurrentTowerFactory,
+      dims_to_align: tuple[str | cx.Coordinate, ...],
+      in_transform=transforms.Identity(),
+      out_transform=transforms.Identity(),
+      state_keys: tuple[str, ...] = ('lstm_c', 'lstm_h'),
+      feature_sharding_schema: str | None = None,
+      result_sharding_schema: str | None = None,
+      *,
+      mesh: parallelism.Mesh,
+      rngs,
+  ):
+    """Builds a RecurrentTowerTransform using factories for submodules.
+
+    Args:
+      input_shapes: A dictionary of fields with the same shape structure as
+        expected inputs. Used to determine the input size for the tower.
+      targets: A dictionary mapping output field names to their coordinates.
+        Used to determine the output size for the tower and for the `targets`
+        attribute of the transform.
+      tower_factory: A factory function that creates the RecurrentTower. It
+        should accept input_size, output_size, and rngs as arguments.
+      dims_to_align: A tuple of dimension names or coordinates used to align
+        fields when combining inputs and splitting outputs.
+      in_transform: Optional transform to be applied to inputs.
+      out_transform: Optional transform to be applied to module outputs.
+      state_keys: Keys for recurrence state in input dict, default ('lstm_c',
+        'lstm_h').
+      feature_sharding_schema: Optional features sharding schema.
+      result_sharding_schema: Optional result sharding schema.
+      mesh: The `parallelism.Mesh` used for sharding.
+      rngs: The random number generators for initializing the tower.
+
+    Returns:
+      An instance of RecurrentTowerTransform.
+    """
+
+    in_shapes = in_transform.output_shapes(input_shapes)
+    in_shapes_for_combine = in_shapes.copy()
+    for key in state_keys:
+      in_shapes_for_combine.pop(key)
+    in_field_shape = nnx.eval_shape(
+        field_utils.combine_fields, in_shapes_for_combine, dims_to_align
+    )
+    out_shapes = field_utils.shape_struct_fields_from_coords(targets)
+    out_field_shape = nnx.eval_shape(
+        field_utils.combine_fields, out_shapes, dims_to_align
+    )
+    input_size = in_field_shape.positional_shape[0]
+    output_size = out_field_shape.positional_shape[0]
+    tower = tower_factory(input_size, output_size, rngs=rngs)
+    return cls(
+        targets=targets,
+        tower=tower,
+        dims_to_align=dims_to_align,
+        in_transform=in_transform,
+        out_transform=out_transform,
+        state_keys=state_keys,
+        feature_sharding_schema=feature_sharding_schema,
+        result_sharding_schema=result_sharding_schema,
+        mesh=mesh,
+    )
+
+
+@nnx_compat.dataclass
 class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
   """Transforms fields with TransformerTower and splits the output to fields.
 

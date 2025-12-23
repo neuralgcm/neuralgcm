@@ -21,6 +21,7 @@ from typing import overload, Literal, Sequence
 import coordax as cx
 import jax
 import jax.numpy as jnp
+from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -265,11 +266,15 @@ def zero_mask_axis_outliers(
     upper: float | None = None,
 ) -> cx.Field:
   """Returns field with values along `axis` set to 0 outside [lower, upper]."""
-  if axis.ndim != 1 or axis.dims[0] not in axis.fields:
-    raise ValueError(f'Axis must be 1d with specified tick values got {axis}')
   if [upper, lower].count(None) == 2:
     raise ValueError('Must specify at least one of `lower` or `upper`.')
-  ticks = axis.fields[axis.dims[0]].data
+  if isinstance(axis, coordinates.HybridLevels):
+    # Use standard surface pressure to get representative pressure levels.
+    ticks = axis.pressure_centers(101325.0).data
+  elif axis.ndim != 1 or axis.dims[0] not in axis.fields:
+    raise ValueError(f'Axis must be 1d with specified tick values got {axis}')
+  else:
+    ticks = axis.fields[axis.dims[0]].data
   mask = jnp.ones_like(ticks, dtype=bool)
   if lower is not None:
     mask &= ticks >= lower
@@ -285,9 +290,14 @@ def reconstruct_1d_field_from_ref_values(
     interpolation_space: Literal['linear', 'log', 'sqrt', 'square'] = 'linear'
 ) -> cx.Field:
   """Reconstructs 1D Field via interpolation of reference values."""
-  if axis.ndim != 1 or axis.dims[0] not in axis.fields:
+  if isinstance(axis, coordinates.HybridLevels):
+    # Use standard surface pressure to get representative pressure levels.
+    ticks = axis.pressure_centers(101325.0).data
+  elif axis.ndim != 1 or axis.dims[0] not in axis.fields:
     raise ValueError(f'Expected 1D coordinate with specified ticks, got {axis}')
-  ticks = axis.fields[axis.dims[0]].data
+  else:
+    ticks = axis.fields[axis.dims[0]].data
+
   if interpolation_space == 'log':
     log_values = np.interp(ticks, ref_ticks, np.log(ref_values))
     values = np.exp(log_values)

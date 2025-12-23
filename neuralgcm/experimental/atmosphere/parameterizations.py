@@ -38,7 +38,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
       self,
       *,
       ylm_map: spherical_harmonics.FixedYlmMapping,
-      sigma: coordinates.SigmaLevels,
+      levels: coordinates.SigmaLevels | coordinates.HybridLevels,
       surface_field_names: tuple[str, ...],
       volume_field_names: tuple[str, ...],
       features_module: transforms.Transform,
@@ -59,7 +59,7 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
 
     grid = ylm_map.nodal_grid
     for name in (set(volume_field_names) | uv_fields) - div_curl_fields:
-      output_coords[name] = cx.coords.compose(sigma, grid)
+      output_coords[name] = cx.coords.compose(levels, grid)
     for name in set(surface_field_names):
       output_coords[name] = grid
 

@@ -167,7 +167,7 @@ def field_from_xarray(
       coordinates.LayerLevels,
       cx.DummyAxis,
   )
-  return cx.Field.from_xarray(data_array, coord_types + additional_coord_types)
+  return cx.from_xarray(data_array, coord_types + additional_coord_types)
 
 
 def validate_xarray_inputs(

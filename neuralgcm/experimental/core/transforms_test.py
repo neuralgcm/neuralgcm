@@ -732,13 +732,13 @@ class TransformsTest(parameterized.TestCase):
     mask_data = np.zeros(grid.shape, dtype=bool)
     lat_idx = grid.shape[1] // 2
     mask_data[:, lat_idx] = True  # these values will be inpainted.
-    mask = cx.wrap(mask_data, grid)
+    mask = cx.field(mask_data, grid)
 
     # Corrupt the data under the mask
     u_data = np.ones(grid.shape)
     u_corrupted_data = u_data.copy()
     u_corrupted_data[:, lat_idx] = 100.0  # Large outlier to be inpainted.
-    u_corrupted = cx.wrap(u_corrupted_data, grid)
+    u_corrupted = cx.field(u_corrupted_data, grid)
     inputs = {'u': u_corrupted}
 
     lowpass = spatial_filters.ExponentialModalFilter(

@@ -223,6 +223,7 @@ def conv_dilated_ncw(
     dimension_numbers,
     feature_group_count,
     precision,
+    out_sharding=None,
 ):
   """A modified version of conv_general_dilated that uses NCW convention."""
   del dimension_numbers  # unused.
@@ -236,6 +237,7 @@ def conv_dilated_ncw(
       dimension_numbers=('NCW', 'WIO', 'NCW'),
       feature_group_count=feature_group_count,
       precision=precision,
+      out_sharding=out_sharding,
   )
 
 

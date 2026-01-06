@@ -56,16 +56,9 @@ class ExponentialModalFilter(ModalSpatialFilter):
 
   def _filter_field(self, x: cx.Field) -> cx.Field:
     """Returns filtered ``x``."""
-    # TODO(dkochkov): Consider adding helper function to coordax for such logic.
-    ylm_grids = [  # can be at most 1, since the axes names are fixed.
-        c for c in cx.coords.canonicalize(x.coordinate)
-        if isinstance(c, coordinates.SphericalHarmonicGrid)
-    ]
-    if not ylm_grids:
-      raise ValueError(
-          f'No spherical harmonic grid found on coordinates of {x.coordinate=}.'
-      )
-    [ylm_grid] = list(ylm_grids)  # if there are any, there would be only one.
+    ylm_grid = cx.coords.extract(
+        x.coordinate, coordinates.SphericalHarmonicGrid
+    )
     ls = ylm_grid.fields['total_wavenumber']
     k = ls / ls.data.max()
     a = self.attenuation

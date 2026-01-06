@@ -350,13 +350,9 @@ def get_surface_pressure(
   Returns:
     Surface pressure field on a horizontal grid.
   """
-  canonical = cx.coords.canonicalize(geopotential.coordinate)
-  levels = [c for c in canonical if isinstance(c, coordinates.PressureLevels)]
-  if len(levels) != 1:
-    raise ValueError(
-        f'geopotential must have exactly 1 pressure-like coord, got {levels}'
-    )
-  [levels] = levels
+  levels = cx.coords.extract(
+      geopotential.coordinate, coordinates.PressureLevels
+  )
   pressure = levels.fields['pressure'] * 100  # In Pascal.
   if sim_units is not None:
     assert isinstance(sim_units, units.SimUnits)

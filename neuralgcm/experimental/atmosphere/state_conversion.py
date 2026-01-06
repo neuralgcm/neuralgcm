@@ -43,13 +43,9 @@ def get_geopotential(
         inputs['specific_cloud_ice_water_content'].data
         + inputs['specific_cloud_liquid_water_content'].data
     )
-  canonical = cx.coords.canonicalize(temperature.coordinate)
-  levels = [c for c in canonical if isinstance(c, coordinates.SigmaLevels)]
-  if len(levels) != 1:
-    raise ValueError(
-        f'Expected exactly one sigma in {temperature.coordinate}, got {levels}'
-    )
-  [levels] = levels
+  levels = cx.coords.extract(
+      temperature.coordinate, coordinates.SigmaLevels
+  )
   # TODO(dkochkov): Simplify and generalize this function in dinosaur, also
   # consider exposing this function elsewhere in the codebase.
   dino_get_geopotential = functools.partial(

@@ -28,10 +28,7 @@ def _extract_timedelta(
     coordinate: cx.Coordinate,
 ) -> coordinates.TimeDelta:
   """Extracts TimeDelta axis from a coordinate or raises if none found."""
-  for c in cx.coords.canonicalize(coordinate):
-    if isinstance(c, coordinates.TimeDelta):
-      return c
-  raise ValueError(f'No TimeDelta axis found in {coordinate}')
+  return cx.coords.extract(coordinate, coordinates.TimeDelta)
 
 
 # A pytree of `cx.Coordinate` that defines the inputs to a nested scan.

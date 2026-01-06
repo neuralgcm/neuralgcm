@@ -55,13 +55,11 @@ def get_temperature_linearization_transform(
     ref_temp_field = cx.field(np.array(ref_temperatures), levels)
 
   def linearize_fn(abs_temp: cx.Field) -> cx.Field:
-    canonical = cx.coords.canonicalize(abs_temp.coordinate)
-    ylm_set = set(
-        c for c in canonical if isinstance(c, coordinates.SphericalHarmonicGrid)
-    )
-    if ylm_set:
-      assert len(ylm_set) == 1  # cannot have multiple ylm grids.
-      [ylm_grid] = list(ylm_set)
+    ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
+    if all(d in abs_temp.dims for d in ylm_dims):
+      ylm_grid = cx.coords.extract(
+          abs_temp.coordinate, coordinates.SphericalHarmonicGrid
+      )
       del_temp = ylm_grid.add_constant(abs_temp, -ref_temp_field)
     else:
       del_temp = abs_temp - ref_temp_field
@@ -100,13 +98,11 @@ def get_temperature_delinearization_transform(
 
   def delinearize_fn(del_temp: cx.Field) -> cx.Field:
     """Applies delinearization to `del_temp` field."""
-    canonical = cx.coords.canonicalize(del_temp.coordinate)
-    ylm_set = set(
-        c for c in canonical if isinstance(c, coordinates.SphericalHarmonicGrid)
-    )
-    if ylm_set:
-      assert len(ylm_set) == 1  # impossible to have multiple ylm grids.
-      [ylm_grid] = list(ylm_set)
+    ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
+    if all(d in del_temp.dims for d in ylm_dims):
+      ylm_grid = cx.coords.extract(
+          del_temp.coordinate, coordinates.SphericalHarmonicGrid
+      )
       abs_temp = ylm_grid.add_constant(del_temp, ref_temp_field)
     else:
       abs_temp = del_temp + ref_temp_field

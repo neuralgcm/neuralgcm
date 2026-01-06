@@ -47,7 +47,7 @@ _INCLUDE_START = {'left', 'both'}
 _INCLUDE_STOP = {'right', 'both'}
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class Stencil(Generic[T]):
   """Stencil of points to applying for sampling data defined on a grid.
 

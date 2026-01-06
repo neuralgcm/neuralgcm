@@ -71,6 +71,21 @@ class StencilsTest(parameterized.TestCase):
         " closed='both')",
     )
 
+  def test_stencil_hashable(self):
+    s1 = stencils.Stencil(start=0, stop=10, step=1)
+    s2 = stencils.Stencil(start=0, stop=10, step=1)
+    s3 = stencils.Stencil(start=0, stop=10, step=2)
+    self.assertEqual(hash(s1), hash(s2))
+    self.assertNotEqual(hash(s1), hash(s3))
+
+    ts1 = stencils.TimeStencil(start='-1h', stop='1h', step='1h')
+    ts2 = stencils.TimeStencil(start='-1h', stop='1h', step='1h')
+    self.assertEqual(hash(ts1), hash(ts2))
+
+    # Check that it can be used in a set/dict
+    d = {s1: 'value'}
+    self.assertEqual(d[s2], 'value')
+
   @parameterized.parameters(
       dict(value='1h', expected=np.timedelta64(1, 'h')),
       dict(value='-1h', expected=np.timedelta64(-1, 'h')),

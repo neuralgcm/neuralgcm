@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from absl.testing import absltest
+import coordax as cx
+import jax.numpy as jnp
 from neuralgcm.experimental import xreader
+from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.training import data_loading
 import numpy as np
 import pandas as pd
@@ -157,6 +160,166 @@ class GetSampleOriginsTest(absltest.TestCase):
     expected = pd.DatetimeIndex(pd.concat([pd.Series(r) for r in ranges]))
 
     np.testing.assert_array_equal(out, expected)
+
+
+class SelTimedeltaTest(absltest.TestCase):
+
+  def _make_field(self, hours):
+    deltas = np.array(hours, dtype='timedelta64[h]')
+    td_axis = coordinates.TimeDelta(deltas)
+    # Create data matching the length of the time axis
+    data = jnp.arange(len(hours))
+    return cx.field(data, td_axis)
+
+  def test_select_all_values(self):
+    field = self._make_field([-1, 0, 1])
+    # Select all using None slice
+    result = data_loading.sel_timedelta_fields(
+        {'f': field}, values=slice(None, None)
+    )
+    self.assertEqual(
+        result['f'].axes['timedelta'].deltas.tolist(),
+        [np.timedelta64(h, 'h') for h in [-1, 0, 1]],
+    )
+
+  def test_select_range_subset(self):
+    field = self._make_field([-2, -1, 0, 1, 2])
+    # Select range [-1, 1]. Note that this implementation is inclusive for the
+    # stop value if it exists in the array because of
+    # searchsorted(side='right').
+    result = data_loading.sel_timedelta_fields(
+        {'f': field},
+        values=slice(np.timedelta64(-1, 'h'), np.timedelta64(1, 'h')),
+    )
+    self.assertEqual(
+        result['f'].axes['timedelta'].deltas.tolist(),
+        [np.timedelta64(h, 'h') for h in [-1, 0, 1]],
+    )
+
+  def test_select_empty_range(self):
+    field = self._make_field([-1, 0, 1])
+    # Select range [2, 3] -> should be empty
+    result = data_loading.sel_timedelta_fields(
+        {'f': field},
+        values=slice(np.timedelta64(2, 'h'), np.timedelta64(3, 'h')),
+    )
+    self.assertEmpty(result['f'].axes['timedelta'].deltas)
+    self.assertEmpty(result['f'].data)
+
+  def test_select_single_value(self):
+    field = self._make_field([-1, 0, 1])
+    result = data_loading.sel_timedelta_fields(
+        {'f': field}, values=np.timedelta64(0, 'h')
+    )
+    self.assertEqual(
+        result['f'].axes['timedelta'].deltas.tolist(), [np.timedelta64(0, 'h')]
+    )
+
+  def test_select_missing_value_raises_key_error(self):
+    field = self._make_field([-1, 0, 1])
+    with self.assertRaisesRegex(KeyError, 'Value .* not found'):
+      data_loading.sel_timedelta_fields(
+          {'f': field}, values=np.timedelta64(2, 'h')
+      )
+
+
+class SelTimedeltaCoordsTest(absltest.TestCase):
+
+  def test_filters_timedelta_coords(self):
+    deltas = np.array([-1, 0, 1], dtype='timedelta64[h]')
+    td_coord = coordinates.TimeDelta(deltas)
+    x = cx.SizedAxis('x', 5)
+    combined_coord = cx.coords.compose(td_coord, x)
+
+    with self.subTest('single_value'):
+      result = data_loading.sel_timedelta_coords(
+          combined_coord, values=np.timedelta64(0, 'h')
+      )
+      actual_td = cx.coords.extract(result, coordinates.TimeDelta)
+      expected = coordinates.TimeDelta(np.array([0], dtype='timedelta64[h]'))
+      self.assertEqual(actual_td, expected)
+      actual_x = cx.coords.extract(result, cx.SizedAxis)
+      self.assertEqual(actual_x, x)
+
+    with self.subTest('slice_value'):
+      result = data_loading.sel_timedelta_coords(
+          combined_coord, values=slice(np.timedelta64(0, 'h'), None)
+      )
+      actual_td = cx.coords.extract(result, coordinates.TimeDelta)
+      expected = coordinates.TimeDelta(np.array([0, 1], dtype='timedelta64[h]'))
+      self.assertEqual(actual_td, expected)
+      actual_x = cx.coords.extract(result, cx.SizedAxis)
+      self.assertEqual(actual_x, x)
+
+
+class InferStencilsTest(absltest.TestCase):
+
+  def _make_spec(self, hours):
+    deltas = np.array(hours, dtype='timedelta64[h]')
+    return coordinates.TimeDelta(deltas)
+
+  def test_single_dataset_single_variable(self):
+    spec = {'ds_a': {'var_a': self._make_spec([0, 6, 12])}}
+    stencils = data_loading.infer_stencils(spec)
+    expected = xreader.TimeStencil(
+        start='0h', stop='12h', step='6h', closed='both'
+    )
+    self.assertEqual(stencils['ds_a'], expected)
+
+  def test_multiple_datasets(self):
+    spec = {
+        'ds_a': {'var_a': self._make_spec([0, 24])},
+        'ds_b': {'var_b': self._make_spec([0, 1])},
+    }
+    stencils = data_loading.infer_stencils(spec)
+    self.assertEqual(
+        stencils['ds_a'],
+        xreader.TimeStencil(start='0h', stop='24h', step='24h', closed='both'),
+    )
+    self.assertEqual(
+        stencils['ds_b'],
+        xreader.TimeStencil(start='0h', stop='1h', step='1h', closed='both'),
+    )
+
+  def test_consistent_variables_in_dataset(self):
+    coord = self._make_spec([0, 6])
+    spec = {'ds_a': {'var_a': coord, 'var_b': coord}}
+    stencils = data_loading.infer_stencils(spec)
+    expected = xreader.TimeStencil(
+        start='0h', stop='6h', step='6h', closed='both'
+    )
+    self.assertEqual(stencils['ds_a'], expected)
+
+  def test_single_step_stencil(self):
+    spec = {'ds_a': {'var_a': self._make_spec([0])}}
+    stencils = data_loading.infer_stencils(spec)
+    # Single step implies 1s step and closed='left' by implementation.
+    expected = xreader.TimeStencil(
+        start='0h', stop='1s', step='1s', closed='left'
+    )
+    self.assertEqual(stencils['ds_a'], expected)
+
+  def test_inconsistent_variables_raises_error(self):
+    spec = {
+        'ds_a': {
+            'var_a': self._make_spec([0, 6]),
+            'var_b': self._make_spec([0, 12]),
+        }
+    }
+    with self.assertRaisesRegex(
+        ValueError, 'Expected exactly 1 unique stencil'
+    ):
+      data_loading.infer_stencils(spec)
+
+  def test_non_uniform_steps_raises_error(self):
+    spec = {'ds_a': {'var_a': self._make_spec([0, 6, 10])}}
+    with self.assertRaisesRegex(ValueError, 'must be uniformly spaced'):
+      data_loading.infer_stencils(spec)
+
+  def test_empty_timedelta_raises_error(self):
+    spec = {'ds_a': {'var_a': self._make_spec([])}}
+    with self.assertRaisesRegex(ValueError, 'must not be empty'):
+      data_loading.infer_stencils(spec)
 
 
 if __name__ == '__main__':

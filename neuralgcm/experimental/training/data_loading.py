@@ -68,6 +68,12 @@ jax.tree_util.register_pytree_node(
 )
 
 
+def _extract_timedelta(coord: cx.Coordinate) -> coordinates.TimeDelta:
+  """Extracts a TimeDelta coordinate from a coordinate."""
+  timedelta = cx.coords.extract(coord, coordinates.TimeDelta)
+  return cast(coordinates.TimeDelta, timedelta)
+
+
 def _transpose_for_to_global_array(
     data: dict[Any, PyTree], is_leaf: Callable[[Any], bool]
 ) -> PyTree:
@@ -216,6 +222,170 @@ def select_targets(inputs, queries):
     for var_name in specs:
       targets[source][var_name] = inputs[source][var_name]
   return targets
+
+
+def sel_timedelta_fields(
+    inputs: PyTree,
+    values: np.timedelta64 | slice,
+) -> PyTree:
+  """Returns a selection of inputs based on timedelta values."""
+
+  def _slice_field(x):
+    in_timedelta_axis = x.axes['timedelta']
+    if isinstance(in_timedelta_axis, parallelism.CoordinateShard):
+      wrap_as_shard = True
+      td_axis = in_timedelta_axis.coordinate
+    elif isinstance(in_timedelta_axis, coordinates.TimeDelta):
+      wrap_as_shard = False
+      td_axis = in_timedelta_axis
+    else:
+      raise ValueError(f'Unexpected type {type(in_timedelta_axis)}')
+
+    deltas = td_axis.deltas
+
+    if isinstance(values, slice):
+      if values.step is not None:
+        raise ValueError('Stepping is not supported in timedelta selection.')
+
+      start_val = values.start
+      stop_val = values.stop
+
+      if start_val is None:
+        start_idx = 0
+      else:
+        start_idx = np.searchsorted(deltas, start_val, side='left')
+
+      if stop_val is None:
+        stop_idx = len(deltas)
+      else:
+        stop_idx = np.searchsorted(deltas, stop_val, side='right')
+
+      get_slice = lambda x: x[start_idx:stop_idx]
+      out_td = td_axis[start_idx:stop_idx]
+
+    else:
+      # Scalar value
+      indices = np.nonzero(deltas == values)[0]
+      if indices.size == 0:
+        raise KeyError(f'Value {values} not found in timedelta axis.')
+      # We take the first match, though typically they are unique.
+      idx = indices[0]
+      # Using slice [idx:idx+1] to preserve dimension.
+      get_slice = lambda x: x[idx : idx + 1]
+      out_td = td_axis[idx : idx + 1]
+
+    if wrap_as_shard:
+      out_td = parallelism.CoordinateShard(
+          out_td,
+          in_timedelta_axis.spmd_mesh_shape,
+          in_timedelta_axis.dimension_partitions,
+      )
+    return cx.cpmap(get_slice)(x.untag('timedelta')).tag(out_td)
+
+  return jax.tree.map(_slice_field, inputs, is_leaf=cx.is_field)
+
+
+def sel_init_fields(inputs: PyTree) -> PyTree:
+  """Returns a slice of inputs with timedelta values <= 0."""
+  return sel_timedelta_fields(inputs, slice(None, np.timedelta64(0, 's')))
+
+
+def sel_target_fields(inputs: PyTree) -> PyTree:
+  return sel_timedelta_fields(inputs, slice(np.timedelta64(1, 's'), None))
+
+
+def sel_timedelta_coords(
+    coords: PyTree,
+    values: np.timedelta64 | slice,
+) -> PyTree:
+  """Returns `coords` with TimeDelta coordinate sliced to side of `ref`."""
+  if_coord = lambda c: isinstance(c, cx.Coordinate)
+  fields = jax.tree.map(cx.shape_struct_field, coords, is_leaf=if_coord)
+  fn = functools.partial(sel_timedelta_fields, values=values)
+  out = jax.eval_shape(fn, fields)
+  return jax.tree.map(lambda f: f.coordinate, out, is_leaf=cx.is_field)
+
+
+def sel_target_timedeltas(inputs: PyTree) -> PyTree:
+  return sel_timedelta_coords(inputs, slice(np.timedelta64(1, 's'), None))
+
+
+def filter_missing_optional(
+    specs: dict[
+        str, dict[str, cx.Coordinate | data_specs.OptionalSpec[cx.Coordinate]]
+    ],
+    all_data: dict[str, xarray.Dataset],
+) -> dict[str, dict[str, cx.Coordinate]]:
+  """Returns `specs` with missing optional entries removed."""
+  validated = {}
+  for dataset_key, dataset_spec in specs.items():
+    if dataset_key not in all_data:
+      if not all([
+          isinstance(x, data_specs.OptionalSpec) for x in dataset_spec.values()
+      ]):
+        raise ValueError(
+            f'Dataset {dataset_key} not found in all_data and not all values in'
+            ' dataset_spec are optional.'
+        )
+    ds = all_data[dataset_key]
+    validated[dataset_key] = {}
+    for var_name, spec in dataset_spec.items():
+      coord, is_optional = data_specs.unwrap_optional(spec)
+      if var_name not in ds:
+        if is_optional:
+          continue
+        else:
+          raise ValueError(
+              f'Variable {var_name} missing in dataset {dataset_key}'
+          )
+      validated[dataset_key][var_name] = coord
+  return validated
+
+
+def _stencil_from_timedelta(
+    timedelta: coordinates.TimeDelta,
+) -> xreader.TimeStencil:
+  """Converts a TimeDelta coordinate to a TimeStencil."""
+  deltas = timedelta.deltas
+  if deltas.size == 0:
+    raise ValueError('TimeDelta must not be empty.')
+
+  start = deltas[0]
+  if deltas.size == 1:
+    step = np.timedelta64(1, 's')
+    stop = start + step
+    closed = 'left'
+  else:
+    steps = np.diff(deltas)
+    step = steps[0]
+    if not np.all(steps == step):
+      raise ValueError(
+          'TimeDelta must be uniformly spaced to convert to TimeStencil.'
+      )
+    stop = deltas[-1]
+    closed = 'both'
+
+  return xreader.TimeStencil(start=start, stop=stop, step=step, closed=closed)
+
+
+def infer_stencils(
+    data_spec: dict[str, dict[str, cx.Coordinate]],
+) -> dict[str, xreader.TimeStencil]:
+  """Inferrs TimeStencils from `data_spec`."""
+  stencils = {}
+
+  for k, specs in data_spec.items():
+    data_stencils = set()
+    for coord in specs.values():
+      data_stencils.add(_stencil_from_timedelta(_extract_timedelta(coord)))
+    if len(data_stencils) != 1:
+      raise ValueError(
+          f'Expected exactly 1 unique stencil per dataset, got {data_stencils=}'
+          f' for dataset key {k}'
+      )
+    stencil = list(data_stencils)[0]
+    stencils[k] = stencil
+  return stencils
 
 
 def slice_leading_timedelta(inputs: PyTree, length: int) -> PyTree:

@@ -28,6 +28,7 @@ from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import scales
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
+import numpy as np
 import xarray
 
 
@@ -80,9 +81,12 @@ def nodal_orography_from_ds(ds: xarray.Dataset) -> xarray.DataArray:
   return orography.transpose(*lon_lat_order)
 
 
-def swap_time_to_timedelta(ds: xarray.Dataset) -> xarray.Dataset:
+def swap_time_to_timedelta(
+    ds: xarray.Dataset,
+    timedelta_origin: np.timedelta64 = np.timedelta64(0),
+) -> xarray.Dataset:
   """Converts an xarray dataset with a time axis to a timedelta axis."""
-  ds = ds.assign_coords(timedelta=ds.time - ds.time[0])
+  ds = ds.assign_coords(timedelta=ds.time - ds.time[0] + timedelta_origin)
   ds = ds.swap_dims({'time': 'timedelta'})
   return ds
 
@@ -90,18 +94,25 @@ def swap_time_to_timedelta(ds: xarray.Dataset) -> xarray.Dataset:
 DatasetOrNestedDataset = TypeVar(
     'DatasetOrNestedDataset', xarray.Dataset, dict[str, xarray.Dataset]
 )
+TimedeltaOrNested: TypeAlias = np.timedelta64 | dict[str, np.timedelta64]
 
 
-def ensure_timedelta_axis(ds: DatasetOrNestedDataset) -> DatasetOrNestedDataset:
+def ensure_timedelta_axis(
+    ds: DatasetOrNestedDataset,
+    timedelta_origin: TimedeltaOrNested = np.timedelta64(0),
+) -> DatasetOrNestedDataset:
   """Ensures an xarray dataset has a timedelta axis."""
   if not isinstance(ds, xarray.Dataset):
+    if not isinstance(timedelta_origin, dict):
+      timedelta_origin = {k: timedelta_origin for k in ds.keys()}
     return jax.tree.map(
         ensure_timedelta_axis,
         ds,
+        timedelta_origin,
         is_leaf=lambda x: isinstance(x, xarray.Dataset),
     )
   if 'time' in ds.dims:
-    ds = swap_time_to_timedelta(ds)
+    ds = swap_time_to_timedelta(ds, timedelta_origin)
   if 'time' in ds.coords:
     ds = ds.reset_coords('time')
   return ds

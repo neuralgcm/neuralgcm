@@ -35,7 +35,7 @@ import numpy as np
 
 def get_temperature_linearization_transform(
     ref_temperatures: Sequence[float] | cx.Field,
-    levels: coordinates.SigmaLevels | None,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels |None,
     abs_temperature_key: str = 'temperature',
     del_temperature_key: str = 'temperature_variation',
 ) -> transforms.Transform:
@@ -77,7 +77,7 @@ def get_temperature_linearization_transform(
 
 def get_temperature_delinearization_transform(
     ref_temperatures: Sequence[float] | cx.Field,
-    levels: coordinates.SigmaLevels | None,
+    levels: coordinates.SigmaLevels | coordinates.HybridLevels | None,
     abs_temperature_key: str = 'temperature',
     del_temperature_key: str = 'temperature_variation',
 ) -> transforms.Transform:

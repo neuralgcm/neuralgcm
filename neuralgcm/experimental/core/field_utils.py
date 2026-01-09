@@ -16,11 +16,12 @@
 
 import functools
 import itertools
-from typing import overload, Literal, Sequence
+from typing import Callable, overload, Literal, Sequence
 
 import coordax as cx
 import jax
 import jax.numpy as jnp
+from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -258,18 +259,23 @@ def shape_struct_fields_from_coords(
   return jax.eval_shape(make_fn, coords)
 
 
+def _default_get_ticks(axis: cx.Coordinate) -> cx.Field:
+  if axis.ndim != 1 or axis.dims[0] not in axis.fields:
+    raise ValueError(f'Axis must be 1d with specified tick values got {axis}')
+  return axis.fields[axis.dims[0]]
+
+
 def zero_mask_axis_outliers(
     field: cx.Field,
     axis: cx.Coordinate,
     lower: float | None = None,
     upper: float | None = None,
+    get_tick_fn: Callable[[cx.Coordinate], cx.Field] = _default_get_ticks,
 ) -> cx.Field:
   """Returns field with values along `axis` set to 0 outside [lower, upper]."""
-  if axis.ndim != 1 or axis.dims[0] not in axis.fields:
-    raise ValueError(f'Axis must be 1d with specified tick values got {axis}')
   if [upper, lower].count(None) == 2:
     raise ValueError('Must specify at least one of `lower` or `upper`.')
-  ticks = axis.fields[axis.dims[0]].data
+  ticks = get_tick_fn(axis).data
   mask = jnp.ones_like(ticks, dtype=bool)
   if lower is not None:
     mask &= ticks >= lower
@@ -282,12 +288,11 @@ def reconstruct_1d_field_from_ref_values(
     axis: cx.Coordinate,
     ref_ticks: Sequence[float],
     ref_values: Sequence[float],
-    interpolation_space: Literal['linear', 'log', 'sqrt', 'square'] = 'linear'
+    interpolation_space: Literal['linear', 'log', 'sqrt', 'square'] = 'linear',
+    get_tick_fn: Callable[[cx.Coordinate], cx.Field] = _default_get_ticks,
 ) -> cx.Field:
   """Reconstructs 1D Field via interpolation of reference values."""
-  if axis.ndim != 1 or axis.dims[0] not in axis.fields:
-    raise ValueError(f'Expected 1D coordinate with specified ticks, got {axis}')
-  ticks = axis.fields[axis.dims[0]].data
+  ticks = get_tick_fn(axis).data
   if interpolation_space == 'log':
     log_values = np.interp(ticks, ref_ticks, np.log(ref_values))
     values = np.exp(log_values)

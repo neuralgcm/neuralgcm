@@ -23,6 +23,7 @@ from neuralgcm.experimental.atmosphere import interpolators
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
+from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
@@ -30,6 +31,7 @@ def get_geopotential(
     inputs: dict[str, cx.Field],
     orography: orographies.Orography,
     sim_units: units.SimUnits,
+    surface_pressure: cx.Field | None = None,
 ):
   """Computes geopotential from temperature and moisture species."""
   temperature = inputs['temperature']
@@ -44,24 +46,52 @@ def get_geopotential(
         + inputs['specific_cloud_liquid_water_content'].data
     )
   levels = cx.coords.extract(
-      temperature.coordinate, coordinates.SigmaLevels
+      temperature.coordinate,
+      (coordinates.SigmaLevels, coordinates.HybridLevels),
   )
-  # TODO(dkochkov): Simplify and generalize this function in dinosaur, also
-  # consider exposing this function elsewhere in the codebase.
-  dino_get_geopotential = functools.partial(
-      dinosaur_primitive_equations.get_geopotential_with_moisture,
-      nodal_orography=orography.nodal_orography.data,
-      coordinates=levels.sigma_levels,
-      gravity_acceleration=sim_units.gravity_acceleration,
-      ideal_gas_constant=sim_units.ideal_gas_constant,
-      water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
-  )
+  if isinstance(levels, coordinates.SigmaLevels):
+    # TODO(dkochkov): Simplify and generalize this function in dinosaur, also
+    # consider exposing this function elsewhere in the codebase.
+    dino_get_geopotential = functools.partial(
+        dinosaur_primitive_equations.get_geopotential_with_moisture,
+        nodal_orography=orography.nodal_orography.data,
+        coordinates=levels.sigma_levels,
+        gravity_acceleration=sim_units.gravity_acceleration,
+        ideal_gas_constant=sim_units.ideal_gas_constant,
+        water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
+    )
+    geopotential = dino_get_geopotential(
+        temperature=temperature.data,
+        specific_humidity=specific_humidity.data,
+        clouds=clouds,
+    )
+  elif isinstance(levels, coordinates.HybridLevels):
+    dino_get_geopotential = functools.partial(
+        dinosaur_primitive_equations.get_geopotential_on_hybrid,
+        nodal_orography=orography.nodal_orography.data,
+        coordinates=levels.hybrid_levels,
+        gravity_acceleration=sim_units.gravity_acceleration,
+        ideal_gas_constant=sim_units.ideal_gas_constant,
+        water_vapor_gas_constant=sim_units.water_vapor_gas_constant,
+    )
+    if surface_pressure is None:
+      raise ValueError(
+          'Missing `surface_pressure` in inputs, needed for geopotential on'
+          ' hybrid levels.'
+      )
+    geopotential = dino_get_geopotential(
+        temperature=temperature.data,
+        specific_humidity=specific_humidity.data,
+        clouds=clouds,
+        surface_pressure=jnp.expand_dims(surface_pressure.data, axis=0),
+    )
+  else:
+    raise ValueError(
+        'Expected exactly one sigma or hybrid level in'
+        f' {temperature.coordinate}, got {levels}'
+    )
+
   coord = temperature.coordinate
-  geopotential = dino_get_geopotential(
-      temperature=temperature.data,
-      specific_humidity=specific_humidity.data,
-      clouds=clouds,
-  )
   geopotential = cx.field(geopotential, coord)
   return geopotential
 
@@ -106,7 +136,11 @@ def uvtz_to_primitive_equations(
 def primitive_equations_to_uvtz(
     inputs: dict[str, cx.Field],
     ylm_map: spherical_harmonics.FixedYlmMapping,
-    levels: coordinates.PressureLevels | coordinates.SigmaLevels,
+    levels: (
+        coordinates.PressureLevels
+        | coordinates.SigmaLevels
+        | coordinates.HybridLevels
+    ),
     orography: orographies.Orography,
     sim_units: units.SimUnits,
     include_surface_pressure: bool = False,
@@ -137,7 +171,9 @@ def primitive_equations_to_uvtz(
   surface_pressure = cx.cpmap(jnp.exp)(ylm_map.to_nodal(log_surface_pressure))
 
   nodal_inputs = ylm_map.to_nodal(inputs)  # includes temperature and tracers.
-  geopotential = get_geopotential(nodal_inputs, orography, sim_units)
+  geopotential = get_geopotential(
+      nodal_inputs, orography, sim_units, surface_pressure=surface_pressure
+  )
   temperature = nodal_inputs.pop('temperature')
 
   surface_pressure, temperature, geopotential, nodal_inputs = (

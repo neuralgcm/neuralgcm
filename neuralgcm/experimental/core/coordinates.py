@@ -1354,6 +1354,41 @@ class HybridLevels(cx.Coordinate):
     )
     return cls.from_dinosaur_hybrid_levels(hybrid_levels)
 
+  # TODO(janniyuval) To remove after submitting cl/844884846
+  @classmethod
+  def analytic_ecmwf_like(
+      cls,
+      n_levels: int = 137,
+      p0: float = 1013.25,
+      p_top: float = 0.0,
+      p_transition: float = 80.0,
+      alpha_strat: float = 4.2,
+      alpha_surf: float = 0.25,
+      b_exponent: float = 1.3,
+  ) -> Self:
+    """Returns HybridLevels constructed using analytic_ecmwf_like strategy."""
+    hybrid_levels = hybrid_coordinates.HybridCoordinates.analytic_ecmwf_like(
+        n_levels=n_levels,
+        p0=p0,
+        p_top=p_top,
+        p_transition=p_transition,
+        alpha_strat=alpha_strat,
+        alpha_surf=alpha_surf,
+        b_exponent=b_exponent,
+    )
+    return cls.from_dinosaur_hybrid_levels(hybrid_levels)
+
+  @classmethod
+  def ecmwf137_interpolated(
+      cls,
+      n_levels: int,
+  ) -> Self:
+    """Returns HybridLevels interpolated from ECMWF 137 levels."""
+    hybrid_levels = hybrid_coordinates.HybridCoordinates.ecmwf137_interpolated(
+        n_levels=n_levels,
+    )
+    return cls.from_dinosaur_hybrid_levels(hybrid_levels)
+
   @classmethod
   def ECMWF137(cls) -> Self:
     """Returns HybridLevels with 137 levels from ECMWF's IFS."""
@@ -1583,9 +1618,9 @@ class DinosaurCoordinates(cx.CartesianProduct):
 
   coordinates: tuple[cx.Coordinate, ...] = dataclasses.field(init=False)
   horizontal: LonLatGrid | SphericalHarmonicGrid = dataclasses.field()
-  vertical: SigmaLevels | PressureLevels | LayerLevels | SoilLevels = (
-      dataclasses.field()
-  )
+  vertical: (
+      SigmaLevels | PressureLevels | LayerLevels | HybridLevels | SoilLevels
+  ) = dataclasses.field()
   dycore_partition_spec: jax.sharding.PartitionSpec = P('z', 'x', 'y')
   physics_partition_spec: jax.sharding.PartitionSpec = P(None, ('x', 'z'), 'y')
 

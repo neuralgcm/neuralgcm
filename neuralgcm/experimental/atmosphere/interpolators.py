@@ -242,7 +242,7 @@ class ConservativeOnPressure(nnx.Module):
       If False, an error is raised.
     supported_level_types: A sequence of supported vertical coordinate types.
   """
-
+  #TODO(janniyuval): add support for hybrid levels.
   target_levels: coordinates.SigmaLevels
   include_surface_pressure_in_output: bool = False
   sim_units: units.SimUnits | None = None

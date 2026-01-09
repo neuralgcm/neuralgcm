@@ -489,7 +489,7 @@ class Reconstruct1dFieldFromRefValuesTest(parameterized.TestCase):
     axis = cx.SizedAxis('x', 4)
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        f'Expected 1D coordinate with specified ticks, got {axis}',
+        f'Axis must be 1d with specified tick values got {axis}',
     ):
       field_utils.reconstruct_1d_field_from_ref_values(
           axis, ref_ticks=[0, 1], ref_values=[1, 2]
@@ -500,7 +500,7 @@ class Reconstruct1dFieldFromRefValuesTest(parameterized.TestCase):
     axis = cx.coords.compose(x, y)
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        f'Expected 1D coordinate with specified ticks, got {axis}',
+        f'Axis must be 1d with specified tick values got {axis}',
     ):
       field_utils.reconstruct_1d_field_from_ref_values(
           axis, ref_ticks=[0, 1], ref_values=[1, 2]

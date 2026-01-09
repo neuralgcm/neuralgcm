@@ -87,9 +87,30 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         partition_schema_key=None,
         mesh=parallelism.Mesh(None),
     )
-    pressure_features = atmos_transforms.PressureOnSigmaFeatures(
+    pressure_features = atmos_transforms.PressureOnLevelsFeatures(
         ylm_map=ylm_map,
-        sigma=sigma,
+        levels=sigma,
+    )
+    inputs = {
+        'log_surface_pressure': cx.wrap(np.ones(ylm_grid.shape), ylm_grid),
+    }
+    self._test_feature_module(pressure_features, inputs)
+
+  def test_pressure_features_hybrid(self):
+    hybrid = coordinates.HybridLevels(
+        a_boundaries=np.zeros(9),
+        b_boundaries=coordinates.SigmaLevels.equidistant(8).boundaries,
+    )
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    ylm_map = spherical_harmonics.FixedYlmMapping(
+        lon_lat_grid=coordinates.LonLatGrid.T21(),
+        ylm_grid=ylm_grid,
+        partition_schema_key=None,
+        mesh=parallelism.Mesh(None),
+    )
+    pressure_features = atmos_transforms.PressureOnLevelsFeatures(
+        ylm_map=ylm_map,
+        levels=hybrid,
     )
     inputs = {
         'log_surface_pressure': cx.field(np.ones(ylm_grid.shape), ylm_grid),

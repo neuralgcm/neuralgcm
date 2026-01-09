@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental.core import api
-from neuralgcm.experimental.core import dynamic_io
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
@@ -107,37 +107,21 @@ class Lorenz96Base(api.Model):
     return np.timedelta64(int(self.dt * 120 * 3600), 's')
 
   @property
-  def required_input_specs(self):
+  def inputs_spec(self):
     specs = {}
     if hasattr(self, 'x'):
-      specs['slow'] = {'x': self.x.value.coordinate, 'time': cx.Scalar()}
+      cs = {'x': self.x.value.coordinate, 'time': cx.Scalar()}
+      specs['slow'] = {
+          k: data_specs.CoordSpec.with_any_timedelta(v) for k, v in cs.items()
+      }
     if hasattr(self, 'y'):
-      specs['fast'] = {'y': self.y.value.coordinate}
+      cs = {'y': self.y.value.coordinate}
       if not hasattr(self, 'x'):  # fast-only
-        specs['fast']['time'] = cx.Scalar()
+        cs['time'] = cx.Scalar()
+      specs['fast'] = {
+          k: data_specs.CoordSpec.with_any_timedelta(v) for k, v in cs.items()
+      }
     return specs
-
-  @property
-  def required_dynamic_input_specs(self):
-    """Returns specs for all dynamic io inputs required to run this model."""
-    dynamic_input_modules = module_utils.retrieve_subclass_modules(
-        self,
-        dynamic_io.DynamicInputModule,
-    )
-    if not all(
-        isinstance(x, dynamic_io.DynamicInputSlice)
-        for x in dynamic_input_modules
-    ):
-      raise ValueError(
-          'All dynamic input modules must be DynamicInputSlice, got'
-          f' {[type(x) for x in dynamic_input_modules]=}'
-      )
-    dynamic_input_specs = {}
-    for module in dynamic_input_modules:
-      if module.observation_key not in dynamic_input_specs:
-        dynamic_input_specs[module.observation_key] = {'time': cx.Scalar()}
-      dynamic_input_specs[module.observation_key] |= module.keys_to_coords
-    return dynamic_input_specs
 
 
 @nnx_compat.dataclass

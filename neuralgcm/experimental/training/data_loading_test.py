@@ -16,6 +16,7 @@ import coordax as cx
 import jax.numpy as jnp
 from neuralgcm.experimental import xreader
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.training import data_loading
 import numpy as np
 import pandas as pd
@@ -250,6 +251,76 @@ class SelTimedeltaCoordsTest(absltest.TestCase):
       self.assertEqual(actual_td, expected)
       actual_x = cx.coords.extract(result, cx.SizedAxis)
       self.assertEqual(actual_x, x)
+
+
+class InferStencilsTest(absltest.TestCase):
+
+  def _make_spec(self, hours):
+    deltas = np.array(hours, dtype='timedelta64[h]')
+    return coordinates.TimeDelta(deltas)
+
+  def test_single_dataset_single_variable(self):
+    spec = {'ds_a': {'var_a': self._make_spec([0, 6, 12])}}
+    stencils = data_loading.infer_stencils(spec)
+    expected = xreader.TimeStencil(
+        start='0h', stop='12h', step='6h', closed='both'
+    )
+    self.assertEqual(stencils['ds_a'], expected)
+
+  def test_multiple_datasets(self):
+    spec = {
+        'ds_a': {'var_a': self._make_spec([0, 24])},
+        'ds_b': {'var_b': self._make_spec([0, 1])},
+    }
+    stencils = data_loading.infer_stencils(spec)
+    self.assertEqual(
+        stencils['ds_a'],
+        xreader.TimeStencil(start='0h', stop='24h', step='24h', closed='both'),
+    )
+    self.assertEqual(
+        stencils['ds_b'],
+        xreader.TimeStencil(start='0h', stop='1h', step='1h', closed='both'),
+    )
+
+  def test_consistent_variables_in_dataset(self):
+    coord = self._make_spec([0, 6])
+    spec = {'ds_a': {'var_a': coord, 'var_b': coord}}
+    stencils = data_loading.infer_stencils(spec)
+    expected = xreader.TimeStencil(
+        start='0h', stop='6h', step='6h', closed='both'
+    )
+    self.assertEqual(stencils['ds_a'], expected)
+
+  def test_inconsistent_variables_raises_error(self):
+    spec = {
+        'ds_a': {
+            'var_a': self._make_spec([0, 6]),
+            'var_b': self._make_spec([0, 12]),
+        }
+    }
+    with self.assertRaisesRegex(
+        ValueError, 'Expected exactly 1 unique stencil'
+    ):
+      data_loading.infer_stencils(spec)
+
+  def test_non_uniform_steps_raises_error(self):
+    spec = {'ds_a': {'var_a': self._make_spec([0, 6, 10])}}
+    with self.assertRaisesRegex(
+        ValueError,
+        'TimeDelta must be uniformly spaced to convert to TimeStencil',
+    ):
+      data_loading.infer_stencils(spec)
+
+  def test_missing_entire_dataset_with_optional_specs(self):
+    specs = {'ds_a': {'var_a': data_specs.OptionalSpec(cx.Scalar())}}
+    all_data = {}
+    result = data_loading.filter_missing_optional(specs, all_data)
+    self.assertEqual(result, {})
+
+  def test_empty_timedelta_raises_error(self):
+    spec = {'ds_a': {'var_a': self._make_spec([])}}
+    with self.assertRaisesRegex(ValueError, 'TimeDelta must be of size >= 2'):
+      data_loading.infer_stencils(spec)
 
 
 if __name__ == '__main__':

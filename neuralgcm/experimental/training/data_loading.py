@@ -68,6 +68,12 @@ jax.tree_util.register_pytree_node(
 )
 
 
+def _extract_timedelta(coord: cx.Coordinate) -> coordinates.TimeDelta:
+  """Extracts a TimeDelta coordinate from a coordinate."""
+  timedelta = cx.coords.extract(coord, coordinates.TimeDelta)
+  return cast(coordinates.TimeDelta, timedelta)
+
+
 def _transpose_for_to_global_array(
     data: dict[Any, PyTree], is_leaf: Callable[[Any], bool]
 ) -> PyTree:
@@ -302,6 +308,82 @@ def sel_timedelta_coords(
 
 def sel_target_timedeltas(inputs: PyTree) -> PyTree:
   return sel_timedelta_coords(inputs, slice(np.timedelta64(1, 's'), None))
+
+
+def filter_missing_optional(
+    specs: dict[
+        str, dict[str, cx.Coordinate | data_specs.OptionalSpec[cx.Coordinate]]
+    ],
+    all_data: dict[str, xarray.Dataset],
+) -> dict[str, dict[str, cx.Coordinate]]:
+  """Returns `specs` with missing optional entries removed."""
+  validated = {}
+  for dataset_key, dataset_spec in specs.items():
+    if dataset_key not in all_data:
+      if not all([
+          isinstance(x, data_specs.OptionalSpec) for x in dataset_spec.values()
+      ]):
+        raise ValueError(
+            f'Dataset {dataset_key} not found in all_data and not all values in'
+            ' dataset_spec are optional.'
+        )
+      else:
+        continue
+    ds = all_data[dataset_key]
+    validated[dataset_key] = {}
+    for var_name, spec in dataset_spec.items():
+      coord, is_optional = data_specs.unwrap_optional(spec)
+      if var_name not in ds:
+        if is_optional:
+          continue
+        else:
+          raise ValueError(
+              f'Variable {var_name} missing in dataset {dataset_key}'
+          )
+      validated[dataset_key][var_name] = coord
+  return validated
+
+
+def _stencil_from_timedelta(
+    timedelta: coordinates.TimeDelta,
+) -> xreader.TimeStencil:
+  """Converts a TimeDelta coordinate to a TimeStencil."""
+  deltas = timedelta.deltas
+  if deltas.size < 2:
+    raise ValueError(
+        f'TimeDelta must be of size >= 2 to infer a TimeStencil, got {deltas=}'
+    )
+
+  start = deltas[0]
+  steps = np.diff(deltas)
+  step = steps[0]
+  if not np.all(steps == step):
+    raise ValueError(
+        'TimeDelta must be uniformly spaced to convert to TimeStencil.'
+    )
+  stop = deltas[-1]
+  closed = 'both'
+  return xreader.TimeStencil(start=start, stop=stop, step=step, closed=closed)
+
+
+def infer_stencils(
+    data_spec: dict[str, dict[str, cx.Coordinate]],
+) -> dict[str, xreader.TimeStencil]:
+  """Inferrs TimeStencils from `data_spec`."""
+  stencils = {}
+
+  for k, specs in data_spec.items():
+    data_stencils = set()
+    for coord in specs.values():
+      data_stencils.add(_stencil_from_timedelta(_extract_timedelta(coord)))
+    if len(data_stencils) != 1:
+      raise ValueError(
+          f'Expected exactly 1 unique stencil per dataset, got {data_stencils=}'
+          f' for dataset key {k}'
+      )
+    stencil = data_stencils.pop()
+    stencils[k] = stencil
+  return stencils
 
 
 def slice_leading_timedelta(inputs: PyTree, length: int) -> PyTree:

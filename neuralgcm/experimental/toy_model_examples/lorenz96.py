@@ -82,10 +82,10 @@ class Lorenz96Base(api.Model):
   def prognostics(self):
     prognostic_fields = {}
     if hasattr(self, 'x'):
-      prognostic_fields['x'] = self.x.value
+      prognostic_fields['x'] = self.x.get_value()
     if hasattr(self, 'y'):
-      prognostic_fields['y'] = self.y.value
-    prognostic_fields['time'] = self.time.value
+      prognostic_fields['y'] = self.y.get_value()
+    prognostic_fields['time'] = self.time.get_value()
     return prognostic_fields
 
   @module_utils.ensure_unchanged_state_structure
@@ -110,12 +110,12 @@ class Lorenz96Base(api.Model):
   def inputs_spec(self):
     specs = {}
     if hasattr(self, 'x'):
-      cs = {'x': self.x.value.coordinate, 'time': cx.Scalar()}
+      cs = {'x': self.x.get_value().coordinate, 'time': cx.Scalar()}
       specs['slow'] = {
           k: data_specs.CoordSpec.with_any_timedelta(v) for k, v in cs.items()
       }
     if hasattr(self, 'y'):
-      cs = {'y': self.y.value.coordinate}
+      cs = {'y': self.y.get_value().coordinate}
       if not hasattr(self, 'x'):  # fast-only
         cs['time'] = cx.Scalar()
       specs['fast'] = {
@@ -150,9 +150,9 @@ class Lorenz96WithTwoScales(Lorenz96Base):
   @module_utils.ensure_unchanged_state_structure
   def assimilate(self, inputs: dict[str, dict[str, cx.Field]]) -> None:
     slice_last_time = lambda f: cx.cmap(lambda a: a[-1])(f.untag('timedelta'))
-    self.x.value = slice_last_time(inputs['slow']['x'])
-    self.y.value = slice_last_time(inputs['fast']['y'])
-    self.time.value = slice_last_time(inputs['slow']['time'])
+    self.x.set_value(slice_last_time(inputs['slow']['x']))
+    self.y.set_value(slice_last_time(inputs['fast']['y']))
+    self.time.set_value(slice_last_time(inputs['slow']['time']))
 
   @module_utils.ensure_unchanged_state_structure
   def advance(self) -> None:
@@ -169,11 +169,12 @@ class Lorenz96WithTwoScales(Lorenz96Base):
     }
     # fmt: on
     full_ode = time_integrators.ExplicitODE.from_functions(all_terms_fn)
-    x, y = self.x.value, self.y.value
+    x, y = self.x.get_value(), self.y.get_value()
     next_xy = self.time_integrator_cls(full_ode, self.dt)({'x': x, 'y': y})
-    self.x.value = next_xy['x']
-    self.y.value = next_xy['y']
-    self.time.value += self.timestep  # treated separately to avoid round off.
+    self.x.set_value(next_xy['x'])
+    self.y.set_value(next_xy['y'])
+    # treated separately to avoid round off.
+    self.time.set_value(self.time.get_value() + self.timestep)
 
 
 class L96Parameterization(Protocol):
@@ -239,13 +240,13 @@ class Lorenz96(Lorenz96Base):
   @module_utils.ensure_unchanged_state_structure
   def assimilate(self, inputs: dict[str, dict[str, cx.Field]]) -> None:
     slice_last_time = lambda f: cx.cmap(lambda a: a[-1])(f.untag('timedelta'))
-    self.x.value = slice_last_time(inputs['slow']['x'])
-    self.time.value = slice_last_time(inputs['slow']['time'])
+    self.x.set_value(slice_last_time(inputs['slow']['x']))
+    self.time.set_value(slice_last_time(inputs['slow']['time']))
 
   @module_utils.ensure_unchanged_state_structure
   def advance(self) -> None:
     k, f = self.k_axis, self.forcing
-    x, time = self.x.value, self.time.value
+    x, time = self.x.get_value(), self.time.get_value()
     x_dot_fn = cx.cpmap(functools.partial(lorenz96_x_term, f=f))
     x_ode = time_integrators.ExplicitODE.from_functions(
         lambda s: x_dot_fn(s.untag(k)).tag(k)
@@ -253,8 +254,8 @@ class Lorenz96(Lorenz96Base):
     next_x = self.time_integrator_cls(x_ode, self.dt)(x)
     for parameterization in self.parameterizations:
       next_x += parameterization({'x': x, 'time': time}, self.dt)
-    self.x.value = next_x
-    self.time.value += self.timestep  # avoids round-off errors.
+    self.x.set_value(next_x)
+    self.time.set_value(self.time.get_value() + self.timestep)
 
 
 @nnx_compat.dataclass
@@ -279,13 +280,13 @@ class Lorenz96FastMode(Lorenz96Base):
   @module_utils.ensure_unchanged_state_structure
   def assimilate(self, inputs: dict[str, dict[str, cx.Field]]) -> None:
     slice_last_time = lambda f: cx.cmap(lambda a: a[-1])(f.untag('timedelta'))
-    self.y.value = slice_last_time(inputs['fast']['y'])
-    self.time.value = slice_last_time(inputs['fast']['time'])
+    self.y.set_value(slice_last_time(inputs['fast']['y']))
+    self.time.set_value(slice_last_time(inputs['fast']['time']))
 
   @module_utils.ensure_unchanged_state_structure
   def advance(self) -> None:
     c, b = self.c, self.b
-    y, time = self.y.value, self.time.value
+    y, time = self.y.get_value(), self.time.get_value()
     y_dot_fn = cx.cpmap(functools.partial(lorenz96_y_term, b=b, c=c))
     kjs = cx.coords.compose(self.k_axis, self.j_axis)
     y_ode = time_integrators.ExplicitODE.from_functions(
@@ -294,5 +295,5 @@ class Lorenz96FastMode(Lorenz96Base):
     next_y = self.time_integrator_cls(y_ode, self.dt)(y)
     for parameterization in self.parameterizations:
       next_y += parameterization({'y': y, 'time': time}, self.dt)
-    self.y.value = next_y
-    self.time.value += self.timestep
+    self.y.set_value(next_y)
+    self.time.set_value(self.time.get_value() + self.timestep)

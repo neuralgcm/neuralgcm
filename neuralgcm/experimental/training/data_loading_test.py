@@ -13,13 +13,16 @@
 # limitations under the License.
 from absl.testing import absltest
 import coordax as cx
+import jax
 import jax.numpy as jnp
 from neuralgcm.experimental import xreader
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
+from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.training import data_loading
 import numpy as np
 import pandas as pd
+import xarray
 
 
 class GetDatetimeForecastStartsTest(absltest.TestCase):
@@ -69,7 +72,7 @@ class GetSampleOriginsTest(absltest.TestCase):
         time_axis=time_axis,
         time_slices=None,
         stencil=stencil,
-        stride_between_windows=1,
+        time_sample_offset=np.timedelta64(1, 'h'),
     )
 
     # Everything in time_axis other than the end should be a valid origin.
@@ -87,7 +90,7 @@ class GetSampleOriginsTest(absltest.TestCase):
         time_axis=time_axis,
         time_slices=None,
         stencil=stencil,
-        stride_between_windows=24,
+        time_sample_offset=np.timedelta64(24, 'h'),
     )
 
     # Everything in time_axis other than the end should be a valid origin.
@@ -108,7 +111,7 @@ class GetSampleOriginsTest(absltest.TestCase):
         time_axis=time_axis,
         time_slices=('2020-01-03T00:00', '2020-01-03T10:00'),
         stencil=stencil,
-        stride_between_windows=1,
+        time_sample_offset=np.timedelta64(1, 'h'),
     )
 
     expected = pd.date_range('2020-01-03T00:00', '2020-01-03T10:00', freq='1h')[
@@ -127,7 +130,7 @@ class GetSampleOriginsTest(absltest.TestCase):
         time_axis=time_axis,
         time_slices=('2020-01-03', '2020-01-05'),  # includes whole final day
         stencil=stencil,
-        stride_between_windows=1,
+        time_sample_offset=np.timedelta64(1, 'h'),
     )
 
     expected = pd.date_range('2020-01-03 00:00', '2020-01-05 23:00', freq='1h')[
@@ -150,7 +153,7 @@ class GetSampleOriginsTest(absltest.TestCase):
             ('2020-03-03', '2020-03-05'),
         ],
         stencil=stencil,
-        stride_between_windows=1,
+        time_sample_offset=np.timedelta64(1, 'h'),
     )
 
     ranges = [
@@ -321,6 +324,93 @@ class InferStencilsTest(absltest.TestCase):
     spec = {'ds_a': {'var_a': self._make_spec([])}}
     with self.assertRaisesRegex(ValueError, 'TimeDelta must be of size >= 2'):
       data_loading.infer_stencils(spec)
+
+
+class DataLoaderTest(absltest.TestCase):
+
+  def test_reader_produces_expected_slices(self):
+    # Setup test datasets
+    dt_slow = np.timedelta64(24, 'h')
+    dt_fast = np.timedelta64(6, 'h')
+    base_time = pd.Timestamp('2000-01-01')
+
+    # 50 days of data
+    time_slow = base_time + np.arange(0, 40 + 1) * dt_slow
+    time_fast = base_time + np.arange(0, 160 + 1) * dt_fast
+
+    # Create simple xarray datasets
+    rng = np.random.RandomState(42)
+    ds_slow = xarray.Dataset(
+        {'x': (('time',), rng.randn(len(time_slow)))},
+        coords={'time': pd.to_datetime(time_slow)},
+    )
+    ds_fast = xarray.Dataset(
+        {'y': (('time',), rng.randn(len(time_fast)))},
+        coords={'time': pd.to_datetime(time_fast)},
+    )
+    all_data = {'slow': ds_slow, 'fast': ds_fast}
+
+    # Define specs with TimeDelta coordinates
+    # We want to read slices of length 3 steps for slow, and 12 steps for fast
+    slow_deltas = np.arange(0, 3) * dt_slow
+    fast_deltas = np.arange(0, 12) * dt_fast
+
+    input_data_specs = {
+        'slow': {
+            'x': coordinates.TimeDelta(slow_deltas),
+        },
+        'fast': {
+            'y': coordinates.TimeDelta(fast_deltas),
+        },
+    }
+    dynamic_input_specs = {}
+
+    devices = jax.local_devices()
+    jax_mesh = jax.sharding.Mesh(np.array(devices), ('batch',))
+    mesh = parallelism.Mesh(
+        spmd_mesh=jax_mesh,
+        field_partitions={
+            'physics': {
+                'batch': 'batch',
+                'level': None,
+                'longitude': None,
+                'latitude': None,
+            }
+        },
+    )
+
+    loader = data_loading.DataLoader(
+        all_data=all_data,
+        training_mesh=mesh,
+        vertical_name='level',
+        load_data_via_callback=False,
+        queries_spec={},
+    )
+
+    # Build iterator
+    iterator = loader.build_train_inputs(
+        input_data_specs=input_data_specs,
+        dynamic_input_specs=dynamic_input_specs,
+        batch_size_per_device=1,
+        shuffle_buffer_size_in_bytes=1000,
+        dataset_rng_seed=42,
+        time_sample_offset=dt_slow,
+        dataset_time_slice=None,
+    )
+
+    batch, _ = next(iterator)
+
+    # Verify sizes
+    self.assertEqual(batch['slow']['x'].axes['timedelta'].deltas.size, 3)
+    self.assertEqual(batch['fast']['y'].axes['timedelta'].deltas.size, 12)
+
+    # Verify values (deltas)
+    np.testing.assert_array_equal(
+        batch['slow']['x'].axes['timedelta'].deltas, slow_deltas
+    )
+    np.testing.assert_array_equal(
+        batch['fast']['y'].axes['timedelta'].deltas, fast_deltas
+    )
 
 
 if __name__ == '__main__':

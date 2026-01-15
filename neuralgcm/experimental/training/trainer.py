@@ -39,6 +39,7 @@ from neuralgcm.experimental.core import checkpointing as model_checkpointing
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import scan_utils
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.inference import streaming
 from neuralgcm.experimental.inference import timing
@@ -108,21 +109,6 @@ def create_training_mesh(
   return parallelism.Mesh(
       spmd_mesh=spmd_mesh, field_partitions=field_partitions
   )
-
-
-def create_batch_axis(
-    spmd_mesh: jax.sharding.Mesh,
-    batch_size_per_device: int,
-) -> cx.SizedAxis:
-  """Computes batch axis."""
-  degree_of_model_parallelism = math.prod(
-      v for k, v in spmd_mesh.shape.items() if k != 'batch'
-  )
-  global_batch_size = (
-      jax.device_count() // degree_of_model_parallelism * batch_size_per_device
-  )
-  batch_axis = cx.SizedAxis('batch', global_batch_size)
-  return batch_axis
 
 
 K = TypeVar('K')
@@ -258,15 +244,21 @@ class PretrainingOps:
   pretrain_fns: collections.OrderedDict[str, PretrainOp]
 
 
-@dataclasses.dataclass(frozen=True)
-class TrainSchedule:
-  """Schedule for training."""
+DataSpec: TypeAlias = dict[str, dict[str, cx.Coordinate]]
 
-  schedule_time_steps: Sequence[int]
-  schedule_boundaries: Sequence[int]
-  total_steps: int
-  batch_size_per_device: int
-  time_sample_offset: int
+
+# TODO(dkochkov): Include queries_spec to TrainStage and EvalSchema.
+
+
+@dataclasses.dataclass(frozen=True)
+class TrainStage:
+  """Specifies a single stage of training."""
+  duration: int  # Number of training steps to run this stage for.
+  inputs_spec: DataSpec
+  dynamic_inputs_spec: DataSpec
+  loss: evaluators.Evaluator[metrics_base.Loss]
+  time_sample_offset: np.timedelta64
+  batch_size_per_device: int = 1
   time_slice: tuple[str, str] | list[tuple[str, str]] | None = None
   shuffle_buffer_size: int = 0
   dataset_rng_seed: int = 0
@@ -274,14 +266,29 @@ class TrainSchedule:
 
 
 @dataclasses.dataclass(frozen=True)
-class EvalSchedule:
-  """Schedule for evaluation."""
+class TrainSchedule:
+  """Specifies a sequence of training stages."""
+  stages: Sequence[TrainStage]
 
-  time_steps: Sequence[int]
+
+@dataclasses.dataclass(frozen=True)
+class EvalSchema:
+  """Specifies a single evaluation run."""
+  cadence: int  # how frequently to run this eval stage.
+  inputs_spec: DataSpec
+  dynamic_inputs_spec: DataSpec
+  metrics_evaluator: evaluators.Evaluator[metrics_base.Metric]
   batch_size_per_device: int
   num_batches: int
-  steps_between_evals: int
+  time_sample_offset: np.timedelta64
+  loss_evaluator: evaluators.Evaluator[metrics_base.Loss] | None = None
   time_slice: tuple[str, str] | list[tuple[str, str]] | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class EvalSchedule:
+  """Specifies a sequence of evaluation runs."""
+  stages: Sequence[EvalSchema]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -360,54 +367,45 @@ class RolloutTrainer:
         _combine_agg_states, self.compute_loss_on_host
     )
 
-    # TODO(dkochkov): Remove this padding once we parameterize timedeltas in the
-    # input data specs.
-    def _add_dummy(c):
-      return c.coord
-
-    is_coord_spec = lambda x: isinstance(x, data_specs.CoordSpec)
-    padded_input_specs = jax.tree.map(
-        _add_dummy, self.data_loader.input_data_specs, is_leaf=is_coord_spec
-    )
-    try:
-      data_specs.validate_inputs(padded_input_specs, self.model.inputs_spec)
-    except ValueError as e:
-      raise ValueError(
-          f'{self.data_loader.input_data_specs=} is not compatible with the'
-          f' model requirements {self.model.inputs_spec=}. Please check that'
-          ' the `input_data_specs_config` in the config is consistent with the'
-          ' model.'
-      ) from e
-    try:
-      data_specs.validate_inputs(
-          padded_input_specs, self.model.dynamic_inputs_spec
-      )
-    except ValueError as e:
-      raise ValueError(
-          f'{self.data_loader.input_data_specs=} is not compatible with the'
-          f' model requirements {self.model.dynamic_inputs_spec=}. Please check'
-          ' that the `input_data_specs_config` in the config is consistent'
-          ' with the model.'
-      ) from e
+    # Validating compatibility of the data loader with the model.
+    for stage in self.train_schedule.stages:
+      try:
+        data_specs.validate_inputs(stage.inputs_spec, self.model.inputs_spec)
+      except ValueError as e:
+        raise ValueError(
+            f'{stage.inputs_spec=} is not compatible with the model'
+            f' requirements {self.model.inputs_spec=}. Please check that the '
+            ' `train_schedule_config` defines consistent inputs_spec.'
+        ) from e
+      try:
+        data_specs.validate_inputs(
+            stage.dynamic_inputs_spec, self.model.dynamic_inputs_spec
+        )
+      except ValueError as e:
+        raise ValueError(
+            f'{stage.dynamic_inputs_spec=} is not compatible with the model'
+            f' requirements {self.model.dynamic_inputs_spec=}. Please check'
+            ' that the `train_schedule_config` defines consistent'
+            ' dynamic_inputs_spec.'
+        ) from e
 
     self._checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
     epath.Path(self._checkpoint_dir).mkdir(
         parents=True, exist_ok=True, mode=0o775
     )
 
-    self.train_inner_steps = self.data_loader.inner_steps
-    self.eval_inner_steps = self.train_inner_steps  # simplified for now.
+    self._train_schedule_boundaries = np.cumsum(
+        [s.duration for s in self.train_schedule.stages]
+    )
+    self._total_train_steps = (
+        self._train_schedule_boundaries[-1]
+        if len(self._train_schedule_boundaries) > 0
+        else 0
+    )
 
-    self._eval_trajectory_length = self._outer_steps(
-        max(self.eval_schedule.time_steps)
-    )
-    self._trajectory_lengths = [
-        1 + n // self.train_inner_steps  # num_init_frames=1
-        for n in self.train_schedule.schedule_time_steps
-    ]
-    self._max_trajectory_length = max(
-        self._trajectory_lengths + [self._eval_trajectory_length]
-    )
+    if len(self.eval_schedule.stages) != 1:
+      raise ValueError('Currently only single stage EvalSchedule is supported.')
+    self._eval_stage = self.eval_schedule.stages[0]
 
     self.init_params = nnx.state(self.model, nnx.Param)
 
@@ -434,10 +432,6 @@ class RolloutTrainer:
     return self.data_loader.queries_spec
 
   @property
-  def batch_axis(self) -> cx.SizedAxis:
-    return self.data_loader.batch_axis
-
-  @property
   def training_mesh(self) -> parallelism.Mesh:
     return self.data_loader.training_mesh
 
@@ -458,59 +452,48 @@ class RolloutTrainer:
         self.spmd_mesh.shape[k] for k in 'zxy' if k in self.spmd_mesh.shape
     )
 
-  @property
-  def global_batch_size(self) -> int:
-    return self.batch_axis.size
-
-  @property
-  def global_eval_batch_size(self) -> int:
-    return (
-        jax.device_count()
-        // self.degree_of_model_parallelism
-        * self.eval_schedule.batch_size_per_device
-    )
-
-  def _outer_steps(self, trajectory_length_in_steps: int) -> int:
-    """Number of outer (saved) steps for this time step."""
-    if trajectory_length_in_steps is None:
-      return None
-    if trajectory_length_in_steps % self.train_inner_steps:
-      raise ValueError(
-          f'{trajectory_length_in_steps=} was not a multiple of '
-          f'{self.train_inner_steps=}'
-      )
-    return trajectory_length_in_steps // self.train_inner_steps + 1
+  def _get_steps_from_spec(self, inputs_spec: DataSpec) -> tuple[int, ...]:
+    """Returns inner and outer number of steps (frames) from inputs_spec."""
+    dt = self.model.timestep
+    nested_specs = scan_utils.nested_scan_specs(inputs_spec, dt=dt)
+    steps = scan_utils.nested_scan_steps(inputs_spec, dt=dt)
+    if len(nested_specs) == 1:  # data_dt == model_dt.
+      return 1, steps[0] + 1  # inner_step=1.
+    if len(nested_specs) != 2 or nested_specs[0]:
+      # Either multiple data_dt values or some data_dt == model_dt.
+      raise ValueError(f'Currently only single unique timedelta is supported, got {nested_specs=} with {steps=}')
+    return steps[0], steps[1] + 1  # unique data_dt (multiple of model_dt).
 
   def build_train_and_eval_iterators(
       self, schedule_idx: int
   ) -> TrainEvalIteratorTuple:
     """Build new iterators for training at schedule_idx."""
-    num_train_time_steps = self.train_schedule.schedule_time_steps[schedule_idx]
-    trajectory_length = self._trajectory_lengths[schedule_idx]
+    train_stage = self.train_schedule.stages[schedule_idx]
 
-    if self.eval_schedule.num_batches:
+    eval_stage = self._eval_stage
+    if eval_stage.num_batches:
       eval_data = self.data_loader.build_eval_inputs(
-          dataset_time_slices=self.eval_schedule.time_slice,
-          train_trajectory_length=trajectory_length,
-          num_init_frames=1,  # num_init_frames=1
-          eval_trajectory_length=self._eval_trajectory_length,
-          batch_size_per_device=self.eval_schedule.batch_size_per_device,
-          global_batch_size=self.global_eval_batch_size,
-          batch_count=self.eval_schedule.num_batches,
+          input_data_specs=eval_stage.inputs_spec,
+          dynamic_input_specs=eval_stage.dynamic_inputs_spec,
+          dataset_time_slices=eval_stage.time_slice,
+          batch_size_per_device=eval_stage.batch_size_per_device,
+          time_sample_offset=eval_stage.time_sample_offset,
+          batch_count=eval_stage.num_batches,
       )
       train_data = self.data_loader.build_eval_inputs(
-          dataset_time_slices=self.train_schedule.time_slice,
-          train_trajectory_length=trajectory_length,
-          num_init_frames=1,  # num_init_frames=1
-          eval_trajectory_length=self._eval_trajectory_length,
-          batch_size_per_device=self.eval_schedule.batch_size_per_device,
-          global_batch_size=self.global_eval_batch_size,
-          batch_count=self.eval_schedule.num_batches,
+          input_data_specs=eval_stage.inputs_spec,
+          dynamic_input_specs=eval_stage.dynamic_inputs_spec,
+          dataset_time_slices=train_stage.time_slice,
+          batch_size_per_device=eval_stage.batch_size_per_device,
+          time_sample_offset=eval_stage.time_sample_offset,
+          batch_count=eval_stage.num_batches,
       )
 
       evaluate_fn = functools.partial(
           self.evaluate,
-          eval_batch_fn=self.get_eval_batch_fn(trajectory_length, seed=0),
+          eval_batch_fn=self.get_eval_batch_fn(
+              train_stage=train_stage, eval_stage=eval_stage, seed=0
+          ),
           eval_data=eval_data,
           train_data=train_data,
       )
@@ -518,18 +501,18 @@ class RolloutTrainer:
       evaluate_fn = self.dummy_evaluate
 
     training_data = self.data_loader.build_train_inputs(
-        time_series_length=trajectory_length,
-        batch_size_per_device=self.train_schedule.batch_size_per_device,
-        global_batch_size=self.global_batch_size,
-        shuffle_buffer_size_in_bytes=self.train_schedule.shuffle_buffer_size,
-        dataset_rng_seed=self.train_schedule.dataset_rng_seed,
-        time_sample_offset=self.train_schedule.time_sample_offset,
-        dataset_time_slice=self.train_schedule.time_slice,
+        input_data_specs=train_stage.inputs_spec,
+        dynamic_input_specs=train_stage.dynamic_inputs_spec,
+        batch_size_per_device=train_stage.batch_size_per_device,
+        shuffle_buffer_size_in_bytes=train_stage.shuffle_buffer_size,
+        dataset_rng_seed=train_stage.dataset_rng_seed,
+        time_sample_offset=train_stage.time_sample_offset,
+        dataset_time_slice=train_stage.time_slice,
     )
 
     # TODO(shoyer): consider adding a hook for adding a profiler around
     # train_step_fn.
-    train_step_fn = self.get_train_step_fn(num_train_time_steps)
+    train_step_fn = self.get_train_step_fn(train_stage=train_stage)
 
     return training_data, train_step_fn, evaluate_fn
 
@@ -595,17 +578,17 @@ class RolloutTrainer:
       rng: PyTree,
       init_slice: PyTree,
       dynamic_data: PyTree,
+      batch_axis: cx.SizedAxis,
+      ensemble_axis: cx.SizedAxis,
   ) -> Any:
     """Initializes a vectorized model for a rollout."""
     b_model = model.to_vectorized({
-        typing.SimulationVariable: self.batch_axis,
-        typing.DynamicInput: self.batch_axis,
+        typing.SimulationVariable: batch_axis,
+        typing.DynamicInput: batch_axis,
     })
     b_model.update_dynamic_inputs(dynamic_data)
     b_model.assimilate(init_slice)
-    eb_model = b_model.to_vectorized(
-        {typing.SimulationVariable: self.ensemble_axis}
-    )
+    eb_model = b_model.to_vectorized({typing.SimulationVariable: ensemble_axis})
     eb_model.initialize_random_processes(rng)
     return eb_model
 
@@ -683,27 +666,35 @@ class RolloutTrainer:
     return step_fn, observe_fn, process_fn
 
   def get_train_step_fn(
-      self, unroll_length: int
+      self,
+      train_stage: TrainStage,
   ) -> train_utils.TrainStepFunction:
     """Makes a function that performs a single training step.
 
     Args:
-      unroll_length: Number of time slices in targets to compute loss against.
+      train_stage: Training stage for which to build a training step function.
 
     Returns:
       train_step_fn: Function that performs a single training step given an
         (experiment state, step, inputs, dynamic_data) tuple and returning
         the updated experiment state and loss.
     """
+    inputs_spec = train_stage.inputs_spec
+    loss_evaluator = train_stage.loss
+    batch_axis = self.data_loader.make_batch_axis(
+        train_stage.batch_size_per_device
+    )
+    ensemble_axis = self.ensemble_axis
     model_state_scan_axes = nnx.StateAxes(
         {typing.SimulationVariable: nnx.Carry, ...: None}
     )
-    outer_steps = self._outer_steps(unroll_length)
-    inner_steps = self.train_inner_steps
+    inner_steps, outer_steps = self._get_steps_from_spec(inputs_spec)
     timedelta = inner_steps * self.model.timestep
 
     # Setting up model components and helper functions.
-    data_slice_struct = self.data_loader.data_slice_struct()
+    data_slice_struct = self.data_loader.data_slice_struct(
+        inputs_spec, train_stage.batch_size_per_device
+    )
 
     process_def, process_params = nnx.split(self.process_observations)
     model_def, _, temporaries, _ = nnx.split(
@@ -732,7 +723,7 @@ class RolloutTrainer:
       else:
         init_slice = data_loading.slice_leading_timedelta(inputs, 1)
         loaded_targets = data_loading.select_targets(inputs, self.queries_spec)
-        loaded_targets = cx.untag(loaded_targets, self.batch_axis, time)
+        loaded_targets = cx.untag(loaded_targets, batch_axis, time)
       # Initializing the model state.
       process_obs = nnx.merge(process_def, process_params, copy=True)
       model = nnx.merge(model_def, params, non_params, temporaries, copy=True)
@@ -741,6 +732,8 @@ class RolloutTrainer:
           rng,
           init_slice,
           dynamic_data,
+          batch_axis,
+          ensemble_axis,
       )
       eb_model_state = nnx.state(eb_model, typing.SimulationVariable)
       eb_model_state = self.training_mesh.with_sharding_constraint(
@@ -766,7 +759,7 @@ class RolloutTrainer:
         if self.data_loader.load_data_via_callback:
           targets_slice = targets_via_callback(idx)
         else:
-          targets_slice = cx.tag(loaded_targets_slice, self.batch_axis)
+          targets_slice = cx.tag(loaded_targets_slice, batch_axis)
         query = data_specs.construct_query(targets_slice, self.queries_spec)
         prediction = process_fn(
             process_obs, _flatten_dict(observe_fn(model, query))
@@ -789,7 +782,7 @@ class RolloutTrainer:
       predictions_struct, target_struct = self._predictions_and_targets_structs(
           eb_model, process_obs, data_slice_struct
       )
-      init_loss_aggregations = self.loss.zeros_aggregation_states(
+      init_loss_aggregations = loss_evaluator.zeros_aggregation_states(
           predictions_struct, target_struct
       )
       # Setup context for loss evaluator.
@@ -797,7 +790,7 @@ class RolloutTrainer:
       dummy = cx.DummyAxis(cx.new_axis_name(timedeltas), outer_steps)
       replicate_t_coord = cx.coords.compose(dummy, time)
       replicated_deltas = timedeltas.broadcast_like(replicate_t_coord)
-      loss_evaluator_with_context = self.loss.with_context({
+      loss_evaluator_with_context = loss_evaluator.with_context({
           'timedelta': timedeltas.untag('timedelta'),
           'times': replicated_deltas.untag(dummy),
       })
@@ -815,7 +808,7 @@ class RolloutTrainer:
           loss_evaluator_with_context,
           loaded_targets,
       )
-      loss_value = self.loss.evaluate_total({}, {}, loss_agg_state).data
+      loss_value = loss_evaluator.evaluate_total({}, {}, loss_agg_state).data
       return loss_value
 
     # We would use donate_argnums here to update experiment_state in-place, but
@@ -825,12 +818,12 @@ class RolloutTrainer:
     def train_step(experiment_state, step, inputs, dynamic_data):
       opt_state, params, ema_state, non_params = experiment_state
       rng = train_utils.batch_and_ensemble_parallel_rng_key(
-          batch_size=self.global_batch_size,
+          batch_size=batch_axis.size,
           ensemble_size=self.ensemble_axis.size,
-          seeds=(self.train_schedule.random_process_rng_seed, step),
+          seeds=(train_stage.random_process_rng_seed, step),
           mesh=self.spmd_mesh,
       )
-      rng = cx.field(rng, self.batch_axis, self.ensemble_axis)
+      rng = cx.field(rng, batch_axis, self.ensemble_axis)
       loss, grad = jax.value_and_grad(batched_parameter_loss_fn)(
           params, non_params, rng, inputs, dynamic_data
       )
@@ -852,20 +845,32 @@ class RolloutTrainer:
 
   def get_eval_batch_fn(
       self,
-      train_trajectory_length: int,
+      train_stage: TrainStage,
+      eval_stage: EvalSchema,
       seed: int = 0,
   ) -> Callable[..., Any]:
     """Makes a function that performs a single evaluation pass."""
-    outer_steps = self._eval_trajectory_length
-    inner_steps = self.train_inner_steps  # equal to eval inner steps.
+    inner_steps, outer_steps = self._get_steps_from_spec(eval_stage.inputs_spec)
+    _, train_trajectory_length = self._get_steps_from_spec(
+        train_stage.inputs_spec
+    )
+    batch_axis = self.data_loader.make_batch_axis(
+        eval_stage.batch_size_per_device
+    )
+    ensemble_axis = self.ensemble_axis
     model_state_scan_axes = nnx.StateAxes(
         {typing.SimulationVariable: nnx.Carry, ...: None}
     )
     timedelta = inner_steps * self.model.timestep  # time between data slices.
 
+    # If eval_stage.loss_evaluator is not None, we use it. Otherwise, we use
+    # the loss evaluator from the train stage. Default is None.
+    if eval_stage.loss_evaluator is not None:
+      loss_evaluator = eval_stage.loss_evaluator
+    else:
+      loss_evaluator = train_stage.loss
     # We adjust loss_evaluator to only include contributions from
     # train_trajectory_length time steps.
-    loss_evaluator = self.loss
     train_timedelta = coordinates.TimeDelta(
         np.arange(train_trajectory_length) * timedelta
     )
@@ -892,7 +897,9 @@ class RolloutTrainer:
     )
 
     # Setting up model components and helper functions.
-    data_slice_struct = self.data_loader.data_slice_struct()
+    data_slice_struct = self.data_loader.data_slice_struct(
+        eval_stage.inputs_spec, eval_stage.batch_size_per_device
+    )
 
     process_def, process_params = nnx.split(self.process_observations)
     model_def, _, temporaries, _ = nnx.split(
@@ -920,10 +927,10 @@ class RolloutTrainer:
       else:
         init_slice = data_loading.slice_leading_timedelta(inputs, 1)
         loaded_targets = data_loading.select_targets(inputs, self.queries_spec)
-        loaded_targets = cx.untag(loaded_targets, self.batch_axis, time)
+        loaded_targets = cx.untag(loaded_targets, batch_axis, time)
       # Initializing the model state.
       [batch_size], [ensemble_size] = (
-          self.batch_axis.shape,
+          batch_axis.shape,
           self.ensemble_axis.shape,
       )
       rng = train_utils.batch_and_ensemble_parallel_rng_key(
@@ -932,7 +939,7 @@ class RolloutTrainer:
           seeds=(seed, eval_step),
           mesh=self.spmd_mesh,
       )
-      rng = cx.field(rng, self.batch_axis, self.ensemble_axis)
+      rng = cx.field(rng, batch_axis, self.ensemble_axis)
       process_obs = nnx.merge(process_def, process_params, copy=True)
       model = nnx.merge(model_def, params, non_params, temporaries, copy=True)
       eb_model = self._initialize_vectorized_model(
@@ -940,6 +947,8 @@ class RolloutTrainer:
           rng,
           init_slice,
           dynamic_data,
+          batch_axis,
+          ensemble_axis,
       )
 
       inner_step_fn = nnx.scan(
@@ -961,7 +970,7 @@ class RolloutTrainer:
         if targets_via_callback is not None:
           targets_slice = targets_via_callback(idx)
         else:
-          targets_slice = cx.tag(targets_slice_from_scan, self.batch_axis)
+          targets_slice = cx.tag(targets_slice_from_scan, batch_axis)
         query = data_specs.construct_query(targets_slice, self.queries_spec)
         prediction = observe_fn(model, query)
         prediction = process_fn(process_obs, _flatten_dict(prediction))
@@ -980,14 +989,16 @@ class RolloutTrainer:
       prediction_struct, target_struct = self._predictions_and_targets_structs(
           eb_model, process_obs, data_slice_struct
       )
-      init_metrics_aggregations = self.eval_metrics.zeros_aggregation_states(
-          prediction_struct, target_struct
+      init_metrics_aggregations = (
+          eval_stage.metrics_evaluator.zeros_aggregation_states(
+              prediction_struct, target_struct
+          )
       )
       init_loss_aggregations = loss_evaluator.zeros_aggregation_states(
           prediction_struct, target_struct
       )
       timedeltas = time.fields['timedelta']  # values of `time` at slices.
-      eval_metrics_with_context = self.eval_metrics.with_context(
+      eval_metrics_with_context = eval_stage.metrics_evaluator.with_context(
           {'timedelta': timedeltas.untag('timedelta')}
       )
       # For loss context we provide timedelta and slices of full time axis that
@@ -1017,7 +1028,7 @@ class RolloutTrainer:
       )
       # record metrics
       values_to_record = {}
-      metric_values = self.eval_metrics.evaluate_metrics(
+      metric_values = eval_stage.metrics_evaluator.evaluate_metrics(
           {}, {}, metrics_agg_state
       )
       for metric_key, metric_dict in metric_values.items():
@@ -1054,16 +1065,16 @@ class RolloutTrainer:
     """Runs the training experiment."""
     start_step, auto_restart, experiment_state = self.initialize_experiment()
 
-    if start_step >= self.train_schedule.total_steps:
+    if start_step >= self._total_train_steps:
       logging.warning(
           f'Attempting to start training at {start_step=} >='
-          f' {self.train_schedule.total_steps=}. Will simply return.'
+          f' {self._total_train_steps=}. Will simply return.'
       )
       return
 
     def logging_callback(step, schedule_idx, loss, auto_restart):
       loss = float(jax.device_get(loss))
-      if step % max(self.eval_schedule.steps_between_evals // 100, 1) == 0:
+      if step % max(self._eval_stage.cadence // 100, 1) == 0:
         logging.info(f'{schedule_idx=}, {step=}, {loss=}')
       if (
           self.auto_restart_config.error_with_nan_loss
@@ -1085,10 +1096,10 @@ class RolloutTrainer:
 
     train_step_fn, evaluate_fn, train_iter = None, None, None  # pytype happy.
     step = start_step
-    while step < self.train_schedule.total_steps:
+    while step < self._total_train_steps:
       old_schedule_idx = schedule_idx
       schedule_idx = np.sum(  # compute which leg of the schedule we are at.
-          step > np.asarray(self.train_schedule.schedule_boundaries)
+          step >= np.asarray(self._train_schedule_boundaries)
       )
       if schedule_idx != old_schedule_idx:
         (
@@ -1138,7 +1149,7 @@ class RolloutTrainer:
         self.save_checkpoint(step, auto_restart, experiment_state)
 
       # evaluate
-      if (step + 1) % self.eval_schedule.steps_between_evals == 0:
+      if (step + 1) % self._eval_stage.cadence == 0:
         if step > start_step:
           with train_step_timer:
             # train_step is non-blocking, so we need to block on the output
@@ -1146,7 +1157,7 @@ class RolloutTrainer:
             experiment_state = jax.block_until_ready(experiment_state)
           training_time = train_step_timer.total
           logging.info(
-              f'training for {self.eval_schedule.steps_between_evals} steps'
+              f'training for {self._eval_stage.cadence} steps'
               f' took {training_time:.1f} seconds'
           )
           train_step_timer = timing.Timer()  # reset
@@ -1157,7 +1168,7 @@ class RolloutTrainer:
         if step > start_step:
           assert training_time is not None
           online_metrics.seconds_per_train_step = (
-              training_time / self.eval_schedule.steps_between_evals
+              training_time / self._eval_stage.cadence
           )
         self.save_online_metrics(step, online_metrics)
         logging.info(
@@ -1181,9 +1192,9 @@ class RolloutTrainer:
 
     logging.info('finished training')
     eval_metrics = evaluate_fn(experiment_state)
-    self.save_online_metrics(self.train_schedule.total_steps, eval_metrics)
+    self.save_online_metrics(self._total_train_steps, eval_metrics)
     self.save_checkpoint(
-        self.train_schedule.total_steps, auto_restart, experiment_state
+        self._total_train_steps, auto_restart, experiment_state
     )
     self.checkpoint_manager.close()
 
@@ -1209,7 +1220,7 @@ class RolloutTrainer:
                 interval_steps=self.checkpoint_config.keep_every_n_steps
             ),
             ocp_managers.CustomSteps(
-                steps=self.train_schedule.schedule_boundaries
+                steps=list(self._train_schedule_boundaries)
             ),
         ]),
         save_decision_policy=ocp_managers.AnySavePolicy([
@@ -1218,10 +1229,10 @@ class RolloutTrainer:
             ),
             ocp_managers.PreemptionCheckpointingPolicy(),
             ocp_managers.FixedIntervalPolicy(
-                interval=self.eval_schedule.steps_between_evals
+                interval=self._eval_stage.cadence
             ),
             ocp_managers.SpecificStepsPolicy(
-                steps=self.train_schedule.schedule_boundaries
+                steps=list(self._train_schedule_boundaries)
             ),
         ]),
     )
@@ -1342,7 +1353,7 @@ class RolloutTrainer:
         )
       wrap_pytree = ocp.args.StandardSave
       metadata = ocp.args.JsonSave({
-          'step': step,
+          'step': int(step),
           'auto_restart': dataclasses.asdict(auto_restart),
       })
     elif restore and not save:
@@ -1378,8 +1389,8 @@ class RolloutTrainer:
   ) -> OnlineEvalMetrics:
     """Dummy evaluation step, for use with num_eval_batches=0 in unit tests."""
     del experiment_state  # unused
-    assert self.eval_schedule.num_batches == 0
-    logging.warning(f'skipping evaluation: {self.eval_schedule.num_batches=}')
+    assert self._eval_stage.num_batches == 0
+    logging.warning(f'skipping evaluation: {self._eval_stage.num_batches=}')
     return OnlineEvalMetrics()
 
   def evaluate(
@@ -1404,9 +1415,9 @@ class RolloutTrainer:
     Returns:
       Online evaluation metrics.
     """
-    if self._eval_trajectory_length == 0:  # pytype: disable=attribute-error  # jax-api-types
+    if self._eval_stage.num_batches == 0:
       return OnlineEvalMetrics()  # no evaluation to do.
-    assert self.eval_schedule.num_batches > 0
+    assert self.eval_schedule.stages[0].num_batches > 0
 
     with timing.Timer() as eval_timer:
       _, params, ema_state, non_params = experiment_state

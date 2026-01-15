@@ -20,10 +20,12 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import coordax as cx
 from flax import nnx
+import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import xarray_utils
 from neuralgcm.experimental.metrics import aggregation
@@ -43,6 +45,24 @@ class TestLorenz96(lorenz96.Lorenz96):
     super().__post_init__()
     # Add a dummy variable to ensure non_params is not empty
     self.dummy_non_param = nnx.Variable(jnp.array(0.0))
+
+
+def _construct_spec(supported_spec, timedelta):
+  """Construct concrete data specs from inputs spec."""
+  # Assumes all supported_spec are CoordSpec with "any" timedelta.
+  def _set_timedelta(c):
+    assert isinstance(c, data_specs.CoordSpec)
+    c = c.coord
+    return cx.coords.compose(
+        *[timedelta if isinstance(ax, coordinates.TimeDelta) else ax
+          for ax in c.axes]
+    )
+
+  return jax.tree.map(
+      _set_timedelta,
+      supported_spec,
+      is_leaf=lambda x: isinstance(x, data_specs.CoordSpec)
+  )
 
 
 class TrainerTest(parameterized.TestCase):
@@ -97,9 +117,6 @@ class TrainerTest(parameterized.TestCase):
 
   def test_trainer(self):
     model, all_data = self.create_test_model_and_data()
-    # Constructing input specs that are "sufficient" for the model needs.
-    input_specs = model.inputs_spec
-    dynamic_specs = model.dynamic_inputs_spec
 
     # Constructing queries_spec, use all fields except 'time'.
     remove_timedelta = lambda c: cx.coords.compose(
@@ -117,18 +134,12 @@ class TrainerTest(parameterized.TestCase):
         spmd_mesh,
         {'physics': {'level': None, 'longitude': None, 'latitude': None}}
     )
-    batch_axis = trainer.create_batch_axis(spmd_mesh, batch_size_per_device=1)
 
     # Constructing data loader.
     data_loader = data_loading.DataLoader(
         all_data=all_data,
-        input_data_specs=input_specs,
-        dynamic_input_specs=dynamic_specs,
         training_mesh=training_mesh,
-        batch_axis=batch_axis,
         vertical_name='z',
-        model_timestep=model.timestep,
-        inner_steps=1,
         load_data_via_callback=False,
         queries_spec=queries_specs,
     )
@@ -152,20 +163,39 @@ class TrainerTest(parameterized.TestCase):
     optimizer = optax.adam(1e-3)
     opt_config = trainer.OptimizationConfig(optimizer, ema_num_steps=10)
 
-    train_schedule = trainer.TrainSchedule(
-        schedule_time_steps=[1, 5],
-        schedule_boundaries=[3],
-        total_steps=5,
-        batch_size_per_device=1,
-        time_sample_offset=1,
-        shuffle_buffer_size=0,
-    )
-    eval_schedule = trainer.EvalSchedule(
-        time_steps=[10],
-        batch_size_per_device=1,
-        num_batches=1,
-        steps_between_evals=2,
-    )
+    train_stages = []
+    for steps in [2, 5]:
+      timedelta = coordinates.TimeDelta(np.arange(steps) * model.timestep)
+      inputs_spec = _construct_spec(model.inputs_spec, timedelta)
+      dyn_spec = _construct_spec(model.dynamic_inputs_spec, timedelta)
+      train_stages.append(
+          trainer.TrainStage(
+              duration=steps,
+              inputs_spec=inputs_spec,
+              dynamic_inputs_spec=dyn_spec,
+              loss=loss,
+              time_sample_offset=model.timestep,
+              batch_size_per_device=1,
+              shuffle_buffer_size=0,
+          )
+      )
+    train_schedule = trainer.TrainSchedule(stages=train_stages)
+
+    eval_timedelta = coordinates.TimeDelta(np.arange(10) * model.timestep)
+    eval_inputs_spec = _construct_spec(model.inputs_spec, eval_timedelta)
+    eval_dyn_spec = _construct_spec(model.dynamic_inputs_spec, eval_timedelta)
+    eval_schedule = trainer.EvalSchedule(stages=[
+        trainer.EvalSchema(
+            cadence=2,
+            inputs_spec=eval_inputs_spec,
+            dynamic_inputs_spec=eval_dyn_spec,
+            metrics_evaluator=eval_metrics,
+            loss_evaluator=loss,
+            time_sample_offset=model.timestep,
+            batch_size_per_device=1,
+            num_batches=1,
+        )
+    ])
 
     checkpoint_config = trainer.CheckpointConfig(
         save_interval_steps=2,

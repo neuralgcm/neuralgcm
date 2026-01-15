@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterator, Sequence
 import dataclasses
 import functools
 import logging
+import math
 from typing import Any, TypeVar, cast
 
 import coordax as cx
@@ -100,7 +101,7 @@ def _get_datetime_forecast_starts(
 
   # To match ECMWF, all forecasts should be initialized at 0z or 12z. To
   # approximate this, we round the candidates to whole days, shift every other
-  # one by 12 hours, and then find the closest times in the orinal candidate
+  # one by 12 hours, and then find the closest times in the original candidate
   # list.  This simple heuristic works well if there are a reasonable number
   # more candidates than samples, which should always be true for practical
   # uses.
@@ -148,11 +149,55 @@ def _get_datetime_forecast_starts(
   return starts
 
 
+def _get_shared_time_axis(all_data: dict[str, xarray.Dataset]) -> pd.DatetimeIndex:
+  """Returns the shared time axis across all datasets."""
+  time_axes = [data.indexes['time'] for data in all_data.values()]  # pytype: disable=attribute-error  # jax-api-types
+  time_axes = cast(list[pd.DatetimeIndex], time_axes)
+  time = time_axes[0]
+  for time_axis in time_axes[1:]:
+    time = time.intersection(time_axis, sort=True)
+  return time
+
+
+def _get_train_sample_origins(
+    all_data: dict[str, xarray.Dataset],
+    stencil: xreader.TimeStencil | dict[str, xreader.TimeStencil],
+    dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
+    time_sample_offset: np.timedelta64,
+) -> np.ndarray:
+  return _get_sample_origins(
+      time_axis=_get_shared_time_axis(all_data),
+      time_slices=dataset_time_slice,
+      stencil=stencil,
+      time_sample_offset=time_sample_offset,
+  )
+
+
+def _get_eval_sample_origins(
+    all_data: dict[str, xarray.Dataset],
+    time_slices: tuple[str, str] | list[tuple[str, str]] | None,
+    stencil: xreader.TimeStencil | dict[str, xreader.TimeStencil],
+    batch_count: int,
+    global_batch_size: int,
+    time_sample_offset: np.timedelta64,
+) -> np.ndarray:
+  """Get sample origins for evaluation."""
+  sample_count = global_batch_size * batch_count
+  time = _get_shared_time_axis(all_data)
+  sample_origins = _get_sample_origins(
+      time_axis=time,
+      time_slices=time_slices,
+      stencil=stencil,
+      time_sample_offset=time_sample_offset,
+  )
+  return _get_datetime_forecast_starts(sample_count, sample_origins)
+
+
 def _get_sample_origins(
     time_axis: pd.Series,
     time_slices: tuple[str, str] | list[tuple[str, str]] | None,
-    stencil: xreader.TimeStencil,
-    stride_between_windows: int,
+    stencil: xreader.TimeStencil | dict[str, xreader.TimeStencil],
+    time_sample_offset: np.timedelta64,
 ) -> np.ndarray:
   """Construct an array of origin times for train/eval examples.
 
@@ -170,9 +215,8 @@ def _get_sample_origins(
     stencil: The stencil which defines the shape of the training examples, as
       offsets from the origin time.  This determines how much buffer space is
       needed around the origin time.
-    stride_between_windows: This determines the number of time values between
-      consecutive sample origins. When multiple slices are used, the stride is
-      applied separately within each slice.
+    time_sample_offset: Time between consecutive sample origins. When multiple
+      slices are used, the stride is applied separately within each slice.
 
   Returns:
     An array of times to use as the origins of examples.
@@ -196,16 +240,35 @@ def _get_sample_origins(
       return slice(*x)
 
   time_slices = [make_slice(x) for x in time_slices]
-
+  time_axis_step = np.unique(np.diff(time_axis.values))
+  if time_axis_step.size != 1:
+    raise ValueError(
+        'Time axis must have a single step, got'
+        f' {time_axis_step=}.  time_axis={time_axis.values=}'
+    )
+  stride_between_windows, reminder = divmod(time_sample_offset, time_axis_step)
+  if reminder:
+    raise ValueError(
+        'Time axis step must be a multiple of time_sample_offset, got'
+        f' {time_axis_step=} and {time_sample_offset=}.'
+    )
+  stride_between_windows = stride_between_windows.item()  # get int value.
   # Collect origin times from each slice.
   sample_origins = []
   for ts in time_slices:
     slice_times = pd.Series(time_axis, index=time_axis).loc[ts].index
-    new_sample_origins = slice_times[::stride_between_windows]
-    new_sample_origins = xreader.valid_origin_points(
-        new_sample_origins, stencil
-    )
-    sample_origins.append(new_sample_origins)
+    candidates = slice_times[::stride_between_windows]
+
+    if isinstance(stencil, xreader.TimeStencil):
+      stencils = [stencil]
+    else:
+      stencils = list(stencil.values())
+
+    valid_mask = np.ones(len(candidates), dtype=bool)
+    for s in stencils:
+      valid_origins_for_s = xreader.valid_origin_points(slice_times, s)
+      valid_mask &= np.isin(candidates, valid_origins_for_s)
+    sample_origins.append(candidates[valid_mask])
 
   return np.concatenate(sample_origins)
 
@@ -461,15 +524,10 @@ class DataLoader:
 
   Attributes:
     all_data: Dictionary of xarray datasets containing all available data.
-    input_data_specs: Specifications for input data fields.
-    dynamic_input_specs: Specifications for dynamic input fields.
     queries_spec: Specifications for a subset of input fields to be used as
       targets for the loss.
     training_mesh: Parallel mesh with batch and ensemble sharding for training.
-    batch_axis: Axis representing the batch dimension.
     vertical_name: Name of the vertical dimension.
-    model_timestep: Timestep of the model.
-    inner_steps: Number of inner steps per model step.
     load_data_via_callback: Whether to load data via a callback. If True,
       DataLoader is _stateful_, and updates `data_buffer` inplace using
       each iteration.
@@ -480,13 +538,8 @@ class DataLoader:
   """
 
   all_data: dict[str, xarray.Dataset]
-  input_data_specs: typing.Pytree
-  dynamic_input_specs: typing.Pytree
   training_mesh: parallelism.Mesh
-  batch_axis: cx.SizedAxis
   vertical_name: str
-  model_timestep: pd.Timedelta
-  inner_steps: int
   load_data_via_callback: bool
   queries_spec: typing.Pytree
   callback_pinned_host: bool = False
@@ -514,6 +567,17 @@ class DataLoader:
     mesh = self.training_mesh.spmd_mesh
     assert mesh is not None
     return mesh
+
+  def make_batch_axis(self, batch_size_per_device: int) -> cx.Coordinate:
+    """Computes batch axis."""
+    deg_of_model_parallelism = math.prod(
+        v for k, v in self.spmd_mesh.shape.items() if k != 'batch'
+    )
+    global_batch_size = (
+        jax.device_count() // deg_of_model_parallelism * batch_size_per_device
+    )
+    batch_axis = cx.SizedAxis('batch', global_batch_size)
+    return batch_axis
 
   def coord_to_shard(self, coord: cx.Coordinate) -> cx.Coordinate:
     return cx.coords.compose(*[
@@ -629,22 +693,25 @@ class DataLoader:
 
     return _retrieve_global_targets
 
-  def data_slice_struct(self):
+  def data_slice_struct(
+      self,
+      input_data_specs: typing.Pytree,
+      batch_size_per_device: int,
+  ):
     """Returns shape struct of a time slice of input data."""
-    is_coord_or_spec = lambda x: isinstance(x, cx.Coordinate) or isinstance(
-        x, data_specs.CoordSpec
-    )
+    batch_axis = self.make_batch_axis(batch_size_per_device)
+    is_coord = lambda c: isinstance(c, cx.Coordinate)
     # Prepend batch axis which is not in inputs_spec and drop timedelta.
     infer_data_slice_struct = lambda c: cx.shape_struct_field(
         cx.coords.compose(
-            self.batch_axis,
-            *(ax for ax in c.coord.axes if 'timedelta' not in ax.dims),
+            batch_axis,
+            *(ax for ax in c.axes if 'timedelta' not in ax.dims),
         )
     )
     return jax.tree.map(
         infer_data_slice_struct,
-        self.input_data_specs,
-        is_leaf=is_coord_or_spec,
+        input_data_specs,
+        is_leaf=is_coord,
     )
 
   def _read_sharded_fields(
@@ -657,13 +724,22 @@ class DataLoader:
         dim_partitions=self.training_mesh.field_partitions['physics'],
     )
 
-  def from_xarray_fn(
-      self, data: dict[str, xarray.Dataset]
+  def _from_xarray_fn(
+      self,
+      data: dict[str, xarray.Dataset],
+      input_data_specs: typing.Pytree,
+      dynamic_input_specs: typing.Pytree,
+      stencils: dict[str, xreader.TimeStencil],
   ) -> tuple[typing.Pytree, typing.Pytree]:
-    data = xarray_utils.ensure_timedelta_axis(data)
+    """Reads data from xarray datasets."""
+    timedelta_origins = {
+        k: v.start if v.closed in ['left', 'both'] else v.start + v.step
+        for k, v in stencils.items()
+    }
+    data = xarray_utils.ensure_timedelta_axis(data, timedelta_origins)
     return (
-        self._read_sharded_fields(data, self.input_data_specs),  # pytype: disable=attribute-error  # jax-api-types
-        self._read_sharded_fields(data, self.dynamic_input_specs),  # pytype: disable=attribute-error  # jax-api-types
+        self._read_sharded_fields(data, input_data_specs),
+        self._read_sharded_fields(data, dynamic_input_specs),
     )
 
   def to_global_array(self, pytree: PyTree) -> PyTree:
@@ -680,10 +756,12 @@ class DataLoader:
       self,
       dataset_dict: dict[str, xarray.Dataset],
       read_shard: Callable[[dict[str, xarray.Dataset], int], grain.IterDataset],
-      global_batch_size: int,
       batch_size_per_device: int,
+      from_xarray_fn: Callable[[dict[str, xarray.Dataset]], Any],
   ) -> grain.IterDataset:
     """Read a shard of a training dataset into grain.IterDataset."""
+    batch_axis = self.make_batch_axis(batch_size_per_device)
+    # TODO(dkochkov): Specify spatial_dims and partitions in DataLoader init.
     partitions = self.training_mesh.field_partitions['physics']
     spec = jax.sharding.PartitionSpec(
         *(partitions[k] for k in ('batch', 'level', 'longitude', 'latitude'))
@@ -705,7 +783,7 @@ class DataLoader:
       sizes = {k: v for k, v in zip(spatial_dims, res_key)}
       # Use .get(k, 1) for dims that may not exist in a particular dataset.
       global_shape = (
-          global_batch_size,
+          batch_axis.size,
           *(sizes.get(k, 1) for k in spatial_dims),
       )
       indices_map = sharding.addressable_devices_indices_map(global_shape)
@@ -750,8 +828,8 @@ class DataLoader:
           shard_dataset[name] = ds.isel(spatial_indices, missing_dims='ignore')
       shard_data.append(read_shard(shard_dataset, shard_index))
 
-    batch_axis = parallelism.CoordinateShard(
-        self.batch_axis,
+    batch_axis_shard = parallelism.CoordinateShard(
+        batch_axis,
         self.spmd_mesh.shape,
         self.training_mesh.field_partitions['physics'],
     )
@@ -769,55 +847,14 @@ class DataLoader:
     # shard_data is a list of datasets by resolution and shard indices.
     data = grain.experimental.ZipIterDataset(shard_data)
     # process each (resolution, shard_index) separately.
-    data = data.map(lambda shards: [self.from_xarray_fn(s) for s in shards])
+    data = data.map(lambda shards: [from_xarray_fn(s) for s in shards])
     # shards are converted to coordax Fields and then batched.
     data = data.batch(batch_size_per_device)
-    data = data.map(lambda x: cx.tag(x, batch_axis))  # add batch axis.
+    data = data.map(lambda x: cx.tag(x, batch_axis_shard))  # add batch axis.
     # regroup data from resolutions + index to dicts keyed by device, then list
     # of dicts is transposed to the original dict structures keyd by device.
     data = data.map(prep_for_to_global_array)
     return data
-
-  def _get_shared_time_axis(self) -> pd.DatetimeIndex:
-    time_axes = [data.indexes['time'] for data in self.all_data.values()]  # pytype: disable=attribute-error  # jax-api-types
-    time_axes = cast(list[pd.DatetimeIndex], time_axes)
-    time = time_axes[0]
-    for time_axis in time_axes[1:]:
-      time = time.intersection(time_axis, sort=True)
-    return time
-
-  def _get_train_sample_origins(
-      self,
-      stencil: xreader.TimeStencil,
-      dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
-      time_sample_offset: int,
-  ) -> np.ndarray:
-    return _get_sample_origins(
-        time_axis=self._get_shared_time_axis(),
-        time_slices=dataset_time_slice,
-        stencil=stencil,
-        stride_between_windows=time_sample_offset,
-    )
-
-  def _get_eval_sample_origins(
-      self,
-      time_slices: tuple[str, str] | list[tuple[str, str]] | None,
-      stencil: xreader.TimeStencil,
-      batch_count: int,
-      global_batch_size: int,
-  ) -> np.ndarray:
-    """Get sample origins for evaluation."""
-
-    sample_count = global_batch_size * batch_count
-
-    time = self._get_shared_time_axis()
-    sample_origins = _get_sample_origins(
-        time_axis=time,
-        time_slices=time_slices,
-        stencil=stencil,
-        stride_between_windows=1,
-    )
-    return _get_datetime_forecast_starts(sample_count, sample_origins)
 
   def _iterate_with_updated_buffer(self, data):
     """Iterates over and updates the data buffer inplace, if necessary."""
@@ -836,59 +873,71 @@ class DataLoader:
 
   def build_train_inputs(
       self,
-      time_series_length: int,
+      input_data_specs: typing.Pytree,
+      dynamic_input_specs: typing.Pytree,
       batch_size_per_device: int,
-      global_batch_size: int,
       shuffle_buffer_size_in_bytes: int,
       dataset_rng_seed: int,
-      time_sample_offset: int,
+      time_sample_offset: np.timedelta64,
       dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
   ) -> Iterator[Any]:
     """Loads the training dataset and returns a data iterator.
 
     Args:
-      time_series_length: Length of the time series for each sample.
+      input_data_specs: Specifications for input data fields.
+      dynamic_input_specs: Specifications for dynamic input fields.
       batch_size_per_device: Number of samples per batch per device.
-      global_batch_size: Total number of samples per batch across all devices.
       shuffle_buffer_size_in_bytes: Size of the shuffle buffer in bytes.
       dataset_rng_seed: Seed for the random number generator used in the
         dataset.
-      time_sample_offset: Stride for sampling start times of training
-        trajectories.
+      time_sample_offset: Time between consecutive valid start times.
       dataset_time_slice: Time period(s) to select training data from.
 
     Returns:
       An iterator over the training data.
     """
-    shard_count = global_batch_size // batch_size_per_device
+    get_var_names = lambda k: (
+        list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
+    )
+    all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
+    batch_axis = self.make_batch_axis(batch_size_per_device)
+    shard_count = batch_axis.size // batch_size_per_device
     if shard_count == 0:
       raise ValueError(
           'cannot shard training data even once with'
-          f' {global_batch_size=} and {batch_size_per_device=}'
+          f' {batch_axis=} and {batch_size_per_device=}'
       )
 
-    dt = self.model_timestep * self.inner_steps  # pytype: disable=attribute-error  # jax-api-types
-    stencil = xreader.TimeStencil(
-        start='0h',
-        stop=time_series_length * dt,
-        step=dt,
-    )
+    inputs_stencils = infer_stencils(input_data_specs)
+    dynamic_stencils = infer_stencils(dynamic_input_specs)
+    stencils = inputs_stencils | dynamic_stencils
+    shared_keys = set(inputs_stencils) & set(dynamic_stencils)
+    for k in shared_keys:
+      if inputs_stencils[k] != dynamic_stencils[k]:
+        raise ValueError(
+            f'Stencil for {k} differs between inputs and dynamic inputs:'
+            f' {inputs_stencils[k]} vs {dynamic_stencils[k]}'
+        )
 
-    sample_origins = self._get_train_sample_origins(
-        stencil, dataset_time_slice, time_sample_offset
+    sample_origins = _get_train_sample_origins(
+        all_data, stencils, dataset_time_slice, time_sample_offset
     )
-
+    if len(sample_origins) > 0 and len(sample_origins) < shard_count:  # pylint: disable=g-explicit-length-test
+      raise ValueError(
+          f'Insufficient "{len(sample_origins)=}" for "{shard_count=}".'
+      )
     buffer_size_in_bytes = (
         shuffle_buffer_size_in_bytes / jax.local_device_count()
     )
+    seed_length_factor = max(len(s.points) for s in stencils.values())
 
     def read_shard(shard_dataset, shard_index):
       seed = train_utils.combine_rng_seeds(
-          dataset_rng_seed, shard_index, time_series_length
+          dataset_rng_seed, shard_index, seed_length_factor
       )
       return xreader.training_iterator(
           shard_dataset,
-          stencil,
+          stencils,
           sample_origins,
           num_epochs=None,
           buffer_size_in_bytes=buffer_size_in_bytes,
@@ -898,12 +947,19 @@ class DataLoader:
           seed=seed,
       )
 
+    from_xr = functools.partial(
+        self._from_xarray_fn,
+        input_data_specs=input_data_specs,
+        dynamic_input_specs=dynamic_input_specs,
+        stencils=stencils,
+    )
+
     # Read a shard across space and initialization times.
     data = self._read_model_parallel_dataset(
-        self.all_data,  # pytype: disable=attribute-error  # jax-api-types
+        all_data,
         read_shard,
-        global_batch_size,
         batch_size_per_device,
+        from_xarray_fn=from_xr,
     )
     if self.load_data_via_callback:
 
@@ -921,62 +977,73 @@ class DataLoader:
 
   def build_eval_inputs(
       self,
+      input_data_specs: typing.Pytree,
+      dynamic_input_specs: typing.Pytree,
       dataset_time_slices: tuple[str, str] | list[tuple[str, str]] | None,
-      train_trajectory_length: int,
-      num_init_frames: int,
-      eval_trajectory_length: int,
       batch_size_per_device: int,
-      global_batch_size: int,
+      time_sample_offset: np.timedelta64,
       batch_count: int = 1,
   ) -> list[Any]:
     """Returns an iterable over the data for evaluation.
 
     Args:
+      input_data_specs: Specifications for input data fields.
+      dynamic_input_specs: Specifications for dynamic input fields.
       dataset_time_slices: Time period(s) to select evaluation data from.
-      train_trajectory_length: Length of the training trajectory.
-      num_init_frames: Number of frames to use for initialization.
-      eval_trajectory_length: Length of the evaluation trajectory.
       batch_size_per_device: Number of samples per batch per device.
-      global_batch_size: Total number of samples per batch across all devices.
+      time_sample_offset: Time between consecutive valid sample origins.
       batch_count: Number of batches of evaluation data to return.
 
     Returns:
       A list of batches of evaluation data.
     """
-
-    time_series_length = max(
-        eval_trajectory_length + num_init_frames - 1,  # pytype: disable=attribute-error  # jax-api-types
-        train_trajectory_length,
+    get_var_names = lambda k: (
+        list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
     )
+    all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
+    inputs_stencils = infer_stencils(input_data_specs)
+    dynamic_stencils = infer_stencils(dynamic_input_specs)
+    stencils = inputs_stencils | dynamic_stencils
+    shared_keys = set(inputs_stencils) & set(dynamic_stencils)
+    for k in shared_keys:
+      if inputs_stencils[k] != dynamic_stencils[k]:
+        raise ValueError(
+            f'Stencil for {k} differs between inputs and dynamic inputs:'
+            f' {inputs_stencils[k]} vs {dynamic_stencils[k]}'
+        )
 
-    dt = self.model_timestep * self.inner_steps  # pytype: disable=attribute-error  # jax-api-types
-    stencil = xreader.TimeStencil(
-        start='0h', stop=time_series_length * dt, step=dt
+    batch_axis = self.make_batch_axis(batch_size_per_device)
+    origins = _get_eval_sample_origins(
+        all_data, dataset_time_slices, stencils, batch_count, batch_axis.size,
+        time_sample_offset
     )
-    origins = self._get_eval_sample_origins(
-        dataset_time_slices, stencil, batch_count, global_batch_size
-    )
-
-    shard_count = global_batch_size // batch_size_per_device
+    shard_count = batch_axis.size // batch_size_per_device
 
     if shard_count == 0:
       raise ValueError(
-          f'cannot shard eval data even once with {global_batch_size=} and'
+          f'cannot shard eval data even once with {batch_axis=} and'
           f' {batch_size_per_device=}'
       )
 
     def read_shard(shard_dataset, shard_index):
       return xreader.evaluation_iterator(
           shard_dataset,
-          stencil,
+          stencils,
           origins[shard_index::shard_count],
       )
 
+    from_xr = functools.partial(
+        self._from_xarray_fn,
+        input_data_specs=input_data_specs,
+        dynamic_input_specs=dynamic_input_specs,
+        stencils=stencils,
+    )
+
     data = self._read_model_parallel_dataset(
-        self.all_data,
+        all_data,
         read_shard,
-        global_batch_size,
         batch_size_per_device,  # pytype: disable=attribute-error  # jax-api-types
+        from_xarray_fn=from_xr,
     )
     if self.load_data_via_callback:
 

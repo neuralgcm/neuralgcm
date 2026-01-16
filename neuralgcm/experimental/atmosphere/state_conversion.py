@@ -17,6 +17,7 @@
 import functools
 
 import coordax as cx
+from dinosaur import hybrid_coordinates
 from dinosaur import primitive_equations as dinosaur_primitive_equations
 import jax.numpy as jnp
 from neuralgcm.experimental.atmosphere import interpolators
@@ -66,10 +67,13 @@ def get_geopotential(
         clouds=clouds,
     )
   elif isinstance(levels, coordinates.HybridLevels):
+    a, b = levels.a_boundaries, levels.b_boundaries
+    a_nondim = sim_units.nondimensionalize(a * typing.units.hPa)
+    nondim_hybrid_levels = hybrid_coordinates.HybridCoordinates(a_nondim, b)
     dino_get_geopotential = functools.partial(
         dinosaur_primitive_equations.get_geopotential_on_hybrid,
         nodal_orography=orography.nodal_orography.data,
-        coordinates=levels.hybrid_levels,
+        coordinates=nondim_hybrid_levels,
         gravity_acceleration=sim_units.gravity_acceleration,
         ideal_gas_constant=sim_units.ideal_gas_constant,
         water_vapor_gas_constant=sim_units.water_vapor_gas_constant,

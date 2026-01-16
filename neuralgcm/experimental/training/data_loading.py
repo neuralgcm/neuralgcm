@@ -149,7 +149,9 @@ def _get_datetime_forecast_starts(
   return starts
 
 
-def _get_shared_time_axis(all_data: dict[str, xarray.Dataset]) -> pd.DatetimeIndex:
+def _get_shared_time_axis(
+    all_data: dict[str, xarray.Dataset],
+) -> pd.DatetimeIndex:
   """Returns the shared time axis across all datasets."""
   time_axes = [data.indexes['time'] for data in all_data.values()]  # pytype: disable=attribute-error  # jax-api-types
   time_axes = cast(list[pd.DatetimeIndex], time_axes)
@@ -529,8 +531,8 @@ class DataLoader:
     training_mesh: Parallel mesh with batch and ensemble sharding for training.
     vertical_name: Name of the vertical dimension.
     load_data_via_callback: Whether to load data via a callback. If True,
-      DataLoader is _stateful_, and updates `data_buffer` inplace using
-      each iteration.
+      DataLoader is _stateful_, and updates `data_buffer` inplace using each
+      iteration.
     callback_pinned_host: Whether to use pinned host memory for the callback
       buffer.
     callback_spatial_dims_layout: The desired spatial dimensions layout for the
@@ -568,8 +570,12 @@ class DataLoader:
     assert mesh is not None
     return mesh
 
-  def make_batch_axis(self, batch_size_per_device: int) -> cx.Coordinate:
+  def make_batch_axis(
+      self, batch_size_per_device: int | None
+  ) -> cx.Coordinate | None:
     """Computes batch axis."""
+    if batch_size_per_device is None:
+      return None
     deg_of_model_parallelism = math.prod(
         v for k, v in self.spmd_mesh.shape.items() if k != 'batch'
     )
@@ -696,18 +702,18 @@ class DataLoader:
   def data_slice_struct(
       self,
       input_data_specs: typing.Pytree,
-      batch_size_per_device: int,
+      batch_size_per_device: int | None,
   ):
     """Returns shape struct of a time slice of input data."""
     batch_axis = self.make_batch_axis(batch_size_per_device)
     is_coord = lambda c: isinstance(c, cx.Coordinate)
-    # Prepend batch axis which is not in inputs_spec and drop timedelta.
-    infer_data_slice_struct = lambda c: cx.shape_struct_field(
-        cx.coords.compose(
-            batch_axis,
-            *(ax for ax in c.axes if 'timedelta' not in ax.dims),
-        )
-    )
+
+    def infer_data_slice_struct(c):
+      axes = [ax for ax in c.axes if 'timedelta' not in ax.dims]
+      if batch_axis is not None:
+        axes = [batch_axis] + axes
+      return cx.shape_struct_field(cx.coords.compose(*axes))
+
     return jax.tree.map(
         infer_data_slice_struct,
         input_data_specs,
@@ -756,16 +762,19 @@ class DataLoader:
       self,
       dataset_dict: dict[str, xarray.Dataset],
       read_shard: Callable[[dict[str, xarray.Dataset], int], grain.IterDataset],
-      batch_size_per_device: int,
+      batch_size_per_device: int | None,
       from_xarray_fn: Callable[[dict[str, xarray.Dataset]], Any],
   ) -> grain.IterDataset:
     """Read a shard of a training dataset into grain.IterDataset."""
     batch_axis = self.make_batch_axis(batch_size_per_device)
     # TODO(dkochkov): Specify spatial_dims and partitions in DataLoader init.
     partitions = self.training_mesh.field_partitions['physics']
-    spec = jax.sharding.PartitionSpec(
-        *(partitions[k] for k in ('batch', 'level', 'longitude', 'latitude'))
-    )
+    if batch_size_per_device is not None:
+      spec_names = ('batch', 'level', 'longitude', 'latitude')
+    else:
+      spec_names = ('level', 'longitude', 'latitude')
+
+    spec = jax.sharding.PartitionSpec(*(partitions[k] for k in spec_names))
     sharding = jax.sharding.NamedSharding(self.spmd_mesh, spec)
 
     spatial_dims = (self.vertical_name, 'longitude', 'latitude')
@@ -782,10 +791,14 @@ class DataLoader:
     for res_key in datasets_by_res:
       sizes = {k: v for k, v in zip(spatial_dims, res_key)}
       # Use .get(k, 1) for dims that may not exist in a particular dataset.
-      global_shape = (
-          batch_axis.size,
-          *(sizes.get(k, 1) for k in spatial_dims),
-      )
+      if batch_axis is not None:
+        global_shape = (
+            batch_axis.size,
+            *(sizes.get(k, 1) for k in spatial_dims),
+        )
+      else:
+        global_shape = tuple(sizes.get(k, 1) for k in spatial_dims)
+
       indices_map = sharding.addressable_devices_indices_map(global_shape)
       for device, index in indices_map.items():
         device_to_indices_by_res[device][res_key] = index
@@ -801,6 +814,7 @@ class DataLoader:
 
     def slice_to_shard(slice_: slice) -> int:
       if slice_.start is not None:
+        assert batch_size_per_device is not None
         assert slice_.stop - slice_.start == batch_size_per_device
         shard_index = slice_.start // batch_size_per_device
       else:
@@ -813,14 +827,21 @@ class DataLoader:
 
     for key in sorted_indices_by_res_keys:
       indices_by_res = dict(key)
-      # Batch slice is consistent across resolutions for a given device group.
-      batch_slice = list(indices_by_res.values())[0][0]
-      shard_index = slice_to_shard(batch_slice)
+      if batch_size_per_device is not None:
+        # Batch slice is consistent across resolutions for a given device group.
+        batch_slice = list(indices_by_res.values())[0][0]
+        shard_index = slice_to_shard(batch_slice)
+        spatial_slice_start_idx = 1
+      else:
+        shard_index = 0
+        spatial_slice_start_idx = 0
 
       shard_dataset = {}
       for res_key, fixed_res_datasets in datasets_by_res.items():
         indices_tuple = indices_by_res[res_key]
-        spatial_indices_slices = indices_tuple[1:]  # skip the batch index.
+        spatial_indices_slices = indices_tuple[
+            spatial_slice_start_idx:
+        ]  # skip the batch index.
         spatial_indices = dict(zip(spatial_dims, spatial_indices_slices))
         for name, ds in fixed_res_datasets.items():
           # we ignore missing dims because some datasets may not have all
@@ -828,11 +849,12 @@ class DataLoader:
           shard_dataset[name] = ds.isel(spatial_indices, missing_dims='ignore')
       shard_data.append(read_shard(shard_dataset, shard_index))
 
-    batch_axis_shard = parallelism.CoordinateShard(
-        batch_axis,
-        self.spmd_mesh.shape,
-        self.training_mesh.field_partitions['physics'],
-    )
+    if batch_size_per_device is not None:
+      batch_axis_shard = parallelism.CoordinateShard(
+          batch_axis,
+          self.spmd_mesh.shape,
+          self.training_mesh.field_partitions['physics'],
+      )
 
     def prep_for_to_global_array(shards):
       device_to_data = DeviceKeyedDict()
@@ -849,8 +871,9 @@ class DataLoader:
     # process each (resolution, shard_index) separately.
     data = data.map(lambda shards: [from_xarray_fn(s) for s in shards])
     # shards are converted to coordax Fields and then batched.
-    data = data.batch(batch_size_per_device)
-    data = data.map(lambda x: cx.tag(x, batch_axis_shard))  # add batch axis.
+    if batch_size_per_device is not None:
+      data = data.batch(batch_size_per_device)
+      data = data.map(lambda x: cx.tag(x, batch_axis_shard))  # add batch axis.
     # regroup data from resolutions + index to dicts keyed by device, then list
     # of dicts is transposed to the original dict structures keyd by device.
     data = data.map(prep_for_to_global_array)
@@ -875,7 +898,7 @@ class DataLoader:
       self,
       input_data_specs: typing.Pytree,
       dynamic_input_specs: typing.Pytree,
-      batch_size_per_device: int,
+      batch_size_per_device: int | None,
       shuffle_buffer_size_in_bytes: int,
       dataset_rng_seed: int,
       time_sample_offset: np.timedelta64,
@@ -900,12 +923,18 @@ class DataLoader:
         list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
     )
     all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
-    batch_axis = self.make_batch_axis(batch_size_per_device)
-    shard_count = batch_axis.size // batch_size_per_device
+
+    if batch_size_per_device is None:
+      shard_count = 1
+    else:
+      deg_of_model_parallelism = math.prod(
+          v for k, v in self.spmd_mesh.shape.items() if k != 'batch'
+      )
+      shard_count = jax.device_count() // deg_of_model_parallelism
+
     if shard_count == 0:
       raise ValueError(
-          'cannot shard training data even once with'
-          f' {batch_axis=} and {batch_size_per_device=}'
+          f'cannot shard training data even once with {batch_size_per_device=}'
       )
 
     inputs_stencils = infer_stencils(input_data_specs)
@@ -930,6 +959,9 @@ class DataLoader:
         shuffle_buffer_size_in_bytes / jax.local_device_count()
     )
     seed_length_factor = max(len(s.points) for s in stencils.values())
+    buffer_diversity = (
+        batch_size_per_device if batch_size_per_device is not None else 1
+    )
 
     def read_shard(shard_dataset, shard_index):
       seed = train_utils.combine_rng_seeds(
@@ -941,7 +973,7 @@ class DataLoader:
           sample_origins,
           num_epochs=None,
           buffer_size_in_bytes=buffer_size_in_bytes,
-          buffer_diversity=batch_size_per_device,
+          buffer_diversity=buffer_diversity,
           shard_index=shard_index,
           shard_count=shard_count,
           seed=seed,
@@ -980,7 +1012,7 @@ class DataLoader:
       input_data_specs: typing.Pytree,
       dynamic_input_specs: typing.Pytree,
       dataset_time_slices: tuple[str, str] | list[tuple[str, str]] | None,
-      batch_size_per_device: int,
+      batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
       batch_count: int = 1,
   ) -> list[Any]:
@@ -1012,12 +1044,24 @@ class DataLoader:
             f' {inputs_stencils[k]} vs {dynamic_stencils[k]}'
         )
 
-    batch_axis = self.make_batch_axis(batch_size_per_device)
+    if batch_size_per_device is not None:
+      batch_axis = self.make_batch_axis(batch_size_per_device)
+      assert batch_axis is not None
+      shard_count = batch_axis.size // batch_size_per_device
+      total_sample_count = batch_axis.size
+    else:
+      batch_axis = None
+      shard_count = 1
+      total_sample_count = 1
+
     origins = _get_eval_sample_origins(
-        all_data, dataset_time_slices, stencils, batch_count, batch_axis.size,
-        time_sample_offset
+        all_data,
+        dataset_time_slices,
+        stencils,
+        batch_count,
+        total_sample_count,
+        time_sample_offset,
     )
-    shard_count = batch_axis.size // batch_size_per_device
 
     if shard_count == 0:
       raise ValueError(

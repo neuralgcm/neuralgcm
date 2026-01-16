@@ -328,7 +328,8 @@ class InferStencilsTest(absltest.TestCase):
 
 class DataLoaderTest(absltest.TestCase):
 
-  def test_reader_produces_expected_slices(self):
+  def setUp(self):
+    super().setUp()
     # Setup test datasets
     dt_slow = np.timedelta64(24, 'h')
     dt_fast = np.timedelta64(6, 'h')
@@ -348,26 +349,26 @@ class DataLoaderTest(absltest.TestCase):
         {'y': (('time',), rng.randn(len(time_fast)))},
         coords={'time': pd.to_datetime(time_fast)},
     )
-    all_data = {'slow': ds_slow, 'fast': ds_fast}
+    self.all_data = {'slow': ds_slow, 'fast': ds_fast}
 
     # Define specs with TimeDelta coordinates
     # We want to read slices of length 3 steps for slow, and 12 steps for fast
-    slow_deltas = np.arange(0, 3) * dt_slow
-    fast_deltas = np.arange(0, 12) * dt_fast
+    self.slow_deltas = np.arange(0, 3) * dt_slow
+    self.fast_deltas = np.arange(0, 12) * dt_fast
 
-    input_data_specs = {
+    self.input_data_specs = {
         'slow': {
-            'x': coordinates.TimeDelta(slow_deltas),
+            'x': coordinates.TimeDelta(self.slow_deltas),
         },
         'fast': {
-            'y': coordinates.TimeDelta(fast_deltas),
+            'y': coordinates.TimeDelta(self.fast_deltas),
         },
     }
-    dynamic_input_specs = {}
+    self.dynamic_input_specs = {}
 
     devices = jax.local_devices()
     jax_mesh = jax.sharding.Mesh(np.array(devices), ('batch',))
-    mesh = parallelism.Mesh(
+    self.mesh = parallelism.Mesh(
         spmd_mesh=jax_mesh,
         field_partitions={
             'physics': {
@@ -379,38 +380,64 @@ class DataLoaderTest(absltest.TestCase):
         },
     )
 
+  def test_batched_reader_produces(self):
     loader = data_loading.DataLoader(
-        all_data=all_data,
-        training_mesh=mesh,
+        all_data=self.all_data,
+        training_mesh=self.mesh,
         vertical_name='level',
         load_data_via_callback=False,
         queries_spec={},
     )
-
-    # Build iterator
     iterator = loader.build_train_inputs(
-        input_data_specs=input_data_specs,
-        dynamic_input_specs=dynamic_input_specs,
+        input_data_specs=self.input_data_specs,
+        dynamic_input_specs=self.dynamic_input_specs,
         batch_size_per_device=1,
         shuffle_buffer_size_in_bytes=1000,
         dataset_rng_seed=42,
-        time_sample_offset=dt_slow,
+        time_sample_offset=np.timedelta64(24, 'h'),
         dataset_time_slice=None,
     )
-
     batch, _ = next(iterator)
 
-    # Verify sizes
-    self.assertEqual(batch['slow']['x'].axes['timedelta'].deltas.size, 3)
-    self.assertEqual(batch['fast']['y'].axes['timedelta'].deltas.size, 12)
+    with self.subTest('correct_timedelta'):
+      expected_td_x = coordinates.TimeDelta(self.slow_deltas)
+      expected_td_y = coordinates.TimeDelta(self.fast_deltas)
+      self.assertEqual(batch['slow']['x'].axes['timedelta'], expected_td_x)
+      self.assertEqual(batch['fast']['y'].axes['timedelta'], expected_td_y)
 
-    # Verify values (deltas)
-    np.testing.assert_array_equal(
-        batch['slow']['x'].axes['timedelta'].deltas, slow_deltas
+    with self.subTest('correct_batch'):
+      expected_batch = cx.SizedAxis('batch', jax.device_count())
+      self.assertEqual(batch['slow']['x'].axes['batch'], expected_batch)
+      self.assertEqual(batch['fast']['y'].axes['batch'], expected_batch)
+
+  def test_reader_no_batching(self):
+    loader = data_loading.DataLoader(
+        all_data=self.all_data,
+        training_mesh=self.mesh,
+        vertical_name='level',
+        load_data_via_callback=False,
+        queries_spec={},
     )
-    np.testing.assert_array_equal(
-        batch['fast']['y'].axes['timedelta'].deltas, fast_deltas
+    iterator = loader.build_train_inputs(
+        input_data_specs=self.input_data_specs,
+        dynamic_input_specs=self.dynamic_input_specs,
+        batch_size_per_device=None,
+        shuffle_buffer_size_in_bytes=1000,
+        dataset_rng_seed=42,
+        time_sample_offset=np.timedelta64(24, 'h'),
+        dataset_time_slice=None,
     )
+    sample, _ = next(iterator)
+
+    with self.subTest('correct_timedelta'):
+      expected_td_x = coordinates.TimeDelta(self.slow_deltas)
+      expected_td_y = coordinates.TimeDelta(self.fast_deltas)
+      self.assertEqual(sample['slow']['x'].axes['timedelta'], expected_td_x)
+      self.assertEqual(sample['fast']['y'].axes['timedelta'], expected_td_y)
+
+    with self.subTest('no_batch_axis'):
+      self.assertNotIn('batch', sample['slow']['x'].dims)
+      self.assertNotIn('batch', sample['fast']['y'].dims)
 
 
 if __name__ == '__main__':

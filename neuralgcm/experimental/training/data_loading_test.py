@@ -429,6 +429,42 @@ class DataLoaderTest(absltest.TestCase):
       self.assertNotIn('batch', sample['slow']['x'].dims)
       self.assertNotIn('batch', sample['fast']['y'].dims)
 
+  def test_reader_no_parallelism(self):
+    loader = data_loading.DataLoader(all_data=self.all_data, training_mesh=None)
+
+    with self.subTest('batch_size_per_device=None'):
+      iterator = loader.build_train_inputs(
+          input_data_specs=self.input_data_specs,
+          dynamic_input_specs=self.dynamic_input_specs,
+          batch_size_per_device=None,
+          shuffle_buffer_size_in_bytes=1000,
+          dataset_rng_seed=42,
+          time_sample_offset=np.timedelta64(24, 'h'),
+          dataset_time_slice=None,
+      )
+      sample, _ = next(iterator)
+
+      expected_td_x = coordinates.TimeDelta(self.slow_deltas)
+      expected_td_y = coordinates.TimeDelta(self.fast_deltas)
+      self.assertEqual(sample['slow']['x'].axes['timedelta'], expected_td_x)
+      self.assertEqual(sample['fast']['y'].axes['timedelta'], expected_td_y)
+      self.assertNotIn('batch', sample['slow']['x'].axes)
+      self.assertNotIn('batch', sample['fast']['y'].axes)
+
+    with self.subTest('batch_size_per_device=2'):
+      iterator = loader.build_train_inputs(
+          input_data_specs=self.input_data_specs,
+          dynamic_input_specs=self.dynamic_input_specs,
+          batch_size_per_device=2,
+          shuffle_buffer_size_in_bytes=1000,
+          dataset_rng_seed=42,
+          time_sample_offset=np.timedelta64(24, 'h'),
+          dataset_time_slice=None,
+      )
+      batch, _ = next(iterator)
+      expected_batch = cx.SizedAxis('batch', 2)
+      self.assertEqual(batch['slow']['x'].axes['batch'], expected_batch)
+
 
 if __name__ == '__main__':
   absltest.main()

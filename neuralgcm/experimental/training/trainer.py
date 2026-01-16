@@ -360,6 +360,8 @@ class RolloutTrainer:
   compute_loss_on_host: bool = False
 
   def __post_init__(self):
+    if self.data_loader.training_mesh is None:
+      raise ValueError('RolloutTrainer requires {data_loader.training_mesh=} to be specified.')
     self.run_evaluator = _maybe_on_host(
         _run_evaluator, self.compute_loss_on_host
     )
@@ -429,10 +431,14 @@ class RolloutTrainer:
 
   @property
   def queries_spec(self) -> dict[str, Any]:
+    # TODO(dkochkov): Move queries_spec to TrainStage / EvalSchema and remove
+    # this property.
+    assert isinstance(self.data_loader.queries_spec, dict)
     return self.data_loader.queries_spec
 
   @property
   def training_mesh(self) -> parallelism.Mesh:
+    assert isinstance(self.data_loader.training_mesh, parallelism.Mesh)
     return self.data_loader.training_mesh
 
   @property

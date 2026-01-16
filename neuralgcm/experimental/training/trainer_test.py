@@ -136,7 +136,6 @@ class TrainerTest(parameterized.TestCase):
     data_loader = data_loading.DataLoader(
         all_data=all_data,
         training_mesh=training_mesh,
-        load_data_via_callback=False,
         queries_spec=queries_specs,
     )
 

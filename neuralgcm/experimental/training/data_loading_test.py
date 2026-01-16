@@ -369,22 +369,13 @@ class DataLoaderTest(absltest.TestCase):
     devices = jax.local_devices()
     jax_mesh = jax.sharding.Mesh(np.array(devices), ('batch',))
     self.mesh = parallelism.Mesh(
-        spmd_mesh=jax_mesh,
-        field_partitions={
-            'physics': {
-                'batch': 'batch',
-                'level': None,
-                'longitude': None,
-                'latitude': None,
-            }
-        },
+        spmd_mesh=jax_mesh, field_partitions={'physics': {'batch': 'batch'}},
     )
 
   def test_batched_reader_produces(self):
     loader = data_loading.DataLoader(
         all_data=self.all_data,
         training_mesh=self.mesh,
-        vertical_name='level',
         load_data_via_callback=False,
         queries_spec={},
     )
@@ -414,7 +405,6 @@ class DataLoaderTest(absltest.TestCase):
     loader = data_loading.DataLoader(
         all_data=self.all_data,
         training_mesh=self.mesh,
-        vertical_name='level',
         load_data_via_callback=False,
         queries_spec={},
     )

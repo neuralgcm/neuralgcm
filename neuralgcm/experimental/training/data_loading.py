@@ -529,7 +529,6 @@ class DataLoader:
     queries_spec: Specifications for a subset of input fields to be used as
       targets for the loss.
     training_mesh: Parallel mesh with batch and ensemble sharding for training.
-    vertical_name: Name of the vertical dimension.
     load_data_via_callback: Whether to load data via a callback. If True,
       DataLoader is _stateful_, and updates `data_buffer` inplace using each
       iteration.
@@ -537,15 +536,18 @@ class DataLoader:
       buffer.
     callback_spatial_dims_layout: The desired spatial dimensions layout for the
       callback buffer.
+    loading_partition_schema: The partition schema to use when loading data.
+    shardable_dims: The dimensions to consider for loading in shards.
   """
 
   all_data: dict[str, xarray.Dataset]
   training_mesh: parallelism.Mesh
-  vertical_name: str
   load_data_via_callback: bool
   queries_spec: typing.Pytree
   callback_pinned_host: bool = False
   callback_spatial_dims_layout: tuple[str, ...] = ()
+  loading_partition_schema: str = 'physics'
+  shardable_dims: tuple[str, ...] = ()
 
   def __post_init__(self):
     if self.load_data_via_callback:
@@ -590,7 +592,7 @@ class DataLoader:
         parallelism.CoordinateShard(
             ax,
             self.training_mesh.shape,
-            self.training_mesh.field_partitions['physics'],
+            self.training_mesh.field_partitions[self.loading_partition_schema],
         )
         for ax in coord.axes
     ])
@@ -667,7 +669,7 @@ class DataLoader:
     def _retrieve_global_targets(idx):
       """Retrieves a global concrete array by stitching local shards."""
       get_out_spec = lambda f: parallelism.get_partition_spec(
-          f.dims, self.training_mesh.field_partitions['physics']
+          f.dims, self.training_mesh.field_partitions[self.loading_partition_schema]
       )
       out_specs = jax.tree.map(
           get_out_spec, target_slice_struct, is_leaf=cx.is_field
@@ -695,7 +697,9 @@ class DataLoader:
           merged_shards,
           coords,
       )
-      return self.training_mesh.with_sharding_constraint(result, 'physics')
+      return self.training_mesh.with_sharding_constraint(
+          result, self.loading_partition_schema
+      )
 
     return _retrieve_global_targets
 
@@ -727,7 +731,9 @@ class DataLoader:
         data,
         specs,
         mesh_shape=self.spmd_mesh.shape,
-        dim_partitions=self.training_mesh.field_partitions['physics'],
+        dim_partitions=self.training_mesh.field_partitions[
+            self.loading_partition_schema
+        ],
     )
 
   def _from_xarray_fn(
@@ -754,7 +760,9 @@ class DataLoader:
     def is_leaf(x):
       return isinstance(x, dict) and any(isinstance(k, jax.Device) for k in x)
 
-    unshard = functools.partial(self.training_mesh.unshard, schema='physics')
+    unshard = functools.partial(
+        self.training_mesh.unshard, schema=self.loading_partition_schema
+    )
     unsharded = jax.tree.map(unshard, pytree, is_leaf=is_leaf)
     return unsharded
 
@@ -767,17 +775,16 @@ class DataLoader:
   ) -> grain.IterDataset:
     """Read a shard of a training dataset into grain.IterDataset."""
     batch_axis = self.make_batch_axis(batch_size_per_device)
-    # TODO(dkochkov): Specify spatial_dims and partitions in DataLoader init.
-    partitions = self.training_mesh.field_partitions['physics']
+    partitions = self.training_mesh.field_partitions[self.loading_partition_schema]
     if batch_size_per_device is not None:
-      spec_names = ('batch', 'level', 'longitude', 'latitude')
+      spec_names = ('batch',) + self.shardable_dims
     else:
-      spec_names = ('level', 'longitude', 'latitude')
+      spec_names = self.shardable_dims
 
     spec = jax.sharding.PartitionSpec(*(partitions[k] for k in spec_names))
     sharding = jax.sharding.NamedSharding(self.spmd_mesh, spec)
 
-    spatial_dims = (self.vertical_name, 'longitude', 'latitude')
+    spatial_dims = self.shardable_dims
 
     # Stores datasets groupped by resolution and dataset key.
     # This makes it easier to keep track of resolution-specific index maps.
@@ -853,7 +860,7 @@ class DataLoader:
       batch_axis_shard = parallelism.CoordinateShard(
           batch_axis,
           self.spmd_mesh.shape,
-          self.training_mesh.field_partitions['physics'],
+          self.training_mesh.field_partitions[self.loading_partition_schema],
       )
 
     def prep_for_to_global_array(shards):

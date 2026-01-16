@@ -130,16 +130,12 @@ class TrainerTest(parameterized.TestCase):
 
     # Constructing training mesh.
     spmd_mesh = trainer.create_spmd_mesh(1, 1, 1, 1)
-    training_mesh = trainer.create_training_mesh(
-        spmd_mesh,
-        {'physics': {'level': None, 'longitude': None, 'latitude': None}}
-    )
+    training_mesh = trainer.create_training_mesh(spmd_mesh, {'physics': {}})
 
     # Constructing data loader.
     data_loader = data_loading.DataLoader(
         all_data=all_data,
         training_mesh=training_mesh,
-        vertical_name='z',
         load_data_via_callback=False,
         queries_spec=queries_specs,
     )

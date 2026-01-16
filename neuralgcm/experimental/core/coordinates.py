@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import dataclasses
-import datetime
 import functools
 from typing import Any, Iterable, Literal, Self, Sequence, TYPE_CHECKING, cast
 
@@ -1265,9 +1264,8 @@ class HybridLevels(cx.Coordinate):
       sim_units: units.SimUnits | None = None,
   ) -> cx.Field:
     a_boundaries, b_boundaries = self.a_boundaries, self.b_boundaries
-    if sim_units is None:
-      a_boundaries = a_boundaries * 100  # Convert to Pascal.
-    else:
+    a_boundaries = a_boundaries * 100  # Convert to Pascal.
+    if sim_units is not None:
       a_boundaries = sim_units.nondimensionalize(a_boundaries * typing.units.Pa)
 
     def _boundaries(p_surface: jax.Array) -> jax.Array:

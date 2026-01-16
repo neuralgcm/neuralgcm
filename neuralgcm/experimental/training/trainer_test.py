@@ -136,7 +136,6 @@ class TrainerTest(parameterized.TestCase):
     data_loader = data_loading.DataLoader(
         all_data=all_data,
         training_mesh=training_mesh,
-        queries_spec=queries_specs,
     )
 
     # Constructing loss and eval metrics.
@@ -168,6 +167,7 @@ class TrainerTest(parameterized.TestCase):
               duration=steps,
               inputs_spec=inputs_spec,
               dynamic_inputs_spec=dyn_spec,
+              queries_spec=queries_specs,
               loss=loss,
               time_sample_offset=model.timestep,
               batch_size_per_device=1,
@@ -184,6 +184,7 @@ class TrainerTest(parameterized.TestCase):
             cadence=2,
             inputs_spec=eval_inputs_spec,
             dynamic_inputs_spec=eval_dyn_spec,
+            queries_spec=queries_specs,
             metrics_evaluator=eval_metrics,
             loss_evaluator=loss,
             time_sample_offset=model.timestep,

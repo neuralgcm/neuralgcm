@@ -245,9 +245,9 @@ class PretrainingOps:
 
 
 DataSpec: TypeAlias = dict[str, dict[str, cx.Coordinate]]
-
-
-# TODO(dkochkov): Include queries_spec to TrainStage and EvalSchema.
+ConcreteQueriesSpec: TypeAlias = dict[
+    str, dict[str, cx.Coordinate | data_specs.FieldInQuerySpec[cx.Coordinate]]
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -256,6 +256,7 @@ class TrainStage:
   duration: int  # Number of training steps to run this stage for.
   inputs_spec: DataSpec
   dynamic_inputs_spec: DataSpec
+  queries_spec: ConcreteQueriesSpec
   loss: evaluators.Evaluator[metrics_base.Loss]
   time_sample_offset: np.timedelta64
   batch_size_per_device: int = 1
@@ -277,6 +278,7 @@ class EvalSchema:
   cadence: int  # how frequently to run this eval stage.
   inputs_spec: DataSpec
   dynamic_inputs_spec: DataSpec
+  queries_spec: ConcreteQueriesSpec
   metrics_evaluator: evaluators.Evaluator[metrics_base.Metric]
   batch_size_per_device: int
   num_batches: int
@@ -430,13 +432,6 @@ class RolloutTrainer:
     self._ema_update = jax.jit(update_ema)
 
   @property
-  def queries_spec(self) -> dict[str, Any]:
-    # TODO(dkochkov): Move queries_spec to TrainStage / EvalSchema and remove
-    # this property.
-    assert isinstance(self.data_loader.queries_spec, dict)
-    return self.data_loader.queries_spec
-
-  @property
   def training_mesh(self) -> parallelism.Mesh:
     assert isinstance(self.data_loader.training_mesh, parallelism.Mesh)
     return self.data_loader.training_mesh
@@ -485,6 +480,7 @@ class RolloutTrainer:
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
+          queries_spec=eval_stage.queries_spec,
       )
       train_data = self.data_loader.build_eval_inputs(
           input_data_specs=eval_stage.inputs_spec,
@@ -493,6 +489,7 @@ class RolloutTrainer:
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
+          queries_spec=eval_stage.queries_spec,
       )
 
       evaluate_fn = functools.partial(
@@ -514,6 +511,7 @@ class RolloutTrainer:
         dataset_rng_seed=train_stage.dataset_rng_seed,
         time_sample_offset=train_stage.time_sample_offset,
         dataset_time_slice=train_stage.time_slice,
+        queries_spec=train_stage.queries_spec,
     )
 
     # TODO(shoyer): consider adding a hook for adding a profiler around
@@ -522,7 +520,7 @@ class RolloutTrainer:
 
     return training_data, train_step_fn, evaluate_fn
 
-  def run_pretraining(self):
+  def run_pretraining(self, train_stage: TrainStage):
     """Runs pretraining."""
     if self.pretraining is None:
       logging.info('Skipping pretraining (no pretraining config provided)')
@@ -532,7 +530,7 @@ class RolloutTrainer:
     for k, pretraining_step in self.pretraining.pretrain_fns.items():
       logging.info('Running pretraining step: %s', k)
       self.model = pretraining_step(
-          self.model, self.data_loader.all_data, self.queries_spec
+          self.model, self.data_loader.all_data, train_stage.queries_spec
       )
 
   def _make_initial_experiment_state(
@@ -560,18 +558,17 @@ class RolloutTrainer:
       eb_model: Any,
       process_obs: Any,
       data_slice_struct: PyTree,
+      queries_spec: data_specs.QueriesSpec,
   ) -> tuple[PyTree, PyTree]:
     """Returns shape structs for predictions and targets for aggregators."""
     target_slice_struct = data_loading.select_targets(
-        data_slice_struct, self.queries_spec
+        data_slice_struct, queries_spec
     )
     process_fn = lambda proc_module, target_slice: proc_module(target_slice)
     target_struct = nnx.eval_shape(
         process_fn, process_obs, _flatten_dict(target_slice_struct)
     )
-    query_struct = data_specs.construct_query(
-        data_slice_struct, self.queries_spec
-    )
+    query_struct = data_specs.construct_query(data_slice_struct, queries_spec)
     dummy_observe = lambda model, proc_module: proc_module(
         _flatten_dict(model.observe(query_struct))
     )
@@ -713,7 +710,7 @@ class RolloutTrainer:
 
     if self.data_loader.load_data_via_callback:
       targets_via_callback = self.data_loader.setup_targets_via_callback(
-          data_slice_struct
+          data_slice_struct, train_stage.queries_spec
       )
     else:
       targets_via_callback = None
@@ -728,7 +725,9 @@ class RolloutTrainer:
         loaded_targets = None
       else:
         init_slice = data_loading.slice_leading_timedelta(inputs, 1)
-        loaded_targets = data_loading.select_targets(inputs, self.queries_spec)
+        loaded_targets = data_loading.select_targets(
+            inputs, train_stage.queries_spec
+        )
         loaded_targets = cx.untag(loaded_targets, batch_axis, time)
       # Initializing the model state.
       process_obs = nnx.merge(process_def, process_params, copy=True)
@@ -766,7 +765,9 @@ class RolloutTrainer:
           targets_slice = targets_via_callback(idx)
         else:
           targets_slice = cx.tag(loaded_targets_slice, batch_axis)
-        query = data_specs.construct_query(targets_slice, self.queries_spec)
+        query = data_specs.construct_query(
+            targets_slice, train_stage.queries_spec
+        )
         prediction = process_fn(
             process_obs, _flatten_dict(observe_fn(model, query))
         )
@@ -786,7 +787,7 @@ class RolloutTrainer:
         return (idx + 1, loss_agg_state)
 
       predictions_struct, target_struct = self._predictions_and_targets_structs(
-          eb_model, process_obs, data_slice_struct
+          eb_model, process_obs, data_slice_struct, train_stage.queries_spec
       )
       init_loss_aggregations = loss_evaluator.zeros_aggregation_states(
           predictions_struct, target_struct
@@ -918,7 +919,7 @@ class RolloutTrainer:
 
     if self.data_loader.load_data_via_callback:
       targets_via_callback = self.data_loader.setup_targets_via_callback(
-          data_slice_struct
+          data_slice_struct, eval_stage.queries_spec
       )
     else:
       targets_via_callback = None
@@ -932,7 +933,9 @@ class RolloutTrainer:
         loaded_targets = None
       else:
         init_slice = data_loading.slice_leading_timedelta(inputs, 1)
-        loaded_targets = data_loading.select_targets(inputs, self.queries_spec)
+        loaded_targets = data_loading.select_targets(
+            inputs, eval_stage.queries_spec
+        )
         loaded_targets = cx.untag(loaded_targets, batch_axis, time)
       # Initializing the model state.
       [batch_size], [ensemble_size] = (
@@ -977,7 +980,9 @@ class RolloutTrainer:
           targets_slice = targets_via_callback(idx)
         else:
           targets_slice = cx.tag(targets_slice_from_scan, batch_axis)
-        query = data_specs.construct_query(targets_slice, self.queries_spec)
+        query = data_specs.construct_query(
+            targets_slice, eval_stage.queries_spec
+        )
         prediction = observe_fn(model, query)
         prediction = process_fn(process_obs, _flatten_dict(prediction))
         target = process_fn(process_obs, _flatten_dict(targets_slice))
@@ -993,7 +998,7 @@ class RolloutTrainer:
         return (idx + 1, metrics_agg_state, loss_agg_state)
 
       prediction_struct, target_struct = self._predictions_and_targets_structs(
-          eb_model, process_obs, data_slice_struct
+          eb_model, process_obs, data_slice_struct, eval_stage.queries_spec
       )
       init_metrics_aggregations = (
           eval_stage.metrics_evaluator.zeros_aggregation_states(
@@ -1281,7 +1286,8 @@ class RolloutTrainer:
 
     else:
       logging.info('Starting training with new weights')
-      self.run_pretraining()
+      # TODO(dkochkov): Consider making pretraining independent from training.
+      self.run_pretraining(self.train_schedule.stages[0])
       split_state = model_checkpointing.split_model_state_for_saving(self.model)
       return self._initialize_for_fresh_start(
           split_state.params, split_state.non_params

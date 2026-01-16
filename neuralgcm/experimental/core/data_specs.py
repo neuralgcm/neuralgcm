@@ -299,6 +299,9 @@ def finalize_spec(
 # Type alias for extended Spec objects that are used as InputsSpec.
 CoordLikeSpec: TypeAlias = CoordSpec | OptionalSpec[cx.Coordinate | CoordSpec]
 QuerySpec: TypeAlias = CoordSpec | FieldInQuerySpec[cx.Coordinate | CoordSpec]
+QueriesSpec: TypeAlias = dict[str, dict[str, cx.Coordinate | QuerySpec]]
+FinalizedQuerySpec: TypeAlias = cx.Coordinate | FieldInQuerySpec[cx.Coordinate]
+FinalizedQueriesSpec: TypeAlias = dict[str, dict[str, FinalizedQuerySpec]]
 
 
 def get_coord_types(

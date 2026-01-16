@@ -277,15 +277,14 @@ def _get_sample_origins(
 
 def select_targets(
     inputs: typing.InputFields,
-    queries_spec: dict[
-        str,
-        dict[str, cx.Coordinate | data_specs.FieldInQuerySpec[cx.Coordinate]],
-    ],
+    queries_spec: data_specs.QueriesSpec | None,
 ) -> typing.InputFields:
   """Selects targets matching queries from inputs."""
   # TODO(dkochkov) This is a temporary simpler solution for the case where no
   # queries include dynamic fields. Eventually those should be excluded here and
   # from the outputs of obseravation operators.
+  if queries_spec is None:
+    return inputs  # by default we assume that all fields are targets.
   if not isinstance(queries_spec, dict):
     raise ValueError('queries must be a dictionary.')
   targets = {}
@@ -539,8 +538,6 @@ class DataLoader:
       converted to global jax arrays as a part of the input pipeline. To support
       batching, a sharding rule for 'batch' dimension name should be present in
       `training_mesh.field_partitions[read_partition_schema]`.
-    queries_spec: Specifications for a subset of input fields to be used as
-      targets for the loss.
     load_data_via_callback: Whether to load data via a callback. If True,
       DataLoader is _stateful_, and updates `self.data_buffer` inplace at each
       iteration. The current values for a time slice index `idx` can be accessed
@@ -558,7 +555,6 @@ class DataLoader:
   all_data: dict[str, xarray.Dataset]
   training_mesh: parallelism.Mesh | None
   load_data_via_callback: bool = False
-  queries_spec: dict[str, dict[str, cx.Coordinate | data_specs.QuerySpec]] | None = None
   callback_pinned_host: bool = False
   callback_spatial_dims_layout: tuple[str, ...] = ()
   loading_partition_schema: str = 'physics'
@@ -646,8 +642,11 @@ class DataLoader:
   def setup_targets_via_callback(
       self,
       data_slice_struct: PyTree,
+      queries_spec: data_specs.QueriesSpec | None = None,
   ) -> Callable[[int], PyTree]:
     """Sets up data retrieval functions for use in jitted train/eval steps."""
+    if queries_spec is None:
+      queries_spec = data_slice_struct  # by default use all data as targets.
     spmd_mesh = self.spmd_mesh
     if spmd_mesh is None:
       raise ValueError(
@@ -664,7 +663,7 @@ class DataLoader:
       """Gets a slice from the buffer and selects targets."""
       device = device_by_id[device_id.item()]
       sliced_data = self._data_buffer.get_slice(idx)  # pytype: disable=attribute-error
-      sliced_data = select_targets(sliced_data, self.queries_spec)
+      sliced_data = select_targets(sliced_data, queries_spec)
 
       def _is_leaf(x):
         return isinstance(x, dict) and any(isinstance(k, jax.Device) for k in x)
@@ -672,7 +671,7 @@ class DataLoader:
       result = jax.tree.map(lambda x: x[device], sliced_data, is_leaf=_is_leaf)
       return result
 
-    target_slice_struct = select_targets(data_slice_struct, self.queries_spec)
+    target_slice_struct = select_targets(data_slice_struct, queries_spec)
     shard_slice_struct = jax.tree.map(
         lambda f: cx.shape_struct_field(self.coord_to_shard(f.coordinate)),
         target_slice_struct,
@@ -935,16 +934,15 @@ class DataLoader:
     data = data.map(prep_for_to_global_array)
     return data
 
-  def _iterate_with_updated_buffer(self, data):
+  def _iterate_with_updated_buffer(self, data, queries_spec):
     """Iterates over and updates the data buffer inplace, if necessary."""
     for batch, dynamic_data in data:
       if self.load_data_via_callback:
         init_slice = slice_leading_timedelta(batch, 1)
         init_slice = self.to_global_array(init_slice)
         # TODO(dkochkov): figure out a saner way to write this
-        self._data_buffer.set_data(  # pytype: disable=attribute-error
-            select_targets(batch, self.queries_spec)
-        )
+        assert self._data_buffer is not None  # make pytype happy.
+        self._data_buffer.set_data(select_targets(batch, queries_spec))
         inputs = init_slice
       else:
         inputs = batch
@@ -959,6 +957,7 @@ class DataLoader:
       dataset_rng_seed: int,
       time_sample_offset: np.timedelta64,
       dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
+      queries_spec: data_specs.QueriesSpec | None = None,
   ) -> Iterator[Any]:
     """Loads the training dataset and returns a data iterator.
 
@@ -971,6 +970,9 @@ class DataLoader:
         dataset.
       time_sample_offset: Time between consecutive valid start times.
       dataset_time_slice: Time period(s) to select training data from.
+      queries_spec: Specification of train targets used to optimize the data
+        being retrieved from `self.data_buffer` via callback mechanism. Has no
+        effect if `self.load_data_via_callback` is False.
 
     Returns:
       An iterator over the training data.
@@ -1063,7 +1065,7 @@ class DataLoader:
     data = grain.experimental.ThreadPrefetchIterDataset(
         data, prefetch_buffer_size=1
     )
-    return self._iterate_with_updated_buffer(data)
+    return self._iterate_with_updated_buffer(data, queries_spec)
 
   def build_eval_inputs(
       self,
@@ -1073,6 +1075,7 @@ class DataLoader:
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
       batch_count: int = 1,
+      queries_spec: data_specs.QueriesSpec | None = None,
   ) -> list[Any]:
     """Returns an iterable over the data for evaluation.
 
@@ -1083,6 +1086,9 @@ class DataLoader:
       batch_size_per_device: Number of samples per batch per device.
       time_sample_offset: Time between consecutive valid sample origins.
       batch_count: Number of batches of evaluation data to return.
+      queries_spec: Specification of eval targets used to optimize the data
+        being retrieved from `self.data_buffer` via callback mechanism. Has no
+        effect if `self.load_data_via_callback` is False.
 
     Returns:
       A list of batches of evaluation data.
@@ -1160,5 +1166,6 @@ class DataLoader:
     else:
       data = data.map(self.to_global_array)
 
-    data = list(self._iterate_with_updated_buffer(data))  # cache in memory
+    # we call list on the iterator to cache data in memory.
+    data = list(self._iterate_with_updated_buffer(data, queries_spec))
     return data

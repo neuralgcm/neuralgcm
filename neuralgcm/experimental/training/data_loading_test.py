@@ -376,8 +376,6 @@ class DataLoaderTest(absltest.TestCase):
     loader = data_loading.DataLoader(
         all_data=self.all_data,
         training_mesh=self.mesh,
-        load_data_via_callback=False,
-        queries_spec={},
     )
     iterator = loader.build_train_inputs(
         input_data_specs=self.input_data_specs,
@@ -405,8 +403,6 @@ class DataLoaderTest(absltest.TestCase):
     loader = data_loading.DataLoader(
         all_data=self.all_data,
         training_mesh=self.mesh,
-        load_data_via_callback=False,
-        queries_spec={},
     )
     iterator = loader.build_train_inputs(
         input_data_specs=self.input_data_specs,

@@ -325,6 +325,8 @@ class _AnomalyPersistenceForecast(_Forecast[XarrayData]):  # pylint: disable=mis
         _get_climatology(self.climatology, self.init_time + lead_times)
     )
     forecast = _map_over_datasets(operator.add, self.init_anomaly, valid_clim)
+    # Ensure time is the first dimension.
+    forecast = _map_over_datasets(lambda x: x.transpose('time', ...), forecast)
     # TODO(shoyer): Make a more generic solution for clipping anomaly forecasts.
     if 'sea_ice_cover' in forecast:
       forecast['sea_ice_cover'] = forecast['sea_ice_cover'].clip(0, 1)

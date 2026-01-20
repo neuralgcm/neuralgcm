@@ -369,13 +369,14 @@ class DataLoaderTest(absltest.TestCase):
     devices = jax.local_devices()
     jax_mesh = jax.sharding.Mesh(np.array(devices), ('batch',))
     self.mesh = parallelism.Mesh(
-        spmd_mesh=jax_mesh, field_partitions={'physics': {'batch': 'batch'}},
+        spmd_mesh=jax_mesh, field_partitions={'data': {'batch': 'batch'}},
     )
 
   def test_batched_reader_produces(self):
     loader = data_loading.DataLoader(
         all_data=self.all_data,
-        training_mesh=self.mesh,
+        parallelism_mesh=self.mesh,
+        loading_partition_schema='data',
     )
     iterator = loader.build_train_inputs(
         input_data_specs=self.input_data_specs,
@@ -402,7 +403,8 @@ class DataLoaderTest(absltest.TestCase):
   def test_reader_no_batching(self):
     loader = data_loading.DataLoader(
         all_data=self.all_data,
-        training_mesh=self.mesh,
+        parallelism_mesh=self.mesh,
+        loading_partition_schema='data',
     )
     iterator = loader.build_train_inputs(
         input_data_specs=self.input_data_specs,
@@ -426,7 +428,7 @@ class DataLoaderTest(absltest.TestCase):
       self.assertNotIn('batch', sample['fast']['y'].dims)
 
   def test_reader_no_parallelism(self):
-    loader = data_loading.DataLoader(all_data=self.all_data, training_mesh=None)
+    loader = data_loading.DataLoader(self.all_data, parallelism_mesh=None)
 
     with self.subTest('batch_size_per_device=None'):
       iterator = loader.build_train_inputs(

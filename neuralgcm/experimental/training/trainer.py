@@ -362,7 +362,7 @@ class RolloutTrainer:
   compute_loss_on_host: bool = False
 
   def __post_init__(self):
-    if self.data_loader.training_mesh is None:
+    if self.data_loader.parallelism_mesh is None:
       raise ValueError('RolloutTrainer requires {data_loader.training_mesh=} to be specified.')
     self.run_evaluator = _maybe_on_host(
         _run_evaluator, self.compute_loss_on_host
@@ -433,8 +433,8 @@ class RolloutTrainer:
 
   @property
   def training_mesh(self) -> parallelism.Mesh:
-    assert isinstance(self.data_loader.training_mesh, parallelism.Mesh)
-    return self.data_loader.training_mesh
+    assert isinstance(self.data_loader.parallelism_mesh, parallelism.Mesh)
+    return self.data_loader.parallelism_mesh
 
   @property
   def spmd_mesh(self) -> jax.sharding.Mesh:

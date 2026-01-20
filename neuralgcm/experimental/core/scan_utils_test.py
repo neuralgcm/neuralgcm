@@ -82,6 +82,12 @@ def range_from_one(n: int) -> np.ndarray:
   return np.arange(1, n + 1)
 
 
+def _remove_timedelta(c):
+  return cx.coords.compose(
+      *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
+  )
+
+
 class ScanSpecsUtilsTest(parameterized.TestCase):
   """Tests nested_scan_specs and nested_scan_steps utilities."""
 
@@ -311,12 +317,9 @@ class NestedScanExampleTest(parameterized.TestCase):
     self.assertEqual(scan_steps, (6, 4, 2, 5))
     nested_scan_specs = scan_utils.nested_scan_specs(inputs_spec, dt)
     is_coord = lambda c: isinstance(c, cx.Coordinate)
-    remove_timedelta = lambda c: cx.coords.compose(
-        *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
-    )
     # In training experiment queries do not contain timedeltas to begin with.
     nested_queries_specs = jax.tree.map(
-        remove_timedelta, nested_scan_specs, is_leaf=is_coord
+        _remove_timedelta, nested_scan_specs, is_leaf=is_coord
     )
     model = MockStepper()
     model_state_scan_axes = nnx.StateAxes(
@@ -358,6 +361,86 @@ class NestedScanExampleTest(parameterized.TestCase):
         lambda x: x.data, merged_expected_nested, is_leaf=cx.is_field
     )
     chex.assert_trees_all_equal(outputs, merged_expected_nested)
+
+  def test_ravel_data_is_inverse_of_nest_data(self):
+    dt = np.timedelta64(1, 'h')
+    data_dt = np.timedelta64(4, 'h')
+    long_dt = np.timedelta64(8, 'h')
+
+    timedelta = coordinates.TimeDelta(range_from_one(6) * data_dt)
+    long_timedelta = coordinates.TimeDelta(range_from_one(3) * long_dt)
+    out_spec = {
+        'snapshots': {
+            'a': cx.coords.compose(timedelta),
+            'b': cx.coords.compose(long_timedelta),
+        }
+    }
+    ones_like = lambda c: cx.field(np.ones(c.shape), c)
+    inputs = {
+        'snapshots': {
+            'a': ones_like(timedelta),
+            'b': ones_like(long_timedelta),
+        }
+    }
+    nested = scan_utils.nest_data_for_scans(inputs, dt)
+    merged_nested = functools.reduce(_merge_nested, nested, {})
+    raveled = scan_utils.ravel_data_from_nested_scans(merged_nested, out_spec)
+    chex.assert_trees_all_equal(raveled, inputs)
+
+  def test_ravel_data_from_nested_scans(self):
+    dt = np.timedelta64(1, 'h')
+    data_dt = np.timedelta64(4, 'h')
+    long_dt = np.timedelta64(8, 'h')
+
+    timedelta = coordinates.TimeDelta(range_from_one(6) * data_dt)
+    long_timedelta = coordinates.TimeDelta(range_from_one(3) * long_dt)
+    outputs_spec = {
+        'snapshots': {
+            'a': cx.coords.compose(timedelta),
+            'b': cx.coords.compose(long_timedelta),
+        }
+    }
+
+    scan_steps = scan_utils.nested_scan_steps(outputs_spec, dt)
+    # scan_steps represent # times each timedelta takes to complete the other.
+    expected_steps = (int(data_dt // dt), int(long_dt // data_dt), 3)
+    self.assertEqual(scan_steps, expected_steps)
+
+    nested_out_specs = scan_utils.nested_scan_specs(outputs_spec, dt)
+    nested_queries = jax.tree.map(
+        _remove_timedelta,
+        nested_out_specs,
+        is_leaf=lambda c: isinstance(c, cx.Coordinate),
+    )
+    model = MockStepper()
+    model_state_scan_axes = nnx.StateAxes(
+        {typing.SimulationVariable: nnx.Carry, ...: None}
+    )
+
+    def model_step(model):
+      model.advance()
+      return {}
+
+    nested_scan_obs_fn = recursive_nested_observe_scan(
+        model_step,
+        scan_steps,
+        nested_queries,
+        in_axes=model_state_scan_axes,
+        out_axes=0,
+    )
+    outputs = nested_scan_obs_fn(model)
+    raveled = scan_utils.ravel_data_from_nested_scans(outputs, outputs_spec)
+    with self.subTest('coords_match'):
+      raveled_coords = jax.tree.map(
+          lambda x: x.coordinate, raveled, is_leaf=cx.is_field
+      )
+      self.assertEqual(raveled_coords, outputs_spec)
+
+    with self.subTest('data_matches'):
+      expected_a = jnp.arange(1, 7) * 4.0
+      expected_b = jnp.arange(1, 4) * 8.0
+      np.testing.assert_array_equal(raveled['snapshots']['a'].data, expected_a)
+      np.testing.assert_array_equal(raveled['snapshots']['b'].data, expected_b)
 
 
 if __name__ == '__main__':

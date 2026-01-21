@@ -102,14 +102,14 @@ class ValidateInputsTest(parameterized.TestCase):
     y = cx.LabeledAxis('y', np.linspace(0, np.pi, num=5))
     xy = cx.coords.compose(x, y)
     coord_spec = data_specs.CoordSpec(xy, {'y': data_specs.AxisMatchRules.ANY})
-    inputs_spec = {'data_key': {'u': coord_spec}}
+    inputs_spec = {'data_k': {'u': coord_spec}}
     rng = np.random.RandomState(42)
 
     # y-axis doesn't match, but ANY rule should ignore it.
     y_different = cx.LabeledAxis('y', np.linspace(0, 1.0, num=10))
     xy_different = cx.coords.compose(x, y_different)
     inputs = {
-        'data_key': {'u': cx.field(rng.randn(*xy_different.shape), xy_different)}
+        'data_k': {'u': cx.field(rng.randn(*xy_different.shape), xy_different)}
     }
     data_specs.validate_inputs(inputs, inputs_spec)
 
@@ -117,7 +117,7 @@ class ValidateInputsTest(parameterized.TestCase):
       x_wrong = cx.LabeledAxis('x', np.linspace(0, 1.0, num=4))
       x_wrong_y = cx.coords.compose(x_wrong, y)
       inputs_wrong = {
-          'data_key': {'u': cx.field(rng.randn(*x_wrong_y.shape), x_wrong_y)}
+          'data_k': {'u': cx.field(rng.randn(*x_wrong_y.shape), x_wrong_y)}
       }
       with self.assertRaisesRegex(
           ValueError, 'Coordinate axis .* does not match expected axis'
@@ -334,6 +334,71 @@ class CoordSpecTest(parameterized.TestCase):
     expected_td_coord = coordinates.TimeDelta(timedeltas)
     td_axis_in_spec = spec.coord.axes[0]
     self.assertEqual(td_axis_in_spec, expected_td_coord)
+
+
+class FinalizeSpecTest(parameterized.TestCase):
+  """Tests that finalize_spec_pytree and finalize_query_spec_pytree work."""
+
+  def test_finalize_spec_pytree(self):
+    x = cx.LabeledAxis('x', np.arange(5))
+    y = cx.LabeledAxis('y', np.arange(4))
+    z = cx.LabeledAxis('z', np.arange(3))
+    z_spec = data_specs.CoordSpec(z, {'z': data_specs.AxisMatchRules.REPLACED})
+
+    spec_tree = {
+        'coord': x,
+        'coord_spec_exact': data_specs.CoordSpec(y),
+        'coord_spec_replace': z_spec,
+    }
+
+    z_dummy = cx.SizedAxis('z', 3)
+    source_tree = {
+        'coord': cx.field(np.zeros(x.shape), x),
+        'coord_spec_exact': cx.field(np.zeros(y.shape), y),
+        'coord_spec_replace': cx.field(np.zeros(z.shape), z_dummy),
+    }
+
+    expected = {'coord': x, 'coord_spec_exact': y, 'coord_spec_replace': z}
+    actual = data_specs.finalize_spec_pytree(spec_tree, source_tree)
+    chex.assert_trees_all_equal(actual, expected)
+
+  def test_finalize_query_spec_pytree(self):
+    x = cx.LabeledAxis('x', np.arange(5))
+    y = cx.LabeledAxis('y', np.arange(4))
+    z = cx.LabeledAxis('z', np.arange(3))
+    t = cx.LabeledAxis('t', np.arange(2))
+
+    x_spec = data_specs.CoordSpec(x, {'x': data_specs.AxisMatchRules.REPLACED})
+    query_spec_tree = {
+        'group1': {
+            'field_spec_replace': data_specs.FieldInQuerySpec(x_spec),
+            'coord_spec': data_specs.CoordSpec(y),
+        },
+        'group2': {
+            'field_coord': data_specs.FieldInQuerySpec(z),
+            'coord': t,
+        },
+    }
+
+    x_dummy = cx.SizedAxis('x', 5)
+    source_tree = {
+        'group1': {'field_spec_replace': x_dummy, 'coord_spec': y},
+        'group2': {'field_coord': z, 'coord': t},
+    }
+
+    expected = {
+        'group1': {
+            'field_spec_replace': data_specs.FieldInQuerySpec(x),
+            'coord_spec': y,
+        },
+        'group2': {
+            'field_coord': data_specs.FieldInQuerySpec(z),
+            'coord': t,
+        },
+    }
+
+    actual = data_specs.finalize_query_spec_pytree(query_spec_tree, source_tree)
+    chex.assert_trees_all_equal(actual, expected)
 
 
 if __name__ == '__main__':

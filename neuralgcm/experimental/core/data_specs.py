@@ -19,6 +19,7 @@ import enum
 from typing import Generic, TypeAlias, TypeVar
 
 import coordax as cx
+import jax
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import typing
@@ -233,7 +234,7 @@ class FieldInQuerySpec(Generic[T]):
 
 
 def finalize_spec(
-    coord_spec: CoordSpec,
+    coord_spec: CoordSpec | cx.Coordinate,
     source_coord: cx.Coordinate | None,
 ) -> cx.Coordinate:
   """Returns a concrete coordinate candidate for `coord_spec`.
@@ -245,10 +246,13 @@ def finalize_spec(
   corresponding axis in `source_coord` is not, the sharding information is
   included in the output.
 
-  If `source_coord` is `None`, returns `coord_spec.coord` as long as all
-  dimensions
-  are labeled as `AxisMatchRules.EXACT`, which conventionally is equivalent to
-  using a `coord_spec.coord` directly. Otherwise an error is raised.
+  If `source_coord` is `None` and coord_spec is a `CoordSpec`, returns
+  `coord_spec.coord` as long as all dimensions are labeled as
+  `AxisMatchRules.EXACT`, which conventionally is equivalent to using a
+  `coord_spec.coord` directly. Otherwise an error is raised.
+
+  If `coord_spec` is a `cx.Coordinate`, it is treated as `CoordSpec` with
+  `AxisMatchRules.EXACT` for all dimensions.
 
   Args:
     coord_spec: A CoordSpec for which to construct a coordinate candidate.
@@ -258,6 +262,9 @@ def finalize_spec(
   Returns:
     A concrete coordinate candidate for `coord_spec`.
   """
+  if isinstance(coord_spec, cx.Coordinate):
+    coord_spec = CoordSpec(coord_spec)  # default to exact match for all dims.
+
   if source_coord is None:
     if any(
         rule != AxisMatchRules.EXACT
@@ -302,6 +309,63 @@ QuerySpec: TypeAlias = CoordSpec | FieldInQuerySpec[cx.Coordinate | CoordSpec]
 QueriesSpec: TypeAlias = dict[str, dict[str, cx.Coordinate | QuerySpec]]
 FinalizedQuerySpec: TypeAlias = cx.Coordinate | FieldInQuerySpec[cx.Coordinate]
 FinalizedQueriesSpec: TypeAlias = dict[str, dict[str, FinalizedQuerySpec]]
+
+
+def finalize_query_spec(
+    query_spec: cx.Coordinate | QuerySpec,
+    source_coord: cx.Coordinate | None,
+) -> cx.Coordinate | FieldInQuerySpec[cx.Coordinate]:
+  """Returns a `query_spec` with CoordSpec components being finalized."""
+  if isinstance(query_spec, FieldInQuerySpec):
+    if isinstance(query_spec.spec, CoordSpec):
+      return FieldInQuerySpec(finalize_spec(query_spec.spec, source_coord))
+    return FieldInQuerySpec(finalize_spec(query_spec.spec, source_coord))
+  return finalize_spec(query_spec, source_coord)
+
+
+def finalize_query_spec_pytree(
+    query_spec_tree: typing.Pytree,
+    source_tree: typing.Pytree | None = None,
+) -> typing.Pytree:
+  """Returns finalized leaves of `query_spec_tree`."""
+  spec_types = (cx.Coordinate, CoordSpec, FieldInQuerySpec)
+  is_coord_or_spec = lambda c: isinstance(c, spec_types)
+  if source_tree is None:
+    source_tree = jax.tree.map(
+        lambda x: None, query_spec_tree, is_leaf=is_coord_or_spec
+    )
+  field_to_coord = lambda x: x.coordinate if cx.is_field(x) else x
+  source_tree = jax.tree.map(
+      field_to_coord, source_tree, is_leaf=cx.is_field
+  )
+  return jax.tree.map(
+      finalize_query_spec,
+      query_spec_tree,
+      source_tree,
+      is_leaf=is_coord_or_spec,
+  )
+
+
+def finalize_spec_pytree(
+    coord_spec_tree: typing.Pytree,
+    source_tree: typing.Pytree | None = None,
+) -> typing.Pytree:
+  """Returns finalized leaves of `coord_spec_tree`."""
+  is_coord_or_spec = lambda c: isinstance(c, (cx.Coordinate, CoordSpec))
+  if source_tree is None:
+    source_tree = jax.tree.map(
+        lambda x: None, coord_spec_tree, is_leaf=is_coord_or_spec
+    )
+  field_to_coord = lambda x: x.coordinate if cx.is_field(x) else x
+  source_tree = jax.tree.map(
+      field_to_coord, source_tree, is_leaf=cx.is_field
+  )
+  return jax.tree.map(
+      finalize_spec,
+      coord_spec_tree,
+      source_tree,
+      is_leaf=is_coord_or_spec,
+  )
 
 
 def get_coord_types(

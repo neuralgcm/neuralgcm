@@ -237,14 +237,9 @@ def read_from_xarray(
       )
 
     result[data_key] = {}
+    target_coords = data_specs.finalize_spec_pytree(specs, fields)
     for k, v in fields.items():
-      spec = specs[k]
-      target_coord = data_specs.finalize_spec(spec, v.coordinate)
-      if not set(target_coord.dims).issubset(set(v.coordinate.dims)):
-        raise ValueError(
-            f'Dimensions for coordinate {target_coord} for {data_key}.{k} are '
-            f'not in {v.coordinate}'
-        )
+      target_coord = target_coords[k]
       if strict_matches:
         v = v.untag(target_coord).tag(target_coord)
       else:

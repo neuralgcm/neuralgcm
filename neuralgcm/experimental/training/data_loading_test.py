@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -462,6 +462,54 @@ class DataLoaderTest(absltest.TestCase):
       batch, _ = next(iterator)
       expected_batch = cx.SizedAxis('batch', 2)
       self.assertEqual(batch['slow']['x'].axes['batch'], expected_batch)
+
+  def test_callback_loading_matches_standard_loading_single_component(self):
+    # Only use 'fast' component to ensure unique mapping from index to slice
+    # as 'slow' and 'fast' have different trajectory lengths.
+    input_specs = {'fast': self.input_data_specs['fast']}
+    dynamic_specs = {}
+
+    loader_std = data_loading.DataLoader(
+        all_data={'fast': self.all_data['fast']},
+        parallelism_mesh=self.mesh,
+        loading_partition_schema='data',
+        load_data_via_callback=False,
+    )
+    loader_cb = data_loading.DataLoader(
+        all_data={'fast': self.all_data['fast']},
+        parallelism_mesh=self.mesh,
+        loading_partition_schema='data',
+        load_data_via_callback=True,
+    )
+    shared_args = dict(
+        input_data_specs=input_specs,
+        dynamic_input_specs=dynamic_specs,
+        batch_size_per_device=None,
+        shuffle_buffer_size_in_bytes=1000,
+        dataset_rng_seed=42,
+        time_sample_offset=np.timedelta64(24, 'h'),
+        dataset_time_slice=None,
+    )
+
+    iter_std = loader_std.build_train_inputs(**shared_args)
+    iter_cb = loader_cb.build_train_inputs(**shared_args)
+
+    data_slice_struct = loader_cb.data_slice_struct(
+        input_specs, batch_size_per_device=None
+    )
+    retrieve_fn = loader_cb.setup_targets_via_callback(data_slice_struct)
+    retrieve_fn = jax.jit(retrieve_fn)
+
+    # We need to call next on both: to get expected data and populate buffer.
+    sample_std, _ = next(iter_std)
+    sample_cb_init, _ = next(iter_cb)  # pylint: disable=unused-variable
+
+    for i in range(12):  # verify that we retrieve correct data slices.
+      retrieved = retrieve_fn(i)
+      expected_fast_y_data = sample_std['fast']['y'].data[i]
+      np.testing.assert_allclose(
+          retrieved['fast']['y'].data, expected_fast_y_data
+      )
 
 
 if __name__ == '__main__':

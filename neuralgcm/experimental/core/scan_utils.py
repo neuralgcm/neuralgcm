@@ -64,7 +64,7 @@ def _group_by_timedeltas(
     return steps[0]
 
   step_to_axis = {_get_step(td): td for td in unique_timedelta_axes}
-  if dt is not None:
+  if dt is not None and dt not in step_to_axis:
     step_to_axis[dt] = None
   groups = []
   for step, axis in step_to_axis.items():

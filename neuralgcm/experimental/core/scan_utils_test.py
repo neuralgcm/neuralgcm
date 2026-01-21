@@ -123,12 +123,20 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     timedelta = coordinates.TimeDelta(range_from_one(6) * data_dt)
     with_td = lambda c: cx.coords.compose(timedelta, c)
     inputs_spec = {'data': {'u': with_td(x)}}
-    actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec)
-    expected_scan_specs = ({'data': {'u': with_td(x)}},)
-    self.assertEqual(actual_scan_specs, expected_scan_specs)
-    actual_scan_steps = scan_utils.nested_scan_steps(inputs_spec)
-    expected_scan_steps = (6,)
-    self.assertEqual(actual_scan_steps, expected_scan_steps)
+    with self.subTest('using_default_dt'):
+      actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec)
+      expected_scan_specs = ({'data': {'u': with_td(x)}},)
+      self.assertEqual(actual_scan_specs, expected_scan_specs)
+      actual_scan_steps = scan_utils.nested_scan_steps(inputs_spec)
+      expected_scan_steps = (6,)
+      self.assertEqual(actual_scan_steps, expected_scan_steps)
+    with self.subTest('using_explicit_dt'):
+      actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec, data_dt)
+      expected_scan_specs = ({'data': {'u': with_td(x)}},)
+      self.assertEqual(actual_scan_specs, expected_scan_specs)
+      actual_scan_steps = scan_utils.nested_scan_steps(inputs_spec, data_dt)
+      expected_scan_steps = (6,)
+      self.assertEqual(actual_scan_steps, expected_scan_steps)
     with self.subTest('dict_input'):
       actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec['data'])
       expected_scan_specs = ({'u': with_td(x)},)

@@ -195,6 +195,16 @@ def _get_eval_sample_origins(
   return _get_datetime_forecast_starts(sample_count, sample_origins)
 
 
+def _make_slice(x: None | slice | Sequence[str]) -> slice:
+  """Converts `x` specifying a time slice to a slice object."""
+  if x is None:
+    return slice(None)  # the whole thing
+  if isinstance(x, slice):
+    return x
+  else:
+    return slice(*x)
+
+
 def _get_sample_origins(
     time_axis: pd.Series,
     time_slices: tuple[str, str] | list[tuple[str, str]] | None,
@@ -233,15 +243,7 @@ def _get_sample_origins(
     if not all(isinstance(x, Sequence) and len(x) == 2 for x in time_slices):
       raise ValueError(f'Unsupported time_slices: {time_slices=}')
 
-  def make_slice(x):
-    if x is None:
-      return slice(None)  # the whole thing
-    if isinstance(x, slice):
-      return x
-    else:
-      return slice(*x)
-
-  time_slices = [make_slice(x) for x in time_slices]
+  time_slices = [_make_slice(x) for x in time_slices]
   time_axis_step = np.unique(np.diff(time_axis.values))
   if time_axis_step.size != 1:
     raise ValueError(
@@ -533,11 +535,13 @@ class DataLoader:
 
   Attributes:
     all_data: Dictionary of xarray datasets containing all available data.
-    training_mesh: Parallelism mesh describing the device mesh and sharding
+    parallelism_mesh: Parallelism mesh describing the device mesh and sharding
       schemas. If specified, the data will be loaded in a sharded manner and
       converted to global jax arrays as a part of the input pipeline. To support
       batching, a sharding rule for 'batch' dimension name should be present in
-      `training_mesh.field_partitions[read_partition_schema]`.
+      `parallelism_mesh.field_partitions[loading_partition_schema]`.
+    loading_partition_schema: The partition schema to use when loading data.
+    shardable_dims: The dimensions to consider for loading in shards.
     load_data_via_callback: Whether to load data via a callback. If True,
       DataLoader is _stateful_, and updates `self.data_buffer` inplace at each
       iteration. The current values for a time slice index `idx` can be accessed
@@ -548,19 +552,22 @@ class DataLoader:
       H2D transfers (especially on GPU).
     callback_spatial_dims_layout: The desired spatial dimensions layout for the
       callback buffer.
-    loading_partition_schema: The partition schema to use when loading data.
-    shardable_dims: The dimensions to consider for loading in shards.
   """
 
   all_data: dict[str, xarray.Dataset]
-  training_mesh: parallelism.Mesh | None
+  parallelism_mesh: parallelism.Mesh | None
+  loading_partition_schema: str | None = None
+  shardable_dims: tuple[str, ...] = ()
   load_data_via_callback: bool = False
   callback_pinned_host: bool = False
   callback_spatial_dims_layout: tuple[str, ...] = ()
-  loading_partition_schema: str = 'physics'
-  shardable_dims: tuple[str, ...] = ()
 
   def __post_init__(self):
+    if self.parallelism_mesh and self.loading_partition_schema is None:
+      raise ValueError(
+          'DataLoader requires `loading_partition_schema` to be specified if'
+          ' `parallelism_mesh` is provided.'
+      )
     if self.load_data_via_callback:
       devices = jax.local_devices()
       self._local_cpu = colocated_python.colocated_cpu_devices(devices)[0]
@@ -579,7 +586,7 @@ class DataLoader:
   @property
   def spmd_mesh(self) -> jax.sharding.Mesh | None:
     """JAX sharding mesh."""
-    return self.training_mesh.spmd_mesh if self.training_mesh else None
+    return self.parallelism_mesh.spmd_mesh if self.parallelism_mesh else None
 
   def make_batch_axis(
       self, batch_size_per_device: int | None
@@ -602,7 +609,7 @@ class DataLoader:
   def coord_to_shard(self, coord: cx.Coordinate) -> cx.Coordinate:
     if self.spmd_mesh is None:
       return coord
-    mesh = self.training_mesh
+    mesh = self.parallelism_mesh
     assert isinstance(mesh, parallelism.Mesh)  # guaranteed by spmd_mesh check.
     return cx.coords.compose(*[
         parallelism.CoordinateShard(
@@ -613,7 +620,42 @@ class DataLoader:
         for ax in coord.axes
     ])
 
-  def add_input_shard_optimizations(
+  def _prep_data_stencils_and_shard_count(
+      self,
+      input_data_specs: typing.Pytree,
+      dynamic_input_specs: typing.Pytree,
+      batch_size_per_device: int | None,
+  ) -> tuple[dict[str, xarray.Dataset], dict[str, xreader.TimeStencil], int]:
+    """Prepares data, stencils and shard count for train/eval data loading."""
+    get_var_names = lambda k: (
+        list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
+    )
+    all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
+
+    inputs_stencils = infer_stencils(input_data_specs)
+    dynamic_stencils = infer_stencils(dynamic_input_specs)
+    stencils = inputs_stencils | dynamic_stencils
+    shared_keys = set(inputs_stencils) & set(dynamic_stencils)
+    for k in shared_keys:
+      if inputs_stencils[k] != dynamic_stencils[k]:
+        raise ValueError(
+            f'Stencil for {k} differs between inputs and dynamic inputs:'
+            f' {inputs_stencils[k]} vs {dynamic_stencils[k]}'
+        )
+
+    if batch_size_per_device is None:
+      shard_count = 1
+    elif self.spmd_mesh is None:
+      shard_count = 1
+    else:
+      deg_of_model_parallelism = math.prod(
+          v for k, v in self.spmd_mesh.shape.items() if k != 'batch'
+      )
+      shard_count = jax.device_count() // deg_of_model_parallelism
+
+    return all_data, stencils, shard_count
+
+  def _add_input_shard_optimizations(
       self,
       data_shard_struct: PyTree,
   ) -> PyTree:
@@ -651,10 +693,10 @@ class DataLoader:
     if spmd_mesh is None:
       raise ValueError(
           'setup_targets_via_callback called requires specification of the'
-          f' target device mesh, but None is set: {self.training_mesh=}.'
+          f' target device mesh, but None is set: {self.parallelism_mesh=}.'
       )
     assert spmd_mesh is not None
-    mesh = self.training_mesh
+    mesh = self.parallelism_mesh
     assert isinstance(mesh, parallelism.Mesh)  # guaranteed by spmd_mesh check.
     device_by_id = {d.id: d for d in jax.devices()}
 
@@ -682,7 +724,7 @@ class DataLoader:
       """Retrieves a local arrays via callback for each host."""
       shards = jax.pure_callback(
           host_slice_fn,
-          self.add_input_shard_optimizations(shard_slice_struct),
+          self._add_input_shard_optimizations(shard_slice_struct),
           idx,
           device_id,
       )
@@ -754,7 +796,7 @@ class DataLoader:
   def _read_sharded_fields(
       self, data: dict[str, xarray.Dataset], specs: typing.Pytree
   ) -> typing.Pytree:
-    mesh = self.training_mesh
+    mesh = self.parallelism_mesh
     assert isinstance(mesh, parallelism.Mesh)
     assert mesh.spmd_mesh is not None
     return xarray_utils.read_sharded_from_xarray(
@@ -791,7 +833,7 @@ class DataLoader:
     if self.spmd_mesh is None:
       return pytree
 
-    mesh = self.training_mesh
+    mesh = self.parallelism_mesh
     assert isinstance(mesh, parallelism.Mesh)  # guaranteed by spmd_mesh check.
 
     def is_leaf(x):
@@ -821,7 +863,7 @@ class DataLoader:
         data = data.map(lambda x: cx.tag(x, batch_axis))
       return data
 
-    mesh = self.training_mesh
+    mesh = self.parallelism_mesh
     assert isinstance(mesh, parallelism.Mesh)  # guaranteed by spmd_mesh check.
     partitions = mesh.field_partitions[self.loading_partition_schema]
     if batch_size_per_device is not None:
@@ -948,6 +990,10 @@ class DataLoader:
         inputs = batch
       yield inputs, dynamic_data
 
+  def _to_global_dynamic(self, targets_and_dynamic_inputs):
+    targets, dynamic_inputs = targets_and_dynamic_inputs
+    return targets, self.to_global_array(dynamic_inputs)
+
   def build_train_inputs(
       self,
       input_data_specs: typing.Pytree,
@@ -977,36 +1023,15 @@ class DataLoader:
     Returns:
       An iterator over the training data.
     """
-    get_var_names = lambda k: (
-        list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
+    all_data, stencils, shard_count = self._prep_data_stencils_and_shard_count(
+        input_data_specs,
+        dynamic_input_specs,
+        batch_size_per_device
     )
-    all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
-
-    if batch_size_per_device is None:
-      shard_count = 1
-    elif self.spmd_mesh is None:
-      shard_count = 1
-    else:
-      deg_of_model_parallelism = math.prod(
-          v for k, v in self.spmd_mesh.shape.items() if k != 'batch'
-      )
-      shard_count = jax.device_count() // deg_of_model_parallelism
-
     if shard_count == 0:
       raise ValueError(
           f'cannot shard training data even once with {batch_size_per_device=}'
       )
-
-    inputs_stencils = infer_stencils(input_data_specs)
-    dynamic_stencils = infer_stencils(dynamic_input_specs)
-    stencils = inputs_stencils | dynamic_stencils
-    shared_keys = set(inputs_stencils) & set(dynamic_stencils)
-    for k in shared_keys:
-      if inputs_stencils[k] != dynamic_stencils[k]:
-        raise ValueError(
-            f'Stencil for {k} differs between inputs and dynamic inputs:'
-            f' {inputs_stencils[k]} vs {dynamic_stencils[k]}'
-        )
 
     sample_origins = _get_train_sample_origins(
         all_data, stencils, dataset_time_slice, time_sample_offset
@@ -1054,12 +1079,7 @@ class DataLoader:
         from_xarray_fn=from_xr,
     )
     if self.load_data_via_callback:
-
-      def _to_global_dynamic(targets_and_dynamic_inputs):
-        targets, dynamic_inputs = targets_and_dynamic_inputs
-        return targets, self.to_global_array(dynamic_inputs)
-
-      data = data.map(_to_global_dynamic)
+      data = data.map(self._to_global_dynamic)
     else:
       data = data.map(self.to_global_array)
     data = grain.experimental.ThreadPrefetchIterDataset(
@@ -1093,32 +1113,16 @@ class DataLoader:
     Returns:
       A list of batches of evaluation data.
     """
-    get_var_names = lambda k: (
-        list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
+    all_data, stencils, shard_count = self._prep_data_stencils_and_shard_count(
+        input_data_specs, dynamic_input_specs, batch_size_per_device
     )
-    all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
-    inputs_stencils = infer_stencils(input_data_specs)
-    dynamic_stencils = infer_stencils(dynamic_input_specs)
-    stencils = inputs_stencils | dynamic_stencils
-    shared_keys = set(inputs_stencils) & set(dynamic_stencils)
-    for k in shared_keys:
-      if inputs_stencils[k] != dynamic_stencils[k]:
-        raise ValueError(
-            f'Stencil for {k} differs between inputs and dynamic inputs:'
-            f' {inputs_stencils[k]} vs {dynamic_stencils[k]}'
-        )
 
     if batch_size_per_device is not None:
       batch_axis = self.make_batch_axis(batch_size_per_device)
       assert batch_axis is not None
-      if self.spmd_mesh is None:
-        shard_count = 1
-      else:
-        shard_count = batch_axis.size // batch_size_per_device
       total_sample_count = batch_axis.size
     else:
       batch_axis = None
-      shard_count = 1
       total_sample_count = 1
 
     origins = _get_eval_sample_origins(
@@ -1157,12 +1161,7 @@ class DataLoader:
         from_xarray_fn=from_xr,
     )
     if self.load_data_via_callback:
-
-      def _to_global_dynamic(targets_and_dynamic_inputs):
-        targets, dynamic_inputs = targets_and_dynamic_inputs
-        return targets, self.to_global_array(dynamic_inputs)
-
-      data = data.map(_to_global_dynamic)
+      data = data.map(self._to_global_dynamic)
     else:
       data = data.map(self.to_global_array)
 

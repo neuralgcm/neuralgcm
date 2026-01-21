@@ -186,3 +186,19 @@ def nest_data_for_scans(
     fs_for_spec = jax.tree.map(_reshape, fs_for_spec, is_leaf=cx.is_field)
     nested_data.append(fs_for_spec)
   return tuple(nested_data)
+
+
+def ravel_data_from_nested_scans(
+    outputs: InputsLike,
+    outputs_spec: InputsSpecLike,
+) -> InputsLike:
+  """Returns `inputs` raveled and labeled with timedeltas in `outputs_spec`."""
+
+  def _retag(field: cx.Field, coord):
+    timedelta = cx.coords.extract(coord, coordinates.TimeDelta)
+    result = cx.cmap(lambda x: x.ravel())(field).tag(timedelta)
+    if result.coordinate != coord:
+      raise ValueError(f'Coordinate mismatch: {result.coordinate} vs {coord}')
+    return result
+
+  return jax.tree.map(_retag, outputs, outputs_spec, is_leaf=cx.is_field)

@@ -360,10 +360,16 @@ class RolloutTrainer:
   ensemble_axis: cx.SizedAxis
   online_metrics_saver: OnlineMetricsSaver
   compute_loss_on_host: bool = False
+  use_data_loading_callback: bool = False
+  callback_pinned_host: bool = False
+  callback_spatial_dims_layout: tuple[str, ...] = ()
 
   def __post_init__(self):
     if self.data_loader.parallelism_mesh is None:
-      raise ValueError('RolloutTrainer requires {data_loader.training_mesh=} to be specified.')
+      raise ValueError(
+          'RolloutTrainer requires {data_loader.training_mesh=} to be'
+          ' specified.'
+      )
     self.run_evaluator = _maybe_on_host(
         _run_evaluator, self.compute_loss_on_host
     )
@@ -470,8 +476,37 @@ class RolloutTrainer:
   ) -> TrainEvalIteratorTuple:
     """Build new iterators for training at schedule_idx."""
     train_stage = self.train_schedule.stages[schedule_idx]
-
     eval_stage = self._eval_stage
+
+    if self.use_data_loading_callback:
+      # Setup for training
+      train_slice_struct = self.data_loader.data_slice_struct(
+          train_stage.inputs_spec, train_stage.batch_size_per_device
+      )
+      train_retrieve_fn, train_buffer = (
+          self.data_loader.setup_targets_via_callback(
+              train_slice_struct,
+              train_stage.queries_spec,
+              callback_pinned_host=self.callback_pinned_host,
+              callback_spatial_dims_layout=self.callback_spatial_dims_layout,
+          )
+      )
+      # Setup for eval
+      eval_slice_struct = self.data_loader.data_slice_struct(
+          eval_stage.inputs_spec, eval_stage.batch_size_per_device
+      )
+      eval_retrieve_fn, eval_buffer = (
+          self.data_loader.setup_targets_via_callback(
+              eval_slice_struct,
+              eval_stage.queries_spec,
+              callback_pinned_host=self.callback_pinned_host,
+              callback_spatial_dims_layout=self.callback_spatial_dims_layout,
+          )
+      )
+    else:
+      train_retrieve_fn, train_buffer = None, None
+      eval_retrieve_fn, eval_buffer = None, None
+
     if eval_stage.num_batches:
       eval_data = self.data_loader.build_eval_inputs(
           input_data_specs=eval_stage.inputs_spec,
@@ -481,6 +516,7 @@ class RolloutTrainer:
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
           queries_spec=eval_stage.queries_spec,
+          data_buffer=eval_buffer,
       )
       train_data = self.data_loader.build_eval_inputs(
           input_data_specs=eval_stage.inputs_spec,
@@ -490,12 +526,16 @@ class RolloutTrainer:
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
           queries_spec=eval_stage.queries_spec,
+          data_buffer=eval_buffer,
       )
 
       evaluate_fn = functools.partial(
           self.evaluate,
           eval_batch_fn=self.get_eval_batch_fn(
-              train_stage=train_stage, eval_stage=eval_stage, seed=0
+              train_stage=train_stage,
+              eval_stage=eval_stage,
+              seed=0,
+              retrieve_fn=eval_retrieve_fn,
           ),
           eval_data=eval_data,
           train_data=train_data,
@@ -512,11 +552,14 @@ class RolloutTrainer:
         time_sample_offset=train_stage.time_sample_offset,
         dataset_time_slice=train_stage.time_slice,
         queries_spec=train_stage.queries_spec,
+        data_buffer=train_buffer,
     )
 
     # TODO(shoyer): consider adding a hook for adding a profiler around
     # train_step_fn.
-    train_step_fn = self.get_train_step_fn(train_stage=train_stage)
+    train_step_fn = self.get_train_step_fn(
+        train_stage=train_stage, retrieve_fn=train_retrieve_fn
+    )
 
     return training_data, train_step_fn, evaluate_fn
 
@@ -671,11 +714,13 @@ class RolloutTrainer:
   def get_train_step_fn(
       self,
       train_stage: TrainStage,
+      retrieve_fn: Callable[[int], PyTree] | None = None,
   ) -> train_utils.TrainStepFunction:
     """Makes a function that performs a single training step.
 
     Args:
       train_stage: Training stage for which to build a training step function.
+      retrieve_fn: Function to retrieve targets via callback.
 
     Returns:
       train_step_fn: Function that performs a single training step given an
@@ -708,19 +753,12 @@ class RolloutTrainer:
     )
     step_fn, observe_fn, process_fn = self._get_step_observe_process_fns()
 
-    if self.data_loader.load_data_via_callback:
-      targets_via_callback = self.data_loader.setup_targets_via_callback(
-          data_slice_struct, train_stage.queries_spec
-      )
-    else:
-      targets_via_callback = None
-
     def batched_parameter_loss_fn(
         params, non_params, rng, inputs, dynamic_data
     ):
       """Computes evaluation metrics for a batch of targets."""
       time = coordinates.TimeDelta(np.arange(outer_steps) * timedelta)
-      if self.data_loader.load_data_via_callback:
+      if retrieve_fn is not None:
         init_slice = inputs
         loaded_targets = None
       else:
@@ -761,8 +799,8 @@ class RolloutTrainer:
       ):
         """Collects loss and metrics aggregations for one step."""
         idx, loss_agg_state = carry
-        if self.data_loader.load_data_via_callback:
-          targets_slice = targets_via_callback(idx)
+        if retrieve_fn is not None:
+          targets_slice = retrieve_fn(idx)
         else:
           targets_slice = cx.tag(loaded_targets_slice, batch_axis)
         query = data_specs.construct_query(
@@ -855,6 +893,7 @@ class RolloutTrainer:
       train_stage: TrainStage,
       eval_stage: EvalSchema,
       seed: int = 0,
+      retrieve_fn: Callable[[int], PyTree] | None = None,
   ) -> Callable[..., Any]:
     """Makes a function that performs a single evaluation pass."""
     inner_steps, outer_steps = self._get_steps_from_spec(eval_stage.inputs_spec)
@@ -917,18 +956,11 @@ class RolloutTrainer:
     )
     step_fn, observe_fn, process_fn = self._get_step_observe_process_fns()
 
-    if self.data_loader.load_data_via_callback:
-      targets_via_callback = self.data_loader.setup_targets_via_callback(
-          data_slice_struct, eval_stage.queries_spec
-      )
-    else:
-      targets_via_callback = None
-
     @train_utils.jit_once
     def batch_mean_eval_fn(params, non_params, eval_step, inputs, dynamic_data):
       """Computes evaluation metrics for a batch of targets."""
       time = coordinates.TimeDelta(np.arange(outer_steps) * timedelta)
-      if self.data_loader.load_data_via_callback:
+      if retrieve_fn is not None:
         init_slice = inputs
         loaded_targets = None
       else:
@@ -976,8 +1008,8 @@ class RolloutTrainer:
       ):
         """Collects loss and metrics aggregations for one step."""
         idx, metrics_agg_state, loss_agg_state = carry
-        if targets_via_callback is not None:
-          targets_slice = targets_via_callback(idx)
+        if retrieve_fn is not None:
+          targets_slice = retrieve_fn(idx)
         else:
           targets_slice = cx.tag(targets_slice_from_scan, batch_axis)
         query = data_specs.construct_query(

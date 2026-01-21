@@ -469,17 +469,10 @@ class DataLoaderTest(absltest.TestCase):
     input_specs = {'fast': self.input_data_specs['fast']}
     dynamic_specs = {}
 
-    loader_std = data_loading.DataLoader(
+    loader = data_loading.DataLoader(
         all_data={'fast': self.all_data['fast']},
         parallelism_mesh=self.mesh,
         loading_partition_schema='data',
-        load_data_via_callback=False,
-    )
-    loader_cb = data_loading.DataLoader(
-        all_data={'fast': self.all_data['fast']},
-        parallelism_mesh=self.mesh,
-        loading_partition_schema='data',
-        load_data_via_callback=True,
     )
     shared_args = dict(
         input_data_specs=input_specs,
@@ -491,14 +484,16 @@ class DataLoaderTest(absltest.TestCase):
         dataset_time_slice=None,
     )
 
-    iter_std = loader_std.build_train_inputs(**shared_args)
-    iter_cb = loader_cb.build_train_inputs(**shared_args)
-
-    data_slice_struct = loader_cb.data_slice_struct(
+    data_slice_struct = loader.data_slice_struct(
         input_specs, batch_size_per_device=None
     )
-    retrieve_fn = loader_cb.setup_targets_via_callback(data_slice_struct)
+    retrieve_fn, data_buffer = loader.setup_targets_via_callback(
+        data_slice_struct
+    )
     retrieve_fn = jax.jit(retrieve_fn)
+
+    iter_std = loader.build_train_inputs(**shared_args)
+    iter_cb = loader.build_train_inputs(data_buffer=data_buffer, **shared_args)
 
     # We need to call next on both: to get expected data and populate buffer.
     sample_std, _ = next(iter_std)

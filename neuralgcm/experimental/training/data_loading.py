@@ -634,6 +634,7 @@ class DataLoader:
       queries_spec: data_specs.QueriesSpec | None = None,
       callback_pinned_host: bool = False,
       callback_spatial_dims_layout: tuple[str, ...] = (),
+      idx_step: int = 1,
   ) -> tuple[Callable[[int], PyTree], HostDataBuffer]:
     """Sets up data retrieval functions for use in jitted train/eval steps.
 
@@ -647,10 +648,12 @@ class DataLoader:
       queries_spec: Specification of targets used to optimize the data
         being retrieved from `data_buffer` via callback mechanism.
       callback_pinned_host: Whether to use pinned host memory for the callback
-        buffer. This experimental feature should, in principles, lead to faster
+        buffer. This experimental feature should, in principle, lead to faster
         H2D transfers (especially on GPU).
       callback_spatial_dims_layout: The desired spatial dimensions layout for
         the callback buffer.
+      idx_step: The step in `idx` passed to `retrieve_fn` that corresponds to
+        pulling the next slice of data. `idx` must be a multiple of `idx_step`.
 
     Returns:
       A tuple containing:
@@ -683,8 +686,11 @@ class DataLoader:
     # Remove values that won't be needed for the loss to minimize data transfer.
     def host_slice_fn(idx, device_id):
       """Gets a slice from the buffer and selects targets."""
+      buffer_idx, reminder = divmod(idx, idx_step)
+      if reminder != 0:
+        raise ValueError(f'Index {idx} must be a multiple of {idx_step}.')
       device = device_by_id[device_id.item()]
-      sliced_data = data_buffer.get_slice(idx)
+      sliced_data = data_buffer.get_slice(buffer_idx)
       sliced_data = select_targets(sliced_data, queries_spec)
 
       def _is_leaf(x):
@@ -986,15 +992,26 @@ class DataLoader:
   def _iterate_with_updated_buffer(
       self,
       data,
-      queries_spec,
-      data_buffer: HostDataBuffer | None,
+      queries_spec: (
+          data_specs.QueriesSpec | Sequence[data_specs.QueriesSpec] | None
+      ),
+      data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None,
   ):
     """Iterates over and updates the data buffer inplace, if necessary."""
+    if data_buffer is not None:
+      if isinstance(data_buffer, HostDataBuffer):
+        data_buffer = [data_buffer]
+        queries_spec = [queries_spec]
+      else:
+        if len(data_buffer) != len(queries_spec):
+          raise ValueError('Number of buffers and queries_specs must match')
+
     for batch, dynamic_data in data:
-      if data_buffer is not None:
+      if data_buffer:
         init_slice = slice_leading_timedelta(batch, 1)
         init_slice = self.to_global_array(init_slice)
-        data_buffer.set_data(select_targets(batch, queries_spec))
+        for buffer, spec in zip(data_buffer, queries_spec):
+          buffer.set_data(select_targets(batch, spec))
         inputs = init_slice
       else:
         inputs = batch
@@ -1013,8 +1030,10 @@ class DataLoader:
       dataset_rng_seed: int,
       time_sample_offset: np.timedelta64,
       dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
-      queries_spec: data_specs.QueriesSpec | None = None,
-      data_buffer: HostDataBuffer | None = None,
+      queries_spec: (
+          data_specs.QueriesSpec | Sequence[data_specs.QueriesSpec] | None
+      ) = None,
+      data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None = None,
   ) -> Iterator[Any]:
     """Loads the training dataset and returns a data iterator.
 
@@ -1108,8 +1127,10 @@ class DataLoader:
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
       batch_count: int = 1,
-      queries_spec: data_specs.QueriesSpec | None = None,
-      data_buffer: HostDataBuffer | None = None,
+      queries_spec: (
+          data_specs.QueriesSpec | Sequence[data_specs.QueriesSpec] | None
+      ) = None,
+      data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None = None,
   ) -> list[Any]:
     """Returns an iterable over the data for evaluation.
 

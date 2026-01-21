@@ -19,6 +19,7 @@ from neuralgcm.experimental import xreader
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import scan_utils
 from neuralgcm.experimental.training import data_loading
 import numpy as np
 import pandas as pd
@@ -352,9 +353,10 @@ class DataLoaderTest(absltest.TestCase):
     self.all_data = {'slow': ds_slow, 'fast': ds_fast}
 
     # Define specs with TimeDelta coordinates
-    # We want to read slices of length 3 steps for slow, and 12 steps for fast
-    self.slow_deltas = np.arange(0, 3) * dt_slow
-    self.fast_deltas = np.arange(0, 12) * dt_fast
+    # We want to read slices of length 4 steps for slow, and 13 steps for fast
+    # to cover exactly 72 hours with both (closed intervals).
+    self.slow_deltas = np.arange(0, 4) * dt_slow
+    self.fast_deltas = np.arange(0, 13) * dt_fast
 
     self.input_data_specs = {
         'slow': {
@@ -463,48 +465,71 @@ class DataLoaderTest(absltest.TestCase):
       expected_batch = cx.SizedAxis('batch', 2)
       self.assertEqual(batch['slow']['x'].axes['batch'], expected_batch)
 
-  def test_callback_loading_matches_standard_loading_single_component(self):
-    # Only use 'fast' component to ensure unique mapping from index to slice
-    # as 'slow' and 'fast' have different trajectory lengths.
-    input_specs = {'fast': self.input_data_specs['fast']}
+  def test_callback_loading_matches_standard_loading_mixed_components(self):
+    batch_size_per_device = None
+    input_specs = self.input_data_specs
     dynamic_specs = {}
 
     loader = data_loading.DataLoader(
-        all_data={'fast': self.all_data['fast']},
+        all_data=self.all_data,
         parallelism_mesh=self.mesh,
         loading_partition_schema='data',
     )
     shared_args = dict(
         input_data_specs=input_specs,
         dynamic_input_specs=dynamic_specs,
-        batch_size_per_device=None,
+        batch_size_per_device=batch_size_per_device,
         shuffle_buffer_size_in_bytes=1000,
         dataset_rng_seed=42,
         time_sample_offset=np.timedelta64(24, 'h'),
         dataset_time_slice=None,
     )
 
-    data_slice_struct = loader.data_slice_struct(
-        input_specs, batch_size_per_device=None
+    nested_specs = scan_utils.nested_scan_specs(input_specs)
+    nested_steps = scan_utils.nested_scan_steps(input_specs)
+    # idx_steps starts with 1 for most frequent and follows the product of
+    # nested step frequencies for each subsequent level.
+    idx_steps = [1] + list(map(int, np.cumprod(nested_steps)[:-1]))
+
+    remove_timedelta = lambda c: cx.coords.compose(
+        *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
     )
-    retrieve_fn, data_buffer = loader.setup_targets_via_callback(
-        data_slice_struct
-    )
-    retrieve_fn = jax.jit(retrieve_fn)
+    is_coord = lambda x: isinstance(x, cx.Coordinate)
+    retrieve_fns, buffers, q_specs = [], [], []
+    for spec, stride in zip(nested_specs, idx_steps):
+      data_slice_struct = loader.data_slice_struct(
+          spec, batch_size_per_device=batch_size_per_device
+      )
+      queries_spec = jax.tree.map(remove_timedelta, spec, is_leaf=is_coord)
+      retrieve_fn, data_buffer = loader.setup_targets_via_callback(
+          data_slice_struct, queries_spec=queries_spec, idx_step=stride
+      )
+      retrieve_fns.append(jax.jit(retrieve_fn))
+      buffers.append(data_buffer)
+      q_specs.append(queries_spec)
 
     iter_std = loader.build_train_inputs(**shared_args)
-    iter_cb = loader.build_train_inputs(data_buffer=data_buffer, **shared_args)
+    iter_cb = loader.build_train_inputs(
+        data_buffer=buffers, queries_spec=q_specs, **shared_args
+    )
 
     # We need to call next on both: to get expected data and populate buffer.
     sample_std, _ = next(iter_std)
     sample_cb_init, _ = next(iter_cb)  # pylint: disable=unused-variable
 
-    for i in range(12):  # verify that we retrieve correct data slices.
-      retrieved = retrieve_fn(i)
-      expected_fast_y_data = sample_std['fast']['y'].data[i]
-      np.testing.assert_allclose(
-          retrieved['fast']['y'].data, expected_fast_y_data
-      )
+    retrieve_fn_fast, retrieve_fn_slow = tuple(retrieve_fns)  # pylint: disable=unbalanced-tuple-unpacking
+
+    with self.subTest('fast_component'):
+      for i in range(self.fast_deltas.size):
+        retrieved = retrieve_fn_fast(i)
+        expected_y = sample_std['fast']['y'].data[i]
+        np.testing.assert_allclose(retrieved['fast']['y'].data, expected_y)
+
+    with self.subTest('slow_component'):
+      for i in range(0, self.slow_deltas.size):
+        retrieved = retrieve_fn_slow(i * idx_steps[1])
+        expected_x = sample_std['slow']['x'].data[i]
+        np.testing.assert_allclose(retrieved['slow']['x'].data, expected_x)
 
 
 if __name__ == '__main__':

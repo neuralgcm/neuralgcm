@@ -49,6 +49,7 @@ def _drop_none_from_nested_dict(nested: InputsSpecLike) -> InputsSpecLike:
 def _group_by_timedeltas(
     inputs_spec: InputsSpecLike,
     dt: np.timedelta64 | None = None,
+    ref_t0: np.timedelta64 | None = None,
 ) -> Sequence[tuple[np.timedelta64, InputsSpecLike]]:
   """Returns input specs grouped by their dt steps in the increasing order."""
   is_coord = lambda c: isinstance(c, cx.Coordinate)
@@ -59,9 +60,16 @@ def _group_by_timedeltas(
 
   def _get_step(timedelta_axis: coordinates.TimeDelta):
     steps = np.unique(np.diff(timedelta_axis.deltas))
-    if steps.size != 1:
+    if steps.size == 0:
+      if ref_t0 is None:
+        raise ValueError(
+            'Cannot infer step from TimeDelta of size 1 without reference t0.'
+        )
+      return timedelta_axis.deltas[0] - ref_t0
+    elif steps.size == 1:
+      return steps[0]
+    else:
       raise ValueError(f'Non-uniform TimeDelta found: {timedelta_axis}')
-    return steps[0]
 
   step_to_axis = {_get_step(td): td for td in unique_timedelta_axes}
   if dt is not None and dt not in step_to_axis:
@@ -92,8 +100,11 @@ def _shared_final_leadtime(inputs_spec: InputsSpecLike) -> np.timedelta64:
 def _compute_steps_and_validate(
     by_td: Sequence[tuple[np.timedelta64, InputsSpecLike]],
     outer_delta: np.timedelta64,
+    ref_t0: np.timedelta64 | None = None,
 ) -> tuple[int, ...]:
   """Computes scan steps and validates that timedelta axes are congruent."""
+  if ref_t0 is not None:
+    outer_delta = outer_delta - ref_t0
   steps = []
   for delta, _ in reversed(by_td):
     n_steps, reminder = divmod(outer_delta, delta)
@@ -109,6 +120,7 @@ def _compute_steps_and_validate(
 def nested_scan_specs(
     inputs_spec: InputsSpecLike,
     dt: np.timedelta64 | None = None,
+    ref_t0: np.timedelta64 | None = None,
 ) -> tuple[InputsSpecLike, ...]:
   """Returns sequence of input spec for `inputs_spec` with nestable timedeltas.
 
@@ -125,19 +137,23 @@ def nested_scan_specs(
   Args:
     inputs_spec: Specification of data with timedelta axes to process.
     dt: Optional numpy timedelta defining the inner-most scan step.
+    ref_t0: Optional timedelta to use for step inference of TimeDelta of size 1.
 
   Returns:
     A tuple of input specs, one for each level of the nested scan, ordered from
     innermost to outermost.
   """
-  dt_and_specs = _group_by_timedeltas(inputs_spec, dt)
-  _compute_steps_and_validate(dt_and_specs, _shared_final_leadtime(inputs_spec))
+  dt_and_specs = _group_by_timedeltas(inputs_spec, dt, ref_t0)
+  _compute_steps_and_validate(
+      dt_and_specs, _shared_final_leadtime(inputs_spec), ref_t0
+  )
   return tuple(spec for _, spec in dt_and_specs)
 
 
 def nested_scan_steps(
     inputs_spec: InputsSpecLike,
     dt: np.timedelta64 | None = None,
+    ref_t0: np.timedelta64 | None = None,
 ) -> tuple[int, ...]:
   """Returns nested scan lengths from innermost to outermost.
 
@@ -148,24 +164,26 @@ def nested_scan_steps(
   Args:
     inputs_spec: Specification of data with timedelta axes to process.
     dt: Optional numpy timedelta defining the inner-most scan step.
+    ref_t0: Optional timedelta to use for step inference of TimeDelta of size 1.
 
   Returns:
     A tuple of integers representing the number of scan steps for each level,
     from the innermost to the outermost scan.
   """
-  dts_and_specs = _group_by_timedeltas(inputs_spec, dt)
+  dts_and_specs = _group_by_timedeltas(inputs_spec, dt, ref_t0)
   outer_delta = _shared_final_leadtime(inputs_spec)
-  return _compute_steps_and_validate(dts_and_specs, outer_delta)
+  return _compute_steps_and_validate(dts_and_specs, outer_delta, ref_t0)
 
 
 def nest_data_for_scans(
     inputs: InputsLike,
     dt: np.timedelta64 | None = None,
+    ref_t0: np.timedelta64 | None = None,
 ) -> tuple[InputsLike, ...]:
   """Returns `inputs` partitioned into subsets corresponding to scan nesting."""
   in_spec = jax.tree.map(lambda x: x.coordinate, inputs, is_leaf=cx.is_field)
-  scan_steps = nested_scan_steps(in_spec, dt)
-  scan_specs = nested_scan_specs(in_spec, dt)
+  scan_steps = nested_scan_steps(in_spec, dt, ref_t0)
+  scan_specs = nested_scan_specs(in_spec, dt, ref_t0)
   nested_data = []
   for i, spec in enumerate(scan_specs):
     shape = scan_steps[i:][::-1]

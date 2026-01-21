@@ -227,6 +227,14 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
       with self.assertRaises(ValueError):
         scan_utils.nested_scan_steps(inputs_spec['data'], dt)
 
+  def test_nested_scan_steps_with_ref_t0(self):
+    delta = np.timedelta64(3, 'h')
+    ref_t0 = np.timedelta64(1, 'h')
+    dt = np.timedelta64(1, 'h')
+    inputs_spec = {'x': coordinates.TimeDelta([delta])}
+    actual_steps = scan_utils.nested_scan_steps(inputs_spec, dt, ref_t0=ref_t0)
+    self.assertEqual(actual_steps, (2, 1))
+
 
 class NestDataForScansUtilsTest(parameterized.TestCase):
   """Tests that nest_data_for_scans correctly formats data for nested scans."""

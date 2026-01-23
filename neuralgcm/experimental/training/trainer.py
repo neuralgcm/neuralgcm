@@ -24,7 +24,7 @@ import logging
 import math
 import operator
 import os.path
-from typing import Any, NamedTuple, TypeAlias, TypeVar
+from typing import Any, NamedTuple, TypeAlias
 
 import coordax as cx
 from etils import epath
@@ -61,6 +61,8 @@ from orbax.checkpoint import checkpoint_managers as ocp_managers
 Params: TypeAlias = typing.Pytree
 PyTree: TypeAlias = typing.Pytree
 
+DataSpec: TypeAlias = dict[str, dict[str, cx.Coordinate]]
+NestedAggStates: TypeAlias = tuple[aggregation.AggregationState | None, ...]
 
 TrainEvalIteratorTuple = tuple[
     Any,
@@ -111,10 +113,6 @@ def create_training_mesh(
   )
 
 
-K = TypeVar('K')
-V = TypeVar('V')
-
-
 def _flatten_dict(
     nested: dict[str, dict[str, cx.Field]],
     sep='/',
@@ -129,6 +127,9 @@ def _flatten_dict(
 
 def _run_evaluator(evaluator, prediction, target):
   """Helper to run evaluation on the host."""
+  # TODO(dkochkov): Consider evaluator default behavior with no targets.
+  if not prediction and not target:
+    return {}
   return evaluator.evaluate(prediction, target)
 
 
@@ -158,6 +159,197 @@ def _maybe_on_host[T: Callable[..., Any]](fn: T, compute_on_host: bool) -> T:
   if compute_on_host:
     return _on_host(fn)
   return fn
+
+
+def _is_coord(x: Any) -> bool:
+  """Returns True if x is a coordinate."""
+  return isinstance(x, cx.Coordinate)
+
+
+def _remove_timedelta(c: cx.Coordinate) -> cx.Coordinate:
+  """Removes TimeDelta axes from a coordinate."""
+  return cx.coords.compose(
+      *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
+  )
+
+
+def _untag_positional(inputs: PyTree, axis: cx.Coordinate) -> PyTree:
+  """Untags `axis` from fields in `inputs` even if they have positional axes."""
+  # TODO(dkochkov): Consider supporting untag on Fields with positional axes.
+
+  def _untag(f: cx.Field) -> cx.Field:
+    tmp_axes = []
+    for _ in f.positional_shape:
+      name = cx.new_axis_name(f, set(tmp_axes))
+      tmp_axes.append(name)
+    f = f.tag(*tmp_axes)
+    f = f.untag(axis, *tmp_axes)
+    return f
+
+  return jax.tree.map(_untag, inputs, is_leaf=cx.is_field)
+
+
+def _prepare_inputs_and_targets(
+    inputs: PyTree,
+    model_dt: np.timedelta64,
+    retrieve_fns: tuple[Callable[[int], PyTree], ...] | None,
+    queries_spec: data_specs.QueriesSpec,
+    batch_axis: cx.SizedAxis,
+) -> tuple[PyTree, PyTree | None]:
+  """Prepares initial slice and targets for training/eval step."""
+  if retrieve_fns is not None:
+    init_slice = inputs
+    loaded_targets = None
+  else:
+    init_slice = data_loading.slice_leading_timedelta(inputs, 1)
+    # Select targets starting from t > 0
+    targets_inputs = data_loading.sel_target_fields(inputs)
+    loaded_targets = data_loading.select_targets(targets_inputs, queries_spec)
+    # We use already computed scan_steps and specs here since loaded targets
+    # might contain a single timedelta value which is not sufficient to
+    # resolve the number of steps.
+    loaded_targets = scan_utils.nest_data_for_scans(
+        loaded_targets, model_dt, ref_t0=np.timedelta64(0, 's')
+    )
+    loaded_targets = _untag_positional(loaded_targets, batch_axis)
+  return init_slice, loaded_targets
+
+
+def _compute_aggregation(
+    step_idx: int,
+    model: api.Model,
+    current_agg_states: tuple[aggregation.AggregationState | None, ...],
+    evaluator_slices: tuple[evaluators.Evaluator | None, ...],
+    loaded_targets_slice: PyTree | None,
+    retrieve_fn: Callable[[int], PyTree] | None,
+    query_spec: data_specs.QueriesSpec,
+    observe_fn: Callable[..., PyTree],
+    process_fn: Callable[..., PyTree],
+    process_obs: Any,
+    run_evaluator_fn: Callable[..., aggregation.AggregationState],
+    combine_agg_states_fn: Callable[..., aggregation.AggregationState],
+    training_mesh: parallelism.Mesh,
+    batch_axis: cx.SizedAxis,
+) -> tuple[aggregation.AggregationState | None, ...]:
+  """Computes aggregation state update for one or more evaluators.
+
+  This function computes the predictions from the model, retrieves the targets
+  (either from pre-loaded slices or via a callback), computes the metrics using
+  the provided evaluators, and updates the aggregation states.
+
+  Args:
+    step_idx: The step index representing number of model steps taken so far.
+    model: The model to use for making predictions.
+    current_agg_states: A tuple of aggregation states to update with
+      contributions from predictions and targets. Aggregation states are
+      expected to be matched with evaluators in `evaluator_slices`.
+    evaluator_slices: A tuple of evaluators to compute aggregation state updates
+      with. If entry is None, the corresponding update is skipped.
+    loaded_targets_slice: A PyTree containing the targets for the current step.
+    retrieve_fn: An optional callable that retrieves targets for a given step
+      index. loaded_targets and retrieve_fn are mutually exclusive.
+    query_spec: A specification for the model query for this evaluation.
+    observe_fn: A function that generates observations from the model and query.
+    process_fn: A callable that processes observations and targets.
+    process_obs: A module or parameters used by `process_fn`.
+    run_evaluator_fn: A callable that computes aggregations.
+    combine_agg_states_fn: A callable that combines aggregation states.
+    training_mesh: The parallelism mesh used for sharding constraints.
+    batch_axis: The axis representing the batch dimension.
+
+  Returns:
+    A tuple of updated aggregation states, corresponding to the input
+    `current_agg_states`.
+  """
+  if retrieve_fn is not None:
+    targets_slice = retrieve_fn(step_idx)
+  else:
+    targets_slice = cx.tag(loaded_targets_slice, batch_axis)
+
+  query = data_specs.construct_query(targets_slice, query_spec)
+  prediction = process_fn(process_obs, _flatten_dict(observe_fn(model, query)))
+  prediction = training_mesh.with_sharding_constraint(prediction, 'physics')
+  target = process_fn(process_obs, _flatten_dict(targets_slice))
+  target = training_mesh.with_sharding_constraint(target, 'physics')
+
+  new_agg_states = []
+  for current_agg_state, evaluator in zip(current_agg_states, evaluator_slices):
+    if evaluator is None:
+      new_agg_states.append(None)
+      continue
+
+    agg_update = run_evaluator_fn(evaluator, prediction, target)
+    updated_agg_state = combine_agg_states_fn(current_agg_state, agg_update)
+    new_agg_states.append(updated_agg_state)
+
+  return tuple(new_agg_states)
+
+
+def create_nested_evaluators(
+    evaluator: evaluators.Evaluator,
+    nested_targets_specs: tuple[DataSpec, ...],
+    dt: np.timedelta64,
+) -> tuple[evaluators.Evaluator, ...]:
+  """Creates a tuple of evaluators with temporal context for nested scans.
+
+  To support calculation of "timedelta"-dependent scaling or weighting,
+  evaluators must be provided with context fields that have positional shapes
+  compatible with the nested scans used to calculate statistics. This function
+  creates "timedelta" and "times" context fields for each scan level defined via
+  `nested_targets_specs` and return a evaluators with context fields for each.
+
+  Args:
+    evaluator: Evaluator for which to create nested evaluators with context.
+    nested_targets_specs: Targets specs for each scan level from inner to outer.
+    dt: Model timestep that will be used as most inner step.
+
+  Returns:
+    Tuple of nested evaluators with "timedelta" and "times" context fields.
+  """
+  extract_td = lambda c: cx.coords.extract(c, coordinates.TimeDelta)
+  timedelta_replica_name = 'timedelta_replica'
+
+  def _swap_replica(f: cx.Field) -> cx.Field:
+    """Swaps dummy axis with TimeDelta."""
+    if timedelta_replica_name in f.dims:
+      dummy = f.axes[timedelta_replica_name]
+      td = coordinates.TimeDelta(dummy.ticks)
+      return cx.field(f.data, cx.coords.replace_axes(f.coordinate, dummy, td))
+    return f
+
+  nested_prediction_specs = data_loading.sel_target_timedeltas(
+      nested_targets_specs
+  )
+  context_fields = {}
+  for nest_level, prediction_spec in enumerate(nested_prediction_specs):
+    timedeltas = jax.tree.map(extract_td, prediction_spec, is_leaf=_is_coord)
+    timedeltas = jax.tree.leaves(timedeltas, is_leaf=_is_coord)
+    timedeltas = set(timedeltas)
+    if len(timedeltas) > 1:
+      raise ValueError(
+          f'Timedeltas must be unique for each scan level, got {timedeltas=}'
+      )
+    if timedeltas:
+      timedelta_coord = timedeltas.pop()
+      timedeltas = timedelta_coord.fields['timedelta']
+      # add suffix to avoid name collisions, will be removed below.
+      context_data = {f'timedelta_{nest_level}': timedeltas}
+      replica = cx.LabeledAxis(timedelta_replica_name, timedelta_coord.deltas)
+      replicated_coord = cx.coords.compose(timedelta_coord, replica)
+      replicated_deltas = timedeltas.broadcast_like(replicated_coord)
+      context_data[f'times_{nest_level}'] = replicated_deltas
+      context_fields |= context_data
+
+  nested_context_fields = scan_utils.nest_data_for_scans(
+      context_fields, dt=dt, ref_t0=np.timedelta64(0, 's')
+  )
+  nested_context_fields = tuple(
+      {k.removesuffix(f'_{i}'): _swap_replica(v) for k, v in d.items()}
+      for i, d in enumerate(nested_context_fields)
+  )
+  return tuple(
+      evaluator.with_context(fields) for fields in nested_context_fields
+  )
 
 
 class EMAParamsTree(nnx.Module):
@@ -244,19 +436,13 @@ class PretrainingOps:
   pretrain_fns: collections.OrderedDict[str, PretrainOp]
 
 
-DataSpec: TypeAlias = dict[str, dict[str, cx.Coordinate]]
-ConcreteQueriesSpec: TypeAlias = dict[
-    str, dict[str, cx.Coordinate | data_specs.FieldInQuerySpec[cx.Coordinate]]
-]
-
-
 @dataclasses.dataclass(frozen=True)
 class TrainStage:
   """Specifies a single stage of training."""
   duration: int  # Number of training steps to run this stage for.
   inputs_spec: DataSpec
   dynamic_inputs_spec: DataSpec
-  queries_spec: ConcreteQueriesSpec
+  queries_spec: data_specs.QueriesSpec
   loss: evaluators.Evaluator[metrics_base.Loss]
   time_sample_offset: np.timedelta64
   batch_size_per_device: int = 1
@@ -278,7 +464,7 @@ class EvalSchema:
   cadence: int  # how frequently to run this eval stage.
   inputs_spec: DataSpec
   dynamic_inputs_spec: DataSpec
-  queries_spec: ConcreteQueriesSpec
+  queries_spec: data_specs.QueriesSpec
   metrics_evaluator: evaluators.Evaluator[metrics_base.Metric]
   batch_size_per_device: int
   num_batches: int
@@ -409,7 +595,7 @@ class RolloutTrainer:
     )
     self._total_train_steps = (
         self._train_schedule_boundaries[-1]
-        if len(self._train_schedule_boundaries) > 0
+        if len(self._train_schedule_boundaries) > 0  # pylint: disable=g-explicit-length-test
         else 0
     )
 
@@ -459,17 +645,14 @@ class RolloutTrainer:
         self.spmd_mesh.shape[k] for k in 'zxy' if k in self.spmd_mesh.shape
     )
 
-  def _get_steps_from_spec(self, inputs_spec: DataSpec) -> tuple[int, ...]:
-    """Returns inner and outer number of steps (frames) from inputs_spec."""
+  def _get_nested_steps_and_specs(
+      self, flat_spec: DataSpec
+  ) -> tuple[tuple[int, ...], tuple[DataSpec, ...]]:
+    """Returns nested steps and specs from `flat_spec` with timedelta coords."""
     dt = self.model.timestep
-    nested_specs = scan_utils.nested_scan_specs(inputs_spec, dt=dt)
-    steps = scan_utils.nested_scan_steps(inputs_spec, dt=dt)
-    if len(nested_specs) == 1:  # data_dt == model_dt.
-      return 1, steps[0] + 1  # inner_step=1.
-    if len(nested_specs) != 2 or nested_specs[0]:
-      # Either multiple data_dt values or some data_dt == model_dt.
-      raise ValueError(f'Currently only single unique timedelta is supported, got {nested_specs=} with {steps=}')
-    return steps[0], steps[1] + 1  # unique data_dt (multiple of model_dt).
+    nested_specs = scan_utils.nested_scan_specs(flat_spec, dt=dt)
+    steps = scan_utils.nested_scan_steps(flat_spec, dt=dt)
+    return steps, nested_specs
 
   def build_train_and_eval_iterators(
       self, schedule_idx: int
@@ -478,34 +661,38 @@ class RolloutTrainer:
     train_stage = self.train_schedule.stages[schedule_idx]
     eval_stage = self._eval_stage
 
+    def setup_callbacks(stage) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+      """Returns tuples of retrieve_fns and buffers for a given stage."""
+      data_spec = data_loading.select_targets(
+          stage.inputs_spec, stage.queries_spec
+      )  # TODO(dkochkov) ensure this retains FieldInQuery entries.
+      nested_steps, nested_data_specs = self._get_nested_steps_and_specs(
+          data_spec
+      )
+      # idx_steps starts with 1 for most frequent and follows the product of
+      # nested step frequencies for each subsequent level.
+      idx_steps = [1] + list(map(int, np.cumprod(nested_steps)[:-1]))
+      retrieve_fns, buffers = [], []
+      for stride, data_spec in zip(idx_steps, nested_data_specs):
+        data_slice_struct = self.data_loader.data_slice_struct(
+            data_spec, batch_size_per_device=stage.batch_size_per_device
+        )  # computes structure of a single time slice at this scan level.
+        retrieve_fn, data_buffer = self.data_loader.setup_targets_via_callback(
+            data_slice_struct=data_slice_struct,
+            callback_pinned_host=self.callback_pinned_host,
+            callback_spatial_dims_layout=self.callback_spatial_dims_layout,
+            idx_step=stride,
+        )
+        retrieve_fns.append(retrieve_fn)
+        buffers.append(data_buffer)
+      return tuple(retrieve_fns), tuple(buffers)
+
     if self.use_data_loading_callback:
-      # Setup for training
-      train_slice_struct = self.data_loader.data_slice_struct(
-          train_stage.inputs_spec, train_stage.batch_size_per_device
-      )
-      train_retrieve_fn, train_buffer = (
-          self.data_loader.setup_targets_via_callback(
-              train_slice_struct,
-              train_stage.queries_spec,
-              callback_pinned_host=self.callback_pinned_host,
-              callback_spatial_dims_layout=self.callback_spatial_dims_layout,
-          )
-      )
-      # Setup for eval
-      eval_slice_struct = self.data_loader.data_slice_struct(
-          eval_stage.inputs_spec, eval_stage.batch_size_per_device
-      )
-      eval_retrieve_fn, eval_buffer = (
-          self.data_loader.setup_targets_via_callback(
-              eval_slice_struct,
-              eval_stage.queries_spec,
-              callback_pinned_host=self.callback_pinned_host,
-              callback_spatial_dims_layout=self.callback_spatial_dims_layout,
-          )
-      )
+      train_retrieve_fns, train_buffers = setup_callbacks(train_stage)
+      eval_retrieve_fns, eval_buffers = setup_callbacks(eval_stage)
     else:
-      train_retrieve_fn, train_buffer = None, None
-      eval_retrieve_fn, eval_buffer = None, None
+      train_retrieve_fns, train_buffers = None, None
+      eval_retrieve_fns, eval_buffers = None, None
 
     if eval_stage.num_batches:
       eval_data = self.data_loader.build_eval_inputs(
@@ -515,8 +702,7 @@ class RolloutTrainer:
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
-          queries_spec=eval_stage.queries_spec,
-          data_buffer=eval_buffer,
+          data_buffer=eval_buffers,
       )
       train_data = self.data_loader.build_eval_inputs(
           input_data_specs=eval_stage.inputs_spec,
@@ -525,8 +711,7 @@ class RolloutTrainer:
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
-          queries_spec=eval_stage.queries_spec,
-          data_buffer=eval_buffer,
+          data_buffer=eval_buffers,
       )
 
       evaluate_fn = functools.partial(
@@ -535,7 +720,7 @@ class RolloutTrainer:
               train_stage=train_stage,
               eval_stage=eval_stage,
               seed=0,
-              retrieve_fn=eval_retrieve_fn,
+              retrieve_fns=eval_retrieve_fns,
           ),
           eval_data=eval_data,
           train_data=train_data,
@@ -551,14 +736,13 @@ class RolloutTrainer:
         dataset_rng_seed=train_stage.dataset_rng_seed,
         time_sample_offset=train_stage.time_sample_offset,
         dataset_time_slice=train_stage.time_slice,
-        queries_spec=train_stage.queries_spec,
-        data_buffer=train_buffer,
+        data_buffer=train_buffers,
     )
 
     # TODO(shoyer): consider adding a hook for adding a profiler around
     # train_step_fn.
     train_step_fn = self.get_train_step_fn(
-        train_stage=train_stage, retrieve_fn=train_retrieve_fn
+        train_stage=train_stage, retrieve_fns=train_retrieve_fns
     )
 
     return training_data, train_step_fn, evaluate_fn
@@ -598,8 +782,8 @@ class RolloutTrainer:
 
   def _predictions_and_targets_structs(
       self,
-      eb_model: Any,
-      process_obs: Any,
+      eb_model: api.Model,
+      process_obs: nnx.Module,
       data_slice_struct: PyTree,
       queries_spec: data_specs.QueriesSpec,
   ) -> tuple[PyTree, PyTree]:
@@ -626,7 +810,7 @@ class RolloutTrainer:
       dynamic_data: PyTree,
       batch_axis: cx.SizedAxis,
       ensemble_axis: cx.SizedAxis,
-  ) -> Any:
+  ) -> api.Model:
     """Initializes a vectorized model for a rollout."""
     b_model = model.to_vectorized({
         typing.SimulationVariable: batch_axis,
@@ -711,16 +895,168 @@ class RolloutTrainer:
       )
     return step_fn, observe_fn, process_fn
 
+  def _create_initial_nested_agg_states(
+      self,
+      evaluator: evaluators.Evaluator,
+      model: api.Model,
+      process_obs: nnx.Module,
+      nested_specs: tuple[DataSpec, ...],
+      nested_queries_spec: tuple[data_specs.QueriesSpec, ...],
+      batch_size_per_device: int | None,
+  ) -> tuple[aggregation.AggregationState, ...]:
+    """Creates a tuple of initial aggregation states for each nested level."""
+    initial_nested_agg_states = []
+    for input_spec, query_spec in zip(nested_specs, nested_queries_spec):
+      time_slice_struct = self.data_loader.data_slice_struct(
+          input_spec, batch_size_per_device
+      )
+      prediction_struct, target_struct = self._predictions_and_targets_structs(
+          model, process_obs, time_slice_struct, query_spec
+      )
+      # TODO(dkochkov): Update evaluators to drop the if condition below.
+      initial_nested_agg_states.append(
+          evaluator.zeros_aggregation_states(prediction_struct, target_struct)
+          if prediction_struct and target_struct else {}
+      )
+    return tuple(initial_nested_agg_states)
+
+  def _recursive_scan(
+      self,
+      collect_inner: Callable[..., Any],
+      in_axes: Any,
+      out_axes: Any,
+      nest_level: int,
+      nested_steps: tuple[int, ...],
+      nested_queries_spec: tuple[data_specs.QueriesSpec, ...],
+      retrieve_fns: tuple[Callable[[int], PyTree], ...] | None,
+      nested_evaluators_groups: tuple[tuple[evaluators.Evaluator, ...], ...],
+      nested_targets: tuple[PyTree, ...] | None,
+      observe_fn: Callable[..., PyTree],
+      process_fn: Callable[..., PyTree],
+      process_obs: nnx.Module,
+      batch_axis: cx.Coordinate | None,
+  ) -> Callable[..., Any]:
+    """Recursively builds a nested scan function for collecting stats."""
+    if nest_level == len(nested_steps):
+      return collect_inner
+
+    length = nested_steps[nest_level]
+    query_spec = nested_queries_spec[nest_level]
+
+    def _collect_stats(carry, model, loaded_targets_slice, evaluators_tuple):
+      # Unpack carry: idx, then tuple of agg_state one per evaluator.
+      step_idx, agg_states_tuple = carry
+
+      # Extracting arguments for `fn` by separating current level values for
+      # arguments that capture nesting: agg_states, targets, each evaluator tpl.
+      inner_scan_aggs_tuple = tuple(states[:-1] for states in agg_states_tuple)
+      inner_scan_targets = (
+          loaded_targets_slice[:-1] if loaded_targets_slice else ()
+      )
+      inner_scan_evaluators = tuple(
+          evaluators[:-1] for evaluators in evaluators_tuple
+      )
+
+      # Invariant signature: (carry, model, targets, evaluators)
+      step_idx, inner_scan_agg_results = collect_inner(
+          (step_idx, inner_scan_aggs_tuple),
+          model,
+          inner_scan_targets,
+          inner_scan_evaluators,
+      )  # step index is incremented at the lowest level.
+
+      # Compute aggregation updates for the step at current level of nesting.
+      current_level_agg_states = tuple(x[-1] for x in agg_states_tuple)
+      current_level_evaluators = tuple(x[-1] for x in evaluators_tuple)
+      current_level_targets = (
+          loaded_targets_slice[-1] if loaded_targets_slice else None
+      )
+      retrieve_fn = retrieve_fns[nest_level] if retrieve_fns else None
+
+      updated_current_level_aggs = _compute_aggregation(
+          step_idx=step_idx,
+          model=model,
+          current_agg_states=current_level_agg_states,
+          evaluator_slices=current_level_evaluators,
+          loaded_targets_slice=current_level_targets,
+          retrieve_fn=retrieve_fn,
+          query_spec=query_spec,
+          observe_fn=observe_fn,
+          process_fn=process_fn,
+          process_obs=process_obs,
+          run_evaluator_fn=self.run_evaluator,
+          combine_agg_states_fn=self.combine_agg_states,
+          training_mesh=self.training_mesh,
+          batch_axis=batch_axis,
+      )
+
+      # Combine inner and current agg states.
+      combined_agg_states = []
+      for inner_agg_states, agg_state in zip(
+          inner_scan_agg_results, updated_current_level_aggs
+      ):
+        combined_agg_states.append(tuple([*inner_agg_states, agg_state]))
+
+      return (step_idx, tuple(combined_agg_states))
+
+    if self.remat_config.remat_collect_statistics:
+      # TODO(dkochkov): Consider adding more granular control for this remat.
+      _collect_stats = nnx.remat(_collect_stats)
+
+    collect_stats_scan = nnx.scan(
+        _collect_stats, length=length, in_axes=in_axes, out_axes=out_axes
+    )
+    return self._recursive_scan(
+        collect_stats_scan,
+        in_axes,
+        out_axes,
+        nest_level + 1,
+        nested_steps,
+        nested_queries_spec,
+        retrieve_fns,
+        nested_evaluators_groups,
+        nested_targets,
+        observe_fn,
+        process_fn,
+        process_obs,
+        batch_axis,
+    )
+
+  def _split_model_and_process_obs(self):
+    """Splits model and process_observations for checkpointing/sharding."""
+    process_def, process_params = nnx.split(self.process_observations)
+    model_def, _, temporaries, _ = nnx.split(
+        self.model,
+        nnx.Param,  # params.
+        (typing.SimulationVariable, typing.DynamicInput),  # temporaries.
+        ...,  # non-params.
+    )
+    return process_def, process_params, model_def, temporaries
+
+  def _merge_model_and_process_obs(
+      self,
+      process_def,
+      process_params,
+      model_def,
+      params,
+      non_params,
+      temporaries,
+  ) -> tuple[nnx.Module, api.Model]:
+    """Merges model and process_observations components."""
+    process_obs = nnx.merge(process_def, process_params, copy=True)
+    model = nnx.merge(model_def, params, non_params, temporaries, copy=True)
+    return process_obs, model
+
   def get_train_step_fn(
       self,
       train_stage: TrainStage,
-      retrieve_fn: Callable[[int], PyTree] | None = None,
+      retrieve_fns: tuple[Callable[[int], PyTree], ...] | None = None,
   ) -> train_utils.TrainStepFunction:
     """Makes a function that performs a single training step.
 
     Args:
       train_stage: Training stage for which to build a training step function.
-      retrieve_fn: Function to retrieve targets via callback.
+      retrieve_fns: Functions to retrieve targets via callback.
 
     Returns:
       train_step_fn: Function that performs a single training step given an
@@ -736,40 +1072,42 @@ class RolloutTrainer:
     model_state_scan_axes = nnx.StateAxes(
         {typing.SimulationVariable: nnx.Carry, ...: None}
     )
-    inner_steps, outer_steps = self._get_steps_from_spec(inputs_spec)
-    timedelta = inner_steps * self.model.timestep
+    targets_spec = data_loading.select_targets(
+        inputs_spec, train_stage.queries_spec
+    )  # TODO(dkochkov): I think this should filter FieldInQuerySpec.
+    nested_steps, nested_targets_specs = self._get_nested_steps_and_specs(
+        targets_spec
+    )
+    nested_queries_spec = jax.tree.map(
+        _remove_timedelta, nested_targets_specs, is_leaf=_is_coord
+    )
 
     # Setting up model components and helper functions.
-    data_slice_struct = self.data_loader.data_slice_struct(
-        inputs_spec, train_stage.batch_size_per_device
-    )
-
-    process_def, process_params = nnx.split(self.process_observations)
-    model_def, _, temporaries, _ = nnx.split(
-        self.model,
-        nnx.Param,  # params.
-        (typing.SimulationVariable, typing.DynamicInput),  # temporaries.
-        ...,  # non-params.
-    )
+    (
+        process_def,
+        process_params,
+        model_def,
+        temporaries,
+    ) = self._split_model_and_process_obs()
     step_fn, observe_fn, process_fn = self._get_step_observe_process_fns()
 
     def batched_parameter_loss_fn(
         params, non_params, rng, inputs, dynamic_data
     ):
       """Computes evaluation metrics for a batch of targets."""
-      time = coordinates.TimeDelta(np.arange(outer_steps) * timedelta)
-      if retrieve_fn is not None:
-        init_slice = inputs
-        loaded_targets = None
-      else:
-        init_slice = data_loading.slice_leading_timedelta(inputs, 1)
-        loaded_targets = data_loading.select_targets(
-            inputs, train_stage.queries_spec
-        )
-        loaded_targets = cx.untag(loaded_targets, batch_axis, time)
+      init_slice, loaded_targets = _prepare_inputs_and_targets(
+          inputs, self.model.timestep, retrieve_fns, train_stage.queries_spec, batch_axis
+      )
+
       # Initializing the model state.
-      process_obs = nnx.merge(process_def, process_params, copy=True)
-      model = nnx.merge(model_def, params, non_params, temporaries, copy=True)
+      process_obs, model = self._merge_model_and_process_obs(
+          process_def,
+          process_params,
+          model_def,
+          params,
+          non_params,
+          temporaries,
+      )
       eb_model = self._initialize_vectorized_model(
           model,
           rng,
@@ -784,76 +1122,58 @@ class RolloutTrainer:
       )
       nnx.update(eb_model, eb_model_state)
 
-      inner_step_fn = nnx.scan(
-          step_fn,
-          length=inner_steps,
-          in_axes=model_state_scan_axes,
-          out_axes=0,
+      nested_evaluators = create_nested_evaluators(
+          loss_evaluator, nested_targets_specs, self.model.timestep
+      )
+      init_agg_states = self._create_initial_nested_agg_states(
+          loss_evaluator,
+          eb_model,
+          process_obs,
+          nested_targets_specs,
+          nested_queries_spec,
+          train_stage.batch_size_per_device,
       )
 
       def collect_statistics_step(
-          model,
-          carry,
-          loss_evaluator_slice,
-          loaded_targets_slice=None,
-      ):
-        """Collects loss and metrics aggregations for one step."""
-        idx, loss_agg_state = carry
-        if retrieve_fn is not None:
-          targets_slice = retrieve_fn(idx)
-        else:
-          targets_slice = cx.tag(loaded_targets_slice, batch_axis)
-        query = data_specs.construct_query(
-            targets_slice, train_stage.queries_spec
-        )
-        prediction = process_fn(
-            process_obs, _flatten_dict(observe_fn(model, query))
-        )
-        prediction = self.training_mesh.with_sharding_constraint(
-            prediction, 'physics'
-        )
-        target = process_fn(process_obs, _flatten_dict(targets_slice))
-        target = self.training_mesh.with_sharding_constraint(target, 'physics')
-        loss_agg = self.run_evaluator(loss_evaluator_slice, prediction, target)
-        loss_agg_state = self.combine_agg_states(loss_agg_state, loss_agg)
-        inner_step_fn(model)  # integrates model to the next data slice.
+          carry, model, loaded_targets_slice, evaluator_slice
+      ) -> tuple[int, tuple[tuple[aggregation.AggregationState, ...]]]:  # pylint: disable=g-one-element-tuple
+        del evaluator_slice, loaded_targets_slice
+        idx, (agg,) = carry
+        step_fn(model)  # advances model by 1 step.
         model_state = nnx.state(model, typing.SimulationVariable)
         model_state = self.training_mesh.with_sharding_constraint(
             model_state, 'physics'
         )
         nnx.update(model, model_state)
-        return (idx + 1, loss_agg_state)
+        return (idx + 1, (agg,))
 
-      predictions_struct, target_struct = self._predictions_and_targets_structs(
-          eb_model, process_obs, data_slice_struct, train_stage.queries_spec
-      )
-      init_loss_aggregations = loss_evaluator.zeros_aggregation_states(
-          predictions_struct, target_struct
-      )
-      # Setup context for loss evaluator.
-      timedeltas = time.fields['timedelta']  # values of `time` at slices.
-      dummy = cx.DummyAxis(cx.new_axis_name(timedeltas), outer_steps)
-      replicate_t_coord = cx.coords.compose(dummy, time)
-      replicated_deltas = timedeltas.broadcast_like(replicate_t_coord)
-      loss_evaluator_with_context = loss_evaluator.with_context({
-          'timedelta': timedeltas.untag('timedelta'),
-          'times': replicated_deltas.untag(dummy),
-      })
-      if self.remat_config.remat_collect_statistics:
-        collect_statistics_step = nnx.remat(collect_statistics_step)
-      scan_fn = nnx.scan(
+      scan_fn = self._recursive_scan(
           collect_statistics_step,
-          length=outer_steps,
-          in_axes=(model_state_scan_axes, nnx.Carry, 0, 1),
+          in_axes=(nnx.Carry, model_state_scan_axes, 1, 0),
           out_axes=nnx.Carry,
+          nest_level=0,
+          nested_steps=nested_steps,
+          nested_queries_spec=nested_queries_spec,
+          retrieve_fns=retrieve_fns,
+          nested_evaluators_groups=(nested_evaluators,),
+          nested_targets=loaded_targets,
+          observe_fn=observe_fn,
+          process_fn=process_fn,
+          process_obs=process_obs,
+          batch_axis=batch_axis,
       )
-      _, loss_agg_state = scan_fn(
+
+      _, (loss_agg_state_tuple,) = scan_fn(
+          (0, (init_agg_states,)),
           eb_model,
-          (0, init_loss_aggregations),
-          loss_evaluator_with_context,
-          loaded_targets,
+          loaded_targets if loaded_targets else (None,) * len(nested_steps),
+          (nested_evaluators,),
       )
-      loss_value = loss_evaluator.evaluate_total({}, {}, loss_agg_state).data
+      # Flatten aggregation states from all levels.
+      full_agg_state = functools.reduce(
+          lambda c, x: c | x, loss_agg_state_tuple, {}
+      )
+      loss_value = loss_evaluator.evaluate_total({}, {}, full_agg_state).data
       return loss_value
 
     # We would use donate_argnums here to update experiment_state in-place, but
@@ -893,13 +1213,19 @@ class RolloutTrainer:
       train_stage: TrainStage,
       eval_stage: EvalSchema,
       seed: int = 0,
-      retrieve_fn: Callable[[int], PyTree] | None = None,
+      retrieve_fns: (
+          tuple[Callable[[int], PyTree], ...] | None
+      ) = None,
   ) -> Callable[..., Any]:
     """Makes a function that performs a single evaluation pass."""
-    inner_steps, outer_steps = self._get_steps_from_spec(eval_stage.inputs_spec)
-    _, train_trajectory_length = self._get_steps_from_spec(
-        train_stage.inputs_spec
+    # TODO(dkochkov) currently we use train_stage to mask loss calculation. This
+    # calculation is correct only for single level scans. Update this to be
+    # more general.
+    train_steps_tuple = scan_utils.nested_scan_steps(
+        train_stage.inputs_spec, dt=self.model.timestep
     )
+    # We add 1 to ensure that the last step is covered by arange(...).
+    train_trajectory_length = math.prod(train_steps_tuple) + 1
     batch_axis = self.data_loader.make_batch_axis(
         eval_stage.batch_size_per_device
     )
@@ -907,7 +1233,15 @@ class RolloutTrainer:
     model_state_scan_axes = nnx.StateAxes(
         {typing.SimulationVariable: nnx.Carry, ...: None}
     )
-    timedelta = inner_steps * self.model.timestep  # time between data slices.
+    targets_spec = data_loading.select_targets(
+        eval_stage.inputs_spec, eval_stage.queries_spec
+    )  # TODO(dkochkov): I think this should filter out FieldInQuerySpec.
+    nested_steps, nested_targets_specs = self._get_nested_steps_and_specs(
+        targets_spec
+    )
+    nested_queries_spec = jax.tree.map(
+        _remove_timedelta, nested_targets_specs, is_leaf=_is_coord
+    )
 
     # If eval_stage.loss_evaluator is not None, we use it. Otherwise, we use
     # the loss evaluator from the train stage. Default is None.
@@ -918,7 +1252,7 @@ class RolloutTrainer:
     # We adjust loss_evaluator to only include contributions from
     # train_trajectory_length time steps.
     train_timedelta = coordinates.TimeDelta(
-        np.arange(train_trajectory_length) * timedelta
+        np.arange(train_trajectory_length) * self.model.timestep
     )
     timedelta_masking = weighting.CoordinateMaskWeighting(
         train_timedelta, masked_value=1.0, unmasked_value=0.0
@@ -943,32 +1277,21 @@ class RolloutTrainer:
     )
 
     # Setting up model components and helper functions.
-    data_slice_struct = self.data_loader.data_slice_struct(
-        eval_stage.inputs_spec, eval_stage.batch_size_per_device
-    )
-
-    process_def, process_params = nnx.split(self.process_observations)
-    model_def, _, temporaries, _ = nnx.split(
-        self.model,
-        nnx.Param,  # params.
-        (typing.SimulationVariable, typing.DynamicInput),  # temporaries.
-        ...,  # non-params.
-    )
+    (
+        process_def,
+        process_params,
+        model_def,
+        temporaries,
+    ) = self._split_model_and_process_obs()
     step_fn, observe_fn, process_fn = self._get_step_observe_process_fns()
 
     @train_utils.jit_once
     def batch_mean_eval_fn(params, non_params, eval_step, inputs, dynamic_data):
       """Computes evaluation metrics for a batch of targets."""
-      time = coordinates.TimeDelta(np.arange(outer_steps) * timedelta)
-      if retrieve_fn is not None:
-        init_slice = inputs
-        loaded_targets = None
-      else:
-        init_slice = data_loading.slice_leading_timedelta(inputs, 1)
-        loaded_targets = data_loading.select_targets(
-            inputs, eval_stage.queries_spec
-        )
-        loaded_targets = cx.untag(loaded_targets, batch_axis, time)
+      init_slice, loaded_targets = _prepare_inputs_and_targets(
+          inputs, self.model.timestep, retrieve_fns, eval_stage.queries_spec, batch_axis
+      )
+
       # Initializing the model state.
       [batch_size], [ensemble_size] = (
           batch_axis.shape,
@@ -981,8 +1304,14 @@ class RolloutTrainer:
           mesh=self.spmd_mesh,
       )
       rng = cx.field(rng, batch_axis, self.ensemble_axis)
-      process_obs = nnx.merge(process_def, process_params, copy=True)
-      model = nnx.merge(model_def, params, non_params, temporaries, copy=True)
+      process_obs, model = self._merge_model_and_process_obs(
+          process_def,
+          process_params,
+          model_def,
+          params,
+          non_params,
+          temporaries,
+      )
       eb_model = self._initialize_vectorized_model(
           model,
           rng,
@@ -992,101 +1321,88 @@ class RolloutTrainer:
           ensemble_axis,
       )
 
-      inner_step_fn = nnx.scan(
-          step_fn,
-          length=inner_steps,
-          in_axes=model_state_scan_axes,
-          out_axes=0,
+      nested_metrics = create_nested_evaluators(
+          eval_stage.metrics_evaluator, nested_targets_specs, self.model.timestep
       )
-
-      def _collect_statistics_step(
-          model,
-          carry,
-          metrics_evaluator_slice,
-          loss_evaluator_slice,
-          targets_slice_from_scan=None,
-      ):
-        """Collects loss and metrics aggregations for one step."""
-        idx, metrics_agg_state, loss_agg_state = carry
-        if retrieve_fn is not None:
-          targets_slice = retrieve_fn(idx)
-        else:
-          targets_slice = cx.tag(targets_slice_from_scan, batch_axis)
-        query = data_specs.construct_query(
-            targets_slice, eval_stage.queries_spec
-        )
-        prediction = observe_fn(model, query)
-        prediction = process_fn(process_obs, _flatten_dict(prediction))
-        target = process_fn(process_obs, _flatten_dict(targets_slice))
-        metrics_agg = self.run_evaluator(
-            metrics_evaluator_slice, prediction, target
-        )
-        metrics_agg_state = self.combine_agg_states(
-            metrics_agg_state, metrics_agg
-        )
-        loss_agg = self.run_evaluator(loss_evaluator_slice, prediction, target)
-        loss_agg_state = self.combine_agg_states(loss_agg_state, loss_agg)
-        inner_step_fn(model)  # integrates model to the next data slice.
-        return (idx + 1, metrics_agg_state, loss_agg_state)
-
-      prediction_struct, target_struct = self._predictions_and_targets_structs(
-          eb_model, process_obs, data_slice_struct, eval_stage.queries_spec
-      )
-      init_metrics_aggregations = (
-          eval_stage.metrics_evaluator.zeros_aggregation_states(
-              prediction_struct, target_struct
-          )
-      )
-      init_loss_aggregations = loss_evaluator.zeros_aggregation_states(
-          prediction_struct, target_struct
-      )
-      timedeltas = time.fields['timedelta']  # values of `time` at slices.
-      eval_metrics_with_context = eval_stage.metrics_evaluator.with_context(
-          {'timedelta': timedeltas.untag('timedelta')}
-      )
-      # For loss context we provide timedelta and slices of full time axis that
-      # corresponds only to the training slice to correctly account for any
-      # normalization constants.
-      train_timedeltas = train_timedelta.fields['timedelta']
-      dummy = cx.DummyAxis(cx.new_axis_name(train_timedeltas), outer_steps)
-      replicate_coord = cx.coords.compose(dummy, train_timedelta)
-      replicated_deltas = train_timedeltas.broadcast_like(replicate_coord)
-      loss_evaluator_with_context = loss_evaluator.with_context({
-          'timedelta': timedeltas.untag('timedelta'),
-          'times': replicated_deltas.untag(dummy),
-      })
-      # in targets time is axis 1, if loading data via callback, it is ignored.
-      scan_fn = nnx.scan(
-          _collect_statistics_step,
-          length=outer_steps,
-          in_axes=(model_state_scan_axes, nnx.Carry, 0, 0, 1),
-          out_axes=nnx.Carry,
-      )
-      _, metrics_agg_state, loss_agg_state = scan_fn(
+      init_metrics_agg_states = self._create_initial_nested_agg_states(
+          eval_stage.metrics_evaluator,
           eb_model,
-          (0, init_metrics_aggregations, init_loss_aggregations),
-          eval_metrics_with_context,
-          loss_evaluator_with_context,
-          loaded_targets,
+          process_obs,
+          nested_targets_specs,
+          nested_queries_spec,
+          eval_stage.batch_size_per_device,
       )
+      nested_losses = create_nested_evaluators(
+          loss_evaluator, nested_targets_specs, self.model.timestep
+      )
+      init_loss_agg_states = self._create_initial_nested_agg_states(
+          loss_evaluator,
+          eb_model,
+          process_obs,
+          nested_targets_specs,
+          nested_queries_spec,
+          eval_stage.batch_size_per_device,
+      )
+
+      def collect_statistics_step(
+          carry,
+          model,
+          loaded_targets_slice,
+          evaluators_tuple,
+      ) -> tuple[int, tuple[NestedAggStates, NestedAggStates]]:
+        del evaluators_tuple, loaded_targets_slice
+        idx, (metrics_agg, loss_agg) = carry  # aggs here are empty tuples.
+        step_fn(model)  # advances model by 1 step.
+        return (idx + 1, (metrics_agg, loss_agg))
+
+      scan_fn = self._recursive_scan(
+          collect_statistics_step,
+          in_axes=(nnx.Carry, model_state_scan_axes, 1, 0),
+          out_axes=nnx.Carry,
+          nest_level=0,
+          nested_steps=nested_steps,
+          nested_queries_spec=nested_queries_spec,
+          retrieve_fns=retrieve_fns,
+          nested_evaluators_groups=(nested_metrics, nested_losses),
+          nested_targets=loaded_targets,
+          observe_fn=observe_fn,
+          process_fn=process_fn,
+          process_obs=process_obs,
+          batch_axis=batch_axis,
+      )
+
+      _, (metrics_agg_tuple, loss_agg_tuple) = scan_fn(
+          (0, (init_metrics_agg_states, init_loss_agg_states)),
+          eb_model,
+          loaded_targets if loaded_targets else (None,) * len(nested_steps),
+          (nested_metrics, nested_losses),
+      )
+
+      full_metrics_agg = functools.reduce(
+          lambda c, x: c | x, metrics_agg_tuple, {}
+      )
+      full_loss_agg = functools.reduce(
+          lambda c, x: c | x, loss_agg_tuple, {}
+      )
+
       # record metrics
       values_to_record = {}
       metric_values = eval_stage.metrics_evaluator.evaluate_metrics(
-          {}, {}, metrics_agg_state
+          {}, {}, full_metrics_agg
       )
       for metric_key, metric_dict in metric_values.items():
         for scalar_name, v in metric_dict.items():
           values_to_record['.'.join([metric_key, scalar_name])] = v.data
       # record loss
-      loss_val = loss_evaluator.evaluate_total({}, {}, loss_agg_state).data
+      loss_val = loss_evaluator.evaluate_total({}, {}, full_loss_agg).data
       values_to_record['loss'] = loss_val
       for term_key, term_metric in loss_evaluator.metrics.items():
         if loss_evaluator.term_weights is not None:
           w = loss_evaluator.term_weights.get(term_key, 1.0)
         else:
           w = 1.0
-        mean_stats = loss_agg_state[term_key].mean_statistics()
-        term_metric_values = loss_agg_state[term_key].metric_values(term_metric)
+        mean_stats = full_loss_agg[term_key].mean_statistics()
+        term_metric_values = full_loss_agg[term_key].metric_values(term_metric)
         relative_value_key = '.'.join(['relative', term_key])
         loss_term_value = w * term_metric.total(term_metric_values).data
         values_to_record[relative_value_key] = loss_term_value / loss_val

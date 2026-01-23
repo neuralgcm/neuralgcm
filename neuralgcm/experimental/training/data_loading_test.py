@@ -491,27 +491,19 @@ class DataLoaderTest(absltest.TestCase):
     # nested step frequencies for each subsequent level.
     idx_steps = [1] + list(map(int, np.cumprod(nested_steps)[:-1]))
 
-    remove_timedelta = lambda c: cx.coords.compose(
-        *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
-    )
-    is_coord = lambda x: isinstance(x, cx.Coordinate)
-    retrieve_fns, buffers, q_specs = [], [], []
+    retrieve_fns, buffers = [], []
     for spec, stride in zip(nested_specs, idx_steps):
       data_slice_struct = loader.data_slice_struct(
           spec, batch_size_per_device=batch_size_per_device
       )
-      queries_spec = jax.tree.map(remove_timedelta, spec, is_leaf=is_coord)
       retrieve_fn, data_buffer = loader.setup_targets_via_callback(
-          data_slice_struct, queries_spec=queries_spec, idx_step=stride
+          data_slice_struct, idx_step=stride
       )
       retrieve_fns.append(jax.jit(retrieve_fn))
       buffers.append(data_buffer)
-      q_specs.append(queries_spec)
 
     iter_std = loader.build_train_inputs(**shared_args)
-    iter_cb = loader.build_train_inputs(
-        data_buffer=buffers, queries_spec=q_specs, **shared_args
-    )
+    iter_cb = loader.build_train_inputs(data_buffer=buffers, **shared_args)
 
     # We need to call next on both: to get expected data and populate buffer.
     sample_std, _ = next(iter_std)

@@ -20,7 +20,7 @@ import dataclasses
 import functools
 import logging
 import math
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 import coordax as cx
 import grain.python as grain
@@ -41,8 +41,6 @@ import xarray
 
 
 PyTree = typing.Pytree
-K = TypeVar('K')
-V = TypeVar('V')
 
 
 class DeviceKeyedDict(dict):
@@ -485,9 +483,11 @@ class HostDataBuffer:
 
   def __init__(
       self,
+      data_slice_struct: PyTree,
       local_cpu: jax.Device | None,
       desired_spatial_dims_layout: tuple[str, ...] = (),
   ):
+    self.data_slice_struct = data_slice_struct
     self.current_batch = None
     self.desired_dims_layout = ('timedelta',) + desired_spatial_dims_layout
     if local_cpu is not None:
@@ -519,8 +519,9 @@ class HostDataBuffer:
       f = f.untag('timedelta')
       return f
 
+    to_set = select_targets(batch, self.data_slice_struct)
     self.current_batch = jax.tree.map(
-        _optimize_field_for_slice, batch, is_leaf=cx.is_field
+        _optimize_field_for_slice, to_set, is_leaf=cx.is_field
     )
 
   def get_slice(self, idx):
@@ -631,7 +632,6 @@ class DataLoader:
   def setup_targets_via_callback(
       self,
       data_slice_struct: PyTree,
-      queries_spec: data_specs.QueriesSpec | None = None,
       callback_pinned_host: bool = False,
       callback_spatial_dims_layout: tuple[str, ...] = (),
       idx_step: int = 1,
@@ -645,8 +645,6 @@ class DataLoader:
 
     Args:
       data_slice_struct: Structure of the data slice to be retrieved.
-      queries_spec: Specification of targets used to optimize the data
-        being retrieved from `data_buffer` via callback mechanism.
       callback_pinned_host: Whether to use pinned host memory for the callback
         buffer. This experimental feature should, in principle, lead to faster
         H2D transfers (especially on GPU).
@@ -660,8 +658,6 @@ class DataLoader:
         - retrieve_fn: A function that takes an index and returns the data slice.
         - data_buffer: A HostDataBuffer to store the loaded data.
     """
-    if queries_spec is None:
-      queries_spec = data_slice_struct  # by default use all data as targets.
     spmd_mesh = self.spmd_mesh
     if spmd_mesh is None:
       raise ValueError(
@@ -678,10 +674,12 @@ class DataLoader:
 
     if callback_pinned_host:
       data_buffer = HostDataBuffer(
-          local_cpu, tuple(callback_spatial_dims_layout)
+          data_slice_struct, local_cpu, tuple(callback_spatial_dims_layout)
       )
     else:
-      data_buffer = HostDataBuffer(None, tuple(callback_spatial_dims_layout))
+      data_buffer = HostDataBuffer(
+          data_slice_struct, None, tuple(callback_spatial_dims_layout)
+      )
 
     # Remove values that won't be needed for the loss to minimize data transfer.
     def host_slice_fn(idx, device_id):
@@ -691,7 +689,6 @@ class DataLoader:
         raise ValueError(f'Index {idx} must be a multiple of {idx_step}.')
       device = device_by_id[device_id.item()]
       sliced_data = data_buffer.get_slice(buffer_idx)
-      sliced_data = select_targets(sliced_data, queries_spec)
 
       def _is_leaf(x):
         return isinstance(x, dict) and any(isinstance(k, jax.Device) for k in x)
@@ -699,10 +696,9 @@ class DataLoader:
       result = jax.tree.map(lambda x: x[device], sliced_data, is_leaf=_is_leaf)
       return result
 
-    target_slice_struct = select_targets(data_slice_struct, queries_spec)
     shard_slice_struct = jax.tree.map(
         lambda f: cx.shape_struct_field(self.coord_to_shard(f.coordinate)),
-        target_slice_struct,
+        data_slice_struct,
         is_leaf=cx.is_field,
     )
 
@@ -756,7 +752,7 @@ class DataLoader:
           mesh.field_partitions[self.loading_partition_schema],
       )
       out_specs = jax.tree.map(
-          get_out_spec, target_slice_struct, is_leaf=cx.is_field
+          get_out_spec, data_slice_struct, is_leaf=cx.is_field
       )
       spmd_devices = spmd_mesh.devices
       device_indices = jnp.array([d.id for d in spmd_devices.ravel()]).reshape(
@@ -773,7 +769,7 @@ class DataLoader:
       )(idx, device_indices)
       coords = jax.tree.map(
           lambda f: parallelism.get_unsharded(f.coordinate),
-          target_slice_struct,
+          data_slice_struct,
           is_leaf=cx.is_field,
       )
       out = jax.tree.map(
@@ -992,26 +988,19 @@ class DataLoader:
   def _iterate_with_updated_buffer(
       self,
       data,
-      queries_spec: (
-          data_specs.QueriesSpec | Sequence[data_specs.QueriesSpec] | None
-      ),
       data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None,
   ):
     """Iterates over and updates the data buffer inplace, if necessary."""
     if data_buffer is not None:
       if isinstance(data_buffer, HostDataBuffer):
         data_buffer = [data_buffer]
-        queries_spec = [queries_spec]
-      else:
-        if len(data_buffer) != len(queries_spec):
-          raise ValueError('Number of buffers and queries_specs must match')
 
     for batch, dynamic_data in data:
       if data_buffer:
         init_slice = slice_leading_timedelta(batch, 1)
         init_slice = self.to_global_array(init_slice)
-        for buffer, spec in zip(data_buffer, queries_spec):
-          buffer.set_data(select_targets(batch, spec))
+        for buffer in data_buffer:
+          buffer.set_data(batch)
         inputs = init_slice
       else:
         inputs = batch
@@ -1030,9 +1019,6 @@ class DataLoader:
       dataset_rng_seed: int,
       time_sample_offset: np.timedelta64,
       dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
-      queries_spec: (
-          data_specs.QueriesSpec | Sequence[data_specs.QueriesSpec] | None
-      ) = None,
       data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None = None,
   ) -> Iterator[Any]:
     """Loads the training dataset and returns a data iterator.
@@ -1046,10 +1032,7 @@ class DataLoader:
         dataset.
       time_sample_offset: Time between consecutive valid start times.
       dataset_time_slice: Time period(s) to select training data from.
-      queries_spec: Specification of train targets used to optimize the data
-        being retrieved from `data_buffer` via callback mechanism. Has no effect
-        if `data_buffer` is None.
-      data_buffer: Buffer to store loaded data. If provided, the data will be
+      data_buffer: Buffer(s) to store loaded data. If provided, the data will be
         loaded via callback mechanism.
 
     Returns:
@@ -1117,7 +1100,7 @@ class DataLoader:
     data = grain.experimental.ThreadPrefetchIterDataset(
         data, prefetch_buffer_size=1
     )
-    return self._iterate_with_updated_buffer(data, queries_spec, data_buffer)
+    return self._iterate_with_updated_buffer(data, data_buffer)
 
   def build_eval_inputs(
       self,
@@ -1127,9 +1110,6 @@ class DataLoader:
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
       batch_count: int = 1,
-      queries_spec: (
-          data_specs.QueriesSpec | Sequence[data_specs.QueriesSpec] | None
-      ) = None,
       data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None = None,
   ) -> list[Any]:
     """Returns an iterable over the data for evaluation.
@@ -1141,10 +1121,7 @@ class DataLoader:
       batch_size_per_device: Number of samples per batch per device.
       time_sample_offset: Time between consecutive valid sample origins.
       batch_count: Number of batches of evaluation data to return.
-      queries_spec: Specification of eval targets used to optimize the data
-        being retrieved from `data_buffer` via callback mechanism. Has no effect
-        if `data_buffer` is None.
-      data_buffer: Buffer to store loaded data. If provided, the data will be
+      data_buffer: Buffer(s) to store loaded data. If provided, the data will be
         loaded via callback mechanism.
 
     Returns:
@@ -1203,7 +1180,5 @@ class DataLoader:
       data = data.map(self.to_global_array)
 
     # we call list on the iterator to cache data in memory.
-    data = list(
-        self._iterate_with_updated_buffer(data, queries_spec, data_buffer)
-    )
+    data = list(self._iterate_with_updated_buffer(data, data_buffer))
     return data

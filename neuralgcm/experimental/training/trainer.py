@@ -67,7 +67,7 @@ NestedAggStates: TypeAlias = tuple[aggregation.AggregationState | None, ...]
 TrainEvalIteratorTuple = tuple[
     Any,
     train_utils.TrainStepFunction,
-    Callable[..., Any],
+    dict[int, Callable[..., Any]],
 ]
 
 
@@ -599,9 +599,8 @@ class RolloutTrainer:
         else 0
     )
 
-    if len(self.eval_schedule.stages) != 1:
-      raise ValueError('Currently only single stage EvalSchedule is supported.')
-    self._eval_stage = self.eval_schedule.stages[0]
+    if not self.eval_schedule.stages:
+      raise ValueError('EvalSchedule must have at least one stage.')
 
     self.init_params = nnx.state(self.model, nnx.Param)
 
@@ -659,7 +658,6 @@ class RolloutTrainer:
   ) -> TrainEvalIteratorTuple:
     """Build new iterators for training at schedule_idx."""
     train_stage = self.train_schedule.stages[schedule_idx]
-    eval_stage = self._eval_stage
 
     def setup_callbacks(stage) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
       """Returns tuples of retrieve_fns and buffers for a given stage."""
@@ -689,44 +687,51 @@ class RolloutTrainer:
 
     if self.use_data_loading_callback:
       train_retrieve_fns, train_buffers = setup_callbacks(train_stage)
-      eval_retrieve_fns, eval_buffers = setup_callbacks(eval_stage)
     else:
       train_retrieve_fns, train_buffers = None, None
-      eval_retrieve_fns, eval_buffers = None, None
 
-    if eval_stage.num_batches:
-      eval_data = self.data_loader.build_eval_inputs(
-          input_data_specs=eval_stage.inputs_spec,
-          dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-          dataset_time_slices=eval_stage.time_slice,
-          batch_size_per_device=eval_stage.batch_size_per_device,
-          time_sample_offset=eval_stage.time_sample_offset,
-          batch_count=eval_stage.num_batches,
-          data_buffer=eval_buffers,
-      )
-      train_data = self.data_loader.build_eval_inputs(
-          input_data_specs=eval_stage.inputs_spec,
-          dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-          dataset_time_slices=train_stage.time_slice,
-          batch_size_per_device=eval_stage.batch_size_per_device,
-          time_sample_offset=eval_stage.time_sample_offset,
-          batch_count=eval_stage.num_batches,
-          data_buffer=eval_buffers,
-      )
+    evaluation_fns = {}
+    for eval_stage in self.eval_schedule.stages:
+      if self.use_data_loading_callback:
+        eval_retrieve_fns, eval_buffers = setup_callbacks(eval_stage)
+      else:
+        eval_retrieve_fns, eval_buffers = None, None
 
-      evaluate_fn = functools.partial(
-          self.evaluate,
-          eval_batch_fn=self.get_eval_batch_fn(
-              train_stage=train_stage,
-              eval_stage=eval_stage,
-              seed=0,
-              retrieve_fns=eval_retrieve_fns,
-          ),
-          eval_data=eval_data,
-          train_data=train_data,
-      )
-    else:
-      evaluate_fn = self.dummy_evaluate
+      if eval_stage.num_batches:
+        eval_data = self.data_loader.build_eval_inputs(
+            input_data_specs=eval_stage.inputs_spec,
+            dynamic_input_specs=eval_stage.dynamic_inputs_spec,
+            dataset_time_slices=eval_stage.time_slice,
+            batch_size_per_device=eval_stage.batch_size_per_device,
+            time_sample_offset=eval_stage.time_sample_offset,
+            batch_count=eval_stage.num_batches,
+            data_buffer=eval_buffers,
+        )
+        train_data = self.data_loader.build_eval_inputs(
+            input_data_specs=eval_stage.inputs_spec,
+            dynamic_input_specs=eval_stage.dynamic_inputs_spec,
+            dataset_time_slices=train_stage.time_slice,
+            batch_size_per_device=eval_stage.batch_size_per_device,
+            time_sample_offset=eval_stage.time_sample_offset,
+            batch_count=eval_stage.num_batches,
+            data_buffer=eval_buffers,
+        )
+
+        evaluate_fn = functools.partial(
+            self.evaluate,
+            eval_batch_fn=self.get_eval_batch_fn(
+                train_stage=train_stage,
+                eval_stage=eval_stage,
+                seed=0,
+                retrieve_fns=eval_retrieve_fns,
+            ),
+            eval_data=eval_data,
+            train_data=train_data,
+        )
+      else:
+        evaluate_fn = self.dummy_evaluate
+
+      evaluation_fns[eval_stage.cadence] = evaluate_fn
 
     training_data = self.data_loader.build_train_inputs(
         input_data_specs=train_stage.inputs_spec,
@@ -745,7 +750,7 @@ class RolloutTrainer:
         train_stage=train_stage, retrieve_fns=train_retrieve_fns
     )
 
-    return training_data, train_step_fn, evaluate_fn
+    return training_data, train_step_fn, evaluation_fns
 
   def run_pretraining(self, train_stage: TrainStage):
     """Runs pretraining."""
@@ -1431,9 +1436,10 @@ class RolloutTrainer:
       )
       return
 
+    min_eval_cadence = min(s.cadence for s in self.eval_schedule.stages)
     def logging_callback(step, schedule_idx, loss, auto_restart):
       loss = float(jax.device_get(loss))
-      if step % max(self._eval_stage.cadence // 100, 1) == 0:
+      if step % max(min_eval_cadence // 100, 1) == 0:
         logging.info(f'{schedule_idx=}, {step=}, {loss=}')
       if (
           self.auto_restart_config.error_with_nan_loss
@@ -1453,7 +1459,7 @@ class RolloutTrainer:
     prev_loss = loss = 1.0  # initialize with non-NaN value
     schedule_idx = None
 
-    train_step_fn, evaluate_fn, train_iter = None, None, None  # pytype happy.
+    train_step_fn, evaluation_fns, train_iter = None, {}, None  # pytype happy.
     step = start_step
     while step < self._total_train_steps:
       old_schedule_idx = schedule_idx
@@ -1464,7 +1470,7 @@ class RolloutTrainer:
         (
             train_iter,
             train_step_fn,
-            evaluate_fn,
+            evaluation_fns,
         ) = self.build_train_and_eval_iterators(schedule_idx)
 
       # restart on NaN loss
@@ -1508,7 +1514,10 @@ class RolloutTrainer:
         self.save_checkpoint(step, auto_restart, experiment_state)
 
       # evaluate
-      if (step + 1) % self._eval_stage.cadence == 0:
+      min_cadence = min(evaluation_fns.keys())
+      training_time = None
+      if (step + 1) % min_cadence == 0:
+        # We default to timing the training step and min_cadence intervals.
         if step > start_step:
           with train_step_timer:
             # train_step is non-blocking, so we need to block on the output
@@ -1516,24 +1525,27 @@ class RolloutTrainer:
             experiment_state = jax.block_until_ready(experiment_state)
           training_time = train_step_timer.total
           logging.info(
-              f'training for {self._eval_stage.cadence} steps'
+              f'training for {min_cadence} steps'
               f' took {training_time:.1f} seconds'
           )
           train_step_timer = timing.Timer()  # reset
         else:
           training_time = None
 
-        online_metrics = evaluate_fn(experiment_state)
-        if step > start_step:
-          assert training_time is not None
-          online_metrics.seconds_per_train_step = (
-              training_time / self._eval_stage.cadence
+      for cadence, evaluate_fn in evaluation_fns.items():
+        if (step + 1) % cadence == 0:
+          online_metrics = evaluate_fn(experiment_state)
+          if cadence == min_cadence and step > start_step:
+            assert training_time is not None
+            online_metrics.seconds_per_train_step = (
+                training_time / cadence
+            )
+          self.save_online_metrics(step, online_metrics)
+          logging.info(
+              'evaluation pass for cadence %d took %.1f seconds',
+              cadence,
+              online_metrics.seconds_per_evaluation,
           )
-        self.save_online_metrics(step, online_metrics)
-        logging.info(
-            'evaluation pass took %.1f seconds',
-            online_metrics.seconds_per_evaluation,
-        )
 
       # train
       with train_step_timer:
@@ -1550,8 +1562,9 @@ class RolloutTrainer:
     # End of while step < self.config.num_training_steps:
 
     logging.info('finished training')
-    eval_metrics = evaluate_fn(experiment_state)
-    self.save_online_metrics(self._total_train_steps, eval_metrics)
+    for evaluate_fn in evaluation_fns.values():
+      eval_metrics = evaluate_fn(experiment_state)
+      self.save_online_metrics(self._total_train_steps, eval_metrics)
     self.save_checkpoint(
         self._total_train_steps, auto_restart, experiment_state
     )
@@ -1587,9 +1600,10 @@ class RolloutTrainer:
                 minimum_interval_secs=60
             ),
             ocp_managers.PreemptionCheckpointingPolicy(),
-            ocp_managers.FixedIntervalPolicy(
-                interval=self._eval_stage.cadence
-            ),
+            *[
+                ocp_managers.FixedIntervalPolicy(interval=s.cadence)
+                for s in self.eval_schedule.stages
+            ],
             ocp_managers.SpecificStepsPolicy(
                 steps=list(self._train_schedule_boundaries)
             ),
@@ -1749,8 +1763,6 @@ class RolloutTrainer:
   ) -> OnlineEvalMetrics:
     """Dummy evaluation step, for use with num_eval_batches=0 in unit tests."""
     del experiment_state  # unused
-    assert self._eval_stage.num_batches == 0
-    logging.warning(f'skipping evaluation: {self._eval_stage.num_batches=}')
     return OnlineEvalMetrics()
 
   def evaluate(
@@ -1775,10 +1787,6 @@ class RolloutTrainer:
     Returns:
       Online evaluation metrics.
     """
-    if self._eval_stage.num_batches == 0:
-      return OnlineEvalMetrics()  # no evaluation to do.
-    assert self.eval_schedule.stages[0].num_batches > 0
-
     with timing.Timer() as eval_timer:
       _, params, ema_state, non_params = experiment_state
       ema_params, _ = self._ema_update(params, ema_state)  # pytype: disable=attribute-error  # jax-api-types

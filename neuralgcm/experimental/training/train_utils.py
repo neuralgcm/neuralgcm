@@ -13,8 +13,7 @@
 # limitations under the License.
 """Training utility functions for NeuralGCM."""
 
-import collections
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable
 import logging
 import math
 import time
@@ -40,37 +39,6 @@ TrainStepFunction = Callable[
     [ExperimentState, int, PyTree, Forcing],
     tuple[ExperimentState, LossValue],
 ]
-
-
-def streaming_mean(
-    batch_and_forcing: Iterable[tuple[PyTree, Forcing]],
-    eval_fn: Callable[[int, PyTree, Forcing], Mapping[str, Array]],
-    data_preprocess_fn: Callable[..., PyTree] = lambda x: x,
-) -> Mapping[str, Array]:
-  """Runs evaluation on `eval_data`.
-
-  Args:
-    batch_and_forcing: an iterable of batched velocity trajectories and forcing.
-    eval_fn: a function that performs a single evaluation step.
-    data_preprocess_fn: a preprocessing function be applied to each batch.
-
-  Returns:
-    A dict mapping strings to metric values.
-
-  Raises:
-    RuntimeError: if there are no batches to iterate over.
-  """
-  eval_metrics = collections.defaultdict(float)
-  count = 0
-  for step, (batch, forcing) in enumerate(batch_and_forcing):
-    post_batch = data_preprocess_fn(batch)
-    batch_metrics = eval_fn(step, post_batch, forcing)
-    for k, v in batch_metrics.items():
-      eval_metrics[k] += v
-    count += 1
-  if not count:
-    raise RuntimeError('no batches to iterate over')
-  return {k: v / count for k, v in eval_metrics.items()}
 
 
 def _to_cpu(array):

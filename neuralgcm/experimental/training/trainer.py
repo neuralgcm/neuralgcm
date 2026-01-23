@@ -717,16 +717,58 @@ class RolloutTrainer:
             data_buffer=eval_buffers,
         )
 
+        # TODO(dkochkov) currently we use train_stage to mask loss calculation.
+        # This calculation is correct only for single level scans. Update this to
+        # be more general.
+        train_steps_tuple = scan_utils.nested_scan_steps(
+            train_stage.inputs_spec, dt=self.model.timestep
+        )
+        # We add 1 to ensure that the last step is covered by arange(...).
+        train_trajectory_length = math.prod(train_steps_tuple) + 1
+        # If eval_stage.loss_evaluator is not None, we use it. Otherwise, we use
+        # the loss evaluator from the train stage. Default is None.
+        if eval_stage.loss_evaluator is not None:
+          loss_evaluator = eval_stage.loss_evaluator
+        else:
+          loss_evaluator = train_stage.loss
+        # We adjust loss_evaluator to only include contributions from
+        # train_trajectory_length time steps.
+        train_timedelta = coordinates.TimeDelta(
+            np.arange(train_trajectory_length) * self.model.timestep
+        )
+        timedelta_masking = weighting.CoordinateMaskWeighting(
+            train_timedelta, masked_value=1.0, unmasked_value=0.0
+        )
+        add_timedelta_mask = lambda aggr: aggregation.Aggregator(
+            dims_to_reduce=aggr.dims_to_reduce,
+            weight_by=aggr.weight_by + tuple([timedelta_masking]),  # pylint: disable=cell-var-from-loop
+            scale_by=aggr.scale_by,
+            bin_by=aggr.bin_by,
+            skip_missing=aggr.skip_missing,
+            skipna=aggr.skipna,
+            keep_weights_for_nans=aggr.keep_weights_for_nans,
+            context=aggr.context,
+        )
+        updated_aggregators = jax.tree.map(
+            add_timedelta_mask,
+            loss_evaluator.aggregators,
+            is_leaf=lambda x: isinstance(x, aggregation.Aggregator),
+        )
+        loss_evaluator = dataclasses.replace(
+            loss_evaluator, aggregators=updated_aggregators
+        )
         evaluate_fn = functools.partial(
             self.evaluate,
-            eval_batch_fn=self.get_eval_batch_fn(
-                train_stage=train_stage,
+            eval_statistics_fn=self.get_eval_statistics_fn(
+                loss_evaluator=loss_evaluator,
                 eval_stage=eval_stage,
                 seed=0,
                 retrieve_fns=eval_retrieve_fns,
             ),
             eval_data=eval_data,
             train_data=train_data,
+            metrics_evaluator=eval_stage.metrics_evaluator,
+            loss_evaluator=loss_evaluator,
         )
       else:
         evaluate_fn = self.dummy_evaluate
@@ -1213,9 +1255,9 @@ class RolloutTrainer:
 
     return train_step
 
-  def get_eval_batch_fn(
+  def get_eval_statistics_fn(
       self,
-      train_stage: TrainStage,
+      loss_evaluator: evaluators.Evaluator,
       eval_stage: EvalSchema,
       seed: int = 0,
       retrieve_fns: (
@@ -1223,14 +1265,6 @@ class RolloutTrainer:
       ) = None,
   ) -> Callable[..., Any]:
     """Makes a function that performs a single evaluation pass."""
-    # TODO(dkochkov) currently we use train_stage to mask loss calculation. This
-    # calculation is correct only for single level scans. Update this to be
-    # more general.
-    train_steps_tuple = scan_utils.nested_scan_steps(
-        train_stage.inputs_spec, dt=self.model.timestep
-    )
-    # We add 1 to ensure that the last step is covered by arange(...).
-    train_trajectory_length = math.prod(train_steps_tuple) + 1
     batch_axis = self.data_loader.make_batch_axis(
         eval_stage.batch_size_per_device
     )
@@ -1248,39 +1282,6 @@ class RolloutTrainer:
         _remove_timedelta, nested_targets_specs, is_leaf=_is_coord
     )
 
-    # If eval_stage.loss_evaluator is not None, we use it. Otherwise, we use
-    # the loss evaluator from the train stage. Default is None.
-    if eval_stage.loss_evaluator is not None:
-      loss_evaluator = eval_stage.loss_evaluator
-    else:
-      loss_evaluator = train_stage.loss
-    # We adjust loss_evaluator to only include contributions from
-    # train_trajectory_length time steps.
-    train_timedelta = coordinates.TimeDelta(
-        np.arange(train_trajectory_length) * self.model.timestep
-    )
-    timedelta_masking = weighting.CoordinateMaskWeighting(
-        train_timedelta, masked_value=1.0, unmasked_value=0.0
-    )
-    add_timedelta_mask = lambda aggr: aggregation.Aggregator(
-        dims_to_reduce=aggr.dims_to_reduce,
-        weight_by=aggr.weight_by + tuple([timedelta_masking]),
-        scale_by=aggr.scale_by,
-        bin_by=aggr.bin_by,
-        skip_missing=aggr.skip_missing,
-        skipna=aggr.skipna,
-        keep_weights_for_nans=aggr.keep_weights_for_nans,
-        context=aggr.context,
-    )
-    updated_aggregators = jax.tree.map(
-        add_timedelta_mask,
-        loss_evaluator.aggregators,
-        is_leaf=lambda x: isinstance(x, aggregation.Aggregator),
-    )
-    loss_evaluator = dataclasses.replace(
-        loss_evaluator, aggregators=updated_aggregators
-    )
-
     # Setting up model components and helper functions.
     (
         process_def,
@@ -1291,10 +1292,16 @@ class RolloutTrainer:
     step_fn, observe_fn, process_fn = self._get_step_observe_process_fns()
 
     @train_utils.jit_once
-    def batch_mean_eval_fn(params, non_params, eval_step, inputs, dynamic_data):
-      """Computes evaluation metrics for a batch of targets."""
+    def batch_eval_statistics_fn(
+        params, non_params, eval_step, inputs, dynamic_data
+    ):
+      """Computes evaluation statistics for a batch of targets."""
       init_slice, loaded_targets = _prepare_inputs_and_targets(
-          inputs, self.model.timestep, retrieve_fns, eval_stage.queries_spec, batch_axis
+          inputs,
+          self.model.timestep,
+          retrieve_fns,
+          eval_stage.queries_spec,
+          batch_axis,
       )
 
       # Initializing the model state.
@@ -1327,7 +1334,9 @@ class RolloutTrainer:
       )
 
       nested_metrics = create_nested_evaluators(
-          eval_stage.metrics_evaluator, nested_targets_specs, self.model.timestep
+          eval_stage.metrics_evaluator,
+          nested_targets_specs,
+          self.model.timestep,
       )
       init_metrics_agg_states = self._create_initial_nested_agg_states(
           eval_stage.metrics_evaluator,
@@ -1386,39 +1395,10 @@ class RolloutTrainer:
       full_metrics_agg = functools.reduce(
           lambda c, x: c | x, metrics_agg_tuple, {}
       )
-      full_loss_agg = functools.reduce(
-          lambda c, x: c | x, loss_agg_tuple, {}
-      )
+      full_loss_agg = functools.reduce(lambda c, x: c | x, loss_agg_tuple, {})
+      return full_metrics_agg, full_loss_agg
 
-      # record metrics
-      values_to_record = {}
-      metric_values = eval_stage.metrics_evaluator.evaluate_metrics(
-          {}, {}, full_metrics_agg
-      )
-      for metric_key, metric_dict in metric_values.items():
-        for scalar_name, v in metric_dict.items():
-          values_to_record['.'.join([metric_key, scalar_name])] = v.data
-      # record loss
-      loss_val = loss_evaluator.evaluate_total({}, {}, full_loss_agg).data
-      values_to_record['loss'] = loss_val
-      for term_key, term_metric in loss_evaluator.metrics.items():
-        if loss_evaluator.term_weights is not None:
-          w = loss_evaluator.term_weights.get(term_key, 1.0)
-        else:
-          w = 1.0
-        mean_stats = full_loss_agg[term_key].mean_statistics()
-        term_metric_values = full_loss_agg[term_key].metric_values(term_metric)
-        relative_value_key = '.'.join(['relative', term_key])
-        loss_term_value = w * term_metric.total(term_metric_values).data
-        values_to_record[relative_value_key] = loss_term_value / loss_val
-
-        debug_terms = term_metric.debug_terms(mean_stats, term_metric_values)
-        for debug_term_name, v in debug_terms.items():
-          key = '.'.join([term_key, debug_term_name])
-          values_to_record[key] = v.data
-      return values_to_record
-
-    return batch_mean_eval_fn
+    return batch_eval_statistics_fn
 
   def save_online_metrics(self, step: int, online_metrics: OnlineEvalMetrics):
     # only save from the coordinator process to avoid redundant copies.
@@ -1765,24 +1745,89 @@ class RolloutTrainer:
     del experiment_state  # unused
     return OnlineEvalMetrics()
 
+  def _compute_metrics_from_stats(
+      self,
+      eval_statistics_fn: Callable[..., Any],
+      data_iterator: Any,
+      metrics_evaluator: evaluators.Evaluator,
+      loss_evaluator: evaluators.Evaluator,
+  ) -> dict[str, float]:
+    """Computes metrics from aggregated statistics."""
+    total_metrics_agg = None
+    total_loss_agg = None
+    count = 0
+    for step, (inputs, dynamic_data) in enumerate(data_iterator):
+      metrics_agg, loss_agg = eval_statistics_fn(step, inputs, dynamic_data)
+      if total_metrics_agg is None:
+        total_metrics_agg = metrics_agg
+      else:
+        total_metrics_agg = self.combine_agg_states(
+            total_metrics_agg, metrics_agg
+        )
+      if total_loss_agg is None:
+        total_loss_agg = loss_agg
+      else:
+        total_loss_agg = self.combine_agg_states(total_loss_agg, loss_agg)
+      count += 1
+
+    if not count:
+      raise RuntimeError('no batches to iterate over')
+
+    # Recording metrics.
+    values_to_record = {}
+    metric_values = metrics_evaluator.evaluate_metrics(
+        {}, {}, total_metrics_agg
+    )
+    for metric_key, metric_dict in metric_values.items():
+      for scalar_name, v in metric_dict.items():
+        values_to_record['.'.join([metric_key, scalar_name])] = float(v.data)
+
+    # Recording loss.
+    loss_val = float(loss_evaluator.evaluate_total({}, {}, total_loss_agg).data)
+    values_to_record['loss'] = loss_val
+    for term_key, term_metric in loss_evaluator.metrics.items():
+      # Recording relative value of loss terms.
+      assert isinstance(term_metric, metrics_base.Loss)
+      if loss_evaluator.term_weights is not None:
+        w = loss_evaluator.term_weights.get(term_key, 1.0)
+      else:
+        w = 1.0
+      term_metric_values = total_loss_agg[term_key].metric_values(term_metric)
+      relative_value_key = '.'.join(['relative', term_key])
+      loss_term_value = w * float(term_metric.total(term_metric_values).data)
+      if loss_val != 0:
+        values_to_record[relative_value_key] = loss_term_value / loss_val
+      else:
+        values_to_record[relative_value_key] = 0.0
+
+      # Recording debug terms for each loss term.
+      mean_stats = total_loss_agg[term_key].mean_statistics()
+      debug_terms = term_metric.debug_terms(mean_stats, term_metric_values)
+      for debug_term_name, v in debug_terms.items():
+        key = '.'.join([term_key, debug_term_name])
+        values_to_record[key] = float(v.data)
+
+    return values_to_record
+
   def evaluate(
       self,
       experiment_state: ExperimentState,
-      eval_batch_fn,
+      eval_statistics_fn,
       eval_data,
       train_data,
+      metrics_evaluator: evaluators.Evaluator,
+      loss_evaluator: evaluators.Evaluator,
   ) -> OnlineEvalMetrics:
     """Evaluates the model on train and eval data and writes summaries.
 
     Args:
       experiment_state: tuple of replicated step, optimizer state and EMA
         (exponentially moving average) state for model parameters.
-      eval_batch_fn: function that, given parameters; rng; batch of data,
-        computes evaluation metric of interest on the given samples.
-      eval_data: iterable over evaluation data that is used for produce
-        summaries on unseen evaluation data.
-      train_data: iterable over training data that is used for produce summaries
-        on training data.
+      eval_statistics_fn: function for computing eval statistics per batch.
+      eval_data: iterable that samples data from the evaluation dataset.
+      train_data: iterable that samples data from the training dataset.
+      metrics_evaluator: evaluator describing online evaluation metrics.
+      loss_evaluator: optional evaluator describing the loss function.
 
     Returns:
       Online evaluation metrics.
@@ -1791,31 +1836,31 @@ class RolloutTrainer:
       _, params, ema_state, non_params = experiment_state
       ema_params, _ = self._ema_update(params, ema_state)  # pytype: disable=attribute-error  # jax-api-types
 
-      # TODO(dkochkov): Rather than using train_utils.streaming_mean, use
-      # aggregation state aware computation. This would increase the scope of
-      # metrics that we can compute correctly.
       results = {}
 
       logging.info('evaluating on train dataset')
-      metrics_ = train_utils.streaming_mean(
+      results['train'] = self._compute_metrics_from_stats(
+          functools.partial(eval_statistics_fn, params, non_params),
           train_data,
-          functools.partial(eval_batch_fn, params, non_params),
+          metrics_evaluator,
+          loss_evaluator,
       )
-      results['train'] = {k: float(v) for k, v in metrics_.items()}
 
       logging.info('evaluating on test dataset')
-      metrics_ = train_utils.streaming_mean(
+      results['eval'] = self._compute_metrics_from_stats(
+          functools.partial(eval_statistics_fn, params, non_params),
           eval_data,
-          functools.partial(eval_batch_fn, params, non_params),
+          metrics_evaluator,
+          loss_evaluator,
       )
-      results['eval'] = {k: float(v) for k, v in metrics_.items()}
 
       logging.info('evaluating EMA model on test dataset')
-      metrics_ = train_utils.streaming_mean(
+      results['eval_ema'] = self._compute_metrics_from_stats(
+          functools.partial(eval_statistics_fn, ema_params, non_params),
           eval_data,
-          functools.partial(eval_batch_fn, ema_params, non_params),
+          metrics_evaluator,
+          loss_evaluator,
       )
-      results['eval_ema'] = {k: float(v) for k, v in metrics_.items()}
 
     return OnlineEvalMetrics(
         train=results['train'],

@@ -215,22 +215,33 @@ class StreamingNormalizer(nnx.Module):
       if mask is None:
         batch_size = np.prod([f.named_shape[d] for d in batch_dims])
         count_inc = batch_size
-        w = 1
+        batch_mean = cx.cmap(jnp.mean)(x)
+        # Note: we need population variance here (sum of squared deviations).
+        batch_m2 = cx.cmap(lambda x: jnp.var(x) * x.size)(x)
       else:
         mask_batch_dims = tuple(d for d in batch_dims if d in mask.dims)
         w = cx.cmap(lambda m: m.astype(jnp.int32))(mask.untag(*mask_batch_dims))
         # Broadcast w to x to count valid entries correctly.
         ones = cx.cmap(lambda x: jnp.ones_like(x, dtype=jnp.int32))(x)
-        count_inc = cx.cmap(jnp.sum)(w * ones)
+        w = w * ones
+        count_inc = cx.cmap(jnp.sum)(w)
 
-      counter += count_inc
-      delta = x - mean
-      inv_counter = cx.cmap(lambda c: jnp.where(c > 0, 1.0 / c, 0.0))(counter)
-      mean_inc = cx.cmap(jnp.sum)(delta * w)
-      mean += mean_inc * inv_counter
-      delta2 = x - mean
-      sum_squares += cx.cmap(jnp.sum)(delta * delta2 * w)
-      counters[k] = counter
+        inv_count_inc = cx.cmap(lambda c: jnp.where(c > 0, 1.0 / c, 0.0))(
+            count_inc
+        )
+        batch_mean = cx.cmap(jnp.sum)(x * w) * inv_count_inc
+        delta_batch = x - batch_mean
+        batch_m2 = cx.cmap(jnp.sum)(delta_batch * delta_batch * w)
+
+      delta = batch_mean - mean
+      new_counter = counter + count_inc
+      inv_new_counter = cx.cmap(lambda c: jnp.where(c > 0, 1.0 / c, 0.0))(
+          new_counter
+      )
+      mean += delta * count_inc * inv_new_counter
+      term = delta * delta * counter * count_inc * inv_new_counter
+      sum_squares += batch_m2 + term
+      counters[k] = new_counter
       means[k] = mean
       m2s[k] = sum_squares
     self.counters.set_value(counters)

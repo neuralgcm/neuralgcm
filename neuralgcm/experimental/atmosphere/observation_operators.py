@@ -25,13 +25,13 @@ from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_harmonics
-from neuralgcm.experimental.core import transforms
+from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
 @dataclasses.dataclass
 class StandardVariablesObservationOperator(
-    observation_operators.ObservationOperator
+    observation_operators.ObservationOperatorABC
 ):
   """Operator that predicts atmospheric observations in "u,v,t,z,..." vars.
 
@@ -49,7 +49,7 @@ class StandardVariablesObservationOperator(
   orography: orographies.ModalOrography
   levels: coordinates.PressureLevels | coordinates.SigmaLevels
   sim_units: units.SimUnits
-  observation_correction: transforms.Transform | None
+  observation_correction: typing.Transform | None
   mesh: parallelism.Mesh
 
   def observe(

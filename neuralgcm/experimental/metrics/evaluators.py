@@ -20,7 +20,7 @@ import dataclasses
 from typing import Any, Generic, TypeVar
 import coordax as cx
 import jax
-from neuralgcm.experimental.core import transforms
+from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.metrics import aggregation
 from neuralgcm.experimental.metrics import base
 
@@ -34,7 +34,7 @@ class Evaluator(Generic[M]):
 
   metrics: dict[str, M]
   aggregators: dict[str, aggregation.Aggregator] | aggregation.Aggregator
-  getters: dict[str, transforms.Transform] | transforms.Transform | None = None
+  getters: dict[str, typing.Transform] | typing.Transform | None = None
   term_weights: dict[str, float] | None = None
   is_loss_evaluator: bool = dataclasses.field(init=False)
 
@@ -48,7 +48,7 @@ class Evaluator(Generic[M]):
             f'{self.term_weights=} can only be set when all metrics are Losses.'
         )
 
-  def _get_getter(self, key: str) -> transforms.Transform | None:
+  def _get_getter(self, key: str) -> typing.Transform | None:
     """Returns getter for a given metric key."""
     if isinstance(self.getters, dict):
       return self.getters[key]
@@ -63,7 +63,7 @@ class Evaluator(Generic[M]):
   def _evaluate_group(
       self,
       metric_keys: list[str],
-      getter: transforms.Transform | None,
+      getter: typing.Transform | None,
       predictions: dict[str, cx.Field],
       targets: dict[str, cx.Field],
   ) -> dict[str, aggregation.AggregationState]:

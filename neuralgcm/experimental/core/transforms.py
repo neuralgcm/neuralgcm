@@ -27,7 +27,7 @@ from __future__ import annotations
 import abc
 import itertools
 import re
-from typing import Callable, Literal, Protocol, Sequence
+from typing import Callable, Literal, Sequence, TypeAlias
 
 import coordax as cx
 from flax import nnx
@@ -48,23 +48,11 @@ from neuralgcm.experimental.core import units
 import numpy as np
 
 
+Transform: TypeAlias = typing.Transform
+
+
 class TransformParams(nnx.Variable):
   """Custom variable class for transform parameters."""
-
-
-class Transform(Protocol):
-  """Protocol for pytree transforms."""
-
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    ...
-
-  def output_shapes(
-      self, input_shapes: dict[str, cx.Field]
-  ) -> dict[str, cx.Field]:
-    ...
-
-
-TransformFactory = Callable[..., Transform]
 
 
 class TransformABC(nnx.Module, abc.ABC):
@@ -907,7 +895,9 @@ class StreamingStatsNormalization(TransformABC):
     )
     results = {}
     for k, v in inputs.items():
-      results[k] = cx.field(transforms[k](v.data, self.update_stats), v.coordinate)
+      results[k] = cx.field(
+          transforms[k](v.data, self.update_stats), v.coordinate
+      )
     return results
 
   @classmethod

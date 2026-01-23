@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import functools
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, Protocol, TypeVar
 
 import coordax as cx
 from flax import nnx
@@ -129,3 +129,35 @@ class KeyWithCosLatFactor:
 
   name: str
   factor_order: int
+
+
+#
+# Protocol definitions.
+#
+
+
+class Transform(Protocol):
+  """Protocol for pytree transforms."""
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    ...
+
+  def output_shapes(
+      self, input_shapes: dict[str, cx.Field]
+  ) -> dict[str, cx.Field]:
+    ...
+
+
+class ObservationOperator(Protocol):
+  """Protocol for observation operators."""
+
+  def observe(
+      self,
+      inputs: dict[str, cx.Field],
+      query: dict[str, cx.Field | cx.Coordinate],
+  ) -> dict[str, cx.Field]:
+    """Returns observations for `query`."""
+    ...
+
+
+TransformFactory = Callable[..., Transform]

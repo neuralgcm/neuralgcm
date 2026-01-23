@@ -22,7 +22,7 @@ import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import spherical_harmonics
-from neuralgcm.experimental.core import transforms
+from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
@@ -54,7 +54,7 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
   ylm_map: spherical_harmonics.FixedYlmMapping
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
-  transform: transforms.TransformABC | None = None
+  transform: typing.Transform | None = None
   prognostics_arg_key: str | int = 'prognostics'
   imbalance_diagnostic_key: str = 'imbalance'
 

@@ -17,11 +17,9 @@
 from typing import Sequence
 
 import coordax as cx
-import jax
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import time_integrators
-from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 
 
@@ -45,7 +43,7 @@ class SimTimeEquation(time_integrators.ExplicitODE):
 class ExplicitTransformEquation(time_integrators.ExplicitODE):
   """Explicit equation whose terms are parameterized by a transform."""
 
-  explicit_terms_transform: transforms.Transform
+  explicit_terms_transform: typing.Transform
 
   def explicit_terms(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     tendencies = self.explicit_terms_transform(inputs)

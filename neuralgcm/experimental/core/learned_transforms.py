@@ -24,6 +24,7 @@ from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import towers
 from neuralgcm.experimental.core import transforms
+from neuralgcm.experimental.core import typing
 
 
 @nnx_compat.dataclass
@@ -45,8 +46,8 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
   targets: dict[str, cx.Coordinate]
   tower: towers.ForwardTower
   dims_to_align: tuple[str | cx.Coordinate, ...]
-  in_transform: transforms.Transform = transforms.Identity()
-  out_transform: transforms.Transform = transforms.Identity()
+  in_transform: typing.Transform = transforms.Identity()
+  out_transform: typing.Transform = transforms.Identity()
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
   mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
@@ -69,8 +70,8 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
       targets: dict[str, cx.Coordinate],
       tower_factory: towers.ForwardTowerFactory,
       dims_to_align: tuple[str | cx.Coordinate, ...],
-      in_transform=transforms.Identity(),
-      out_transform=transforms.Identity(),
+      in_transform: typing.Transform = transforms.Identity(),
+      out_transform: typing.Transform = transforms.Identity(),
       feature_sharding_schema: str | None = None,
       result_sharding_schema: str | None = None,
       *,
@@ -143,8 +144,8 @@ class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
   targets: dict[str, cx.Coordinate]
   tower: towers.RecurrentTower
   dims_to_align: tuple[str | cx.Coordinate, ...]
-  in_transform: transforms.Transform = transforms.Identity()
-  out_transform: transforms.Transform = transforms.Identity()
+  in_transform: typing.Transform = transforms.Identity()
+  out_transform: typing.Transform = transforms.Identity()
   state_keys: tuple[str, ...] = ('lstm_c', 'lstm_h')
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
@@ -263,10 +264,10 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
   targets: dict[str, cx.Coordinate]
   tower: towers.TransformerTower
   input_dims_to_align: tuple[str | cx.Coordinate, ...]
-  inputs_transform: transforms.Transform = transforms.Identity()
-  latents_transform: transforms.Transform = transforms.Empty()
-  mask_values_transform: transforms.Transform = transforms.Empty()
-  out_transform: transforms.Transform = transforms.Identity()
+  inputs_transform: typing.Transform = transforms.Identity()
+  latents_transform: typing.Transform = transforms.Empty()
+  mask_values_transform: typing.Transform = transforms.Empty()
+  out_transform: typing.Transform = transforms.Identity()
   latent_dims_to_align: tuple[str | cx.Coordinate, ...] | None = None
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
@@ -303,10 +304,10 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
       targets: dict[str, cx.Coordinate],
       tower_factory: towers.TransformerTowerFactory,
       input_dims_to_align: tuple[str | cx.Coordinate, ...],
-      inputs_transform: transforms.Transform = transforms.Identity(),
-      latents_transform: transforms.Transform = transforms.Empty(),
-      mask_values_transform: transforms.Transform = transforms.Empty(),
-      out_transform: transforms.Transform = transforms.Identity(),
+      inputs_transform: typing.Transform = transforms.Identity(),
+      latents_transform: typing.Transform = transforms.Empty(),
+      mask_values_transform: typing.Transform = transforms.Empty(),
+      out_transform: typing.Transform = transforms.Identity(),
       latent_dims_to_align: tuple[str | cx.Coordinate, ...] | None = None,
       feature_sharding_schema: str | None = None,
       result_sharding_schema: str | None = None,
@@ -398,8 +399,8 @@ class WeightedLandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
   land_transform: ForwardTowerTransform
   sea_transform: ForwardTowerTransform
   sea_ice_transform: ForwardTowerTransform
-  land_sea_mask_transform: transforms.Transform
-  sea_ice_value_transform: transforms.Transform
+  land_sea_mask_transform: typing.Transform
+  sea_ice_value_transform: typing.Transform
   mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   def __post_init__(self):

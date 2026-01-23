@@ -34,7 +34,7 @@ import numpy as np
 # pylint: disable=g-classes-have-attributes
 
 
-class ObservationOperator(nnx.Module, abc.ABC):
+class ObservationOperatorABC(nnx.Module, abc.ABC):
   """Base class for observation operators."""
 
   @abc.abstractmethod
@@ -100,7 +100,7 @@ def _subset_query_from_field(
 
 
 @dataclasses.dataclass
-class DataObservationOperator(ObservationOperator):
+class DataObservationOperator(ObservationOperatorABC):
   """Operator that returns pre-computed fields for matching coordinate queries.
 
   This observation operator matches keys and coordinates in the pre-computed
@@ -144,10 +144,10 @@ class DataObservationOperator(ObservationOperator):
 
 
 @dataclasses.dataclass
-class TransformObservationOperator(ObservationOperator):
+class TransformObservationOperator(ObservationOperatorABC):
   """Operator that returns transformed inputs as observations."""
 
-  transform: transforms.Transform
+  transform: typing.Transform
 
   def observe(
       self,
@@ -159,7 +159,7 @@ class TransformObservationOperator(ObservationOperator):
 
 
 @dataclasses.dataclass
-class ObservationOperatorWithRenaming(ObservationOperator):
+class ObservationOperatorWithRenaming(ObservationOperatorABC):
   """Operator wrapper that converts between different naming conventions.
 
   Attributes:
@@ -167,7 +167,7 @@ class ObservationOperatorWithRenaming(ObservationOperator):
     renaming_dict: A dictionary mapping new names to those used by `operator`.
   """
 
-  operator: ObservationOperator
+  operator: typing.ObservationOperator
   renaming_dict: dict[str, str]
 
   def observe(
@@ -187,7 +187,7 @@ class ObservationOperatorWithRenaming(ObservationOperator):
 
 
 @dataclasses.dataclass
-class FixedLearnedObservationOperator(ObservationOperator):
+class FixedLearnedObservationOperator(ObservationOperatorABC):
   """Operator that computes fixed set of observations using state mapping."""
 
   coordinate_mapping: learned_transforms.ForwardTowerTransform
@@ -232,9 +232,9 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
 
   target_predictions: dict[str, cx.Coordinate]
   grid: coordinates.LonLatGrid
-  grid_features: transforms.Transform
+  grid_features: typing.Transform
   tower: towers.ForwardTower
-  prediction_transform: transforms.Transform = transforms.Identity()
+  prediction_transform: typing.Transform = transforms.Identity()
   mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
 
   @classmethod
@@ -244,9 +244,9 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
       target_predictions: dict[str, cx.Coordinate],
       *,
       grid: coordinates.LonLatGrid,
-      grid_features: transforms.Transform,
+      grid_features: typing.Transform,
       tower_factory: towers.ForwardTowerFactory,
-      prediction_transform: transforms.Transform = transforms.Identity(),
+      prediction_transform: typing.Transform = transforms.Identity(),
       mesh: parallelism.Mesh,
       rngs: nnx.Rngs,
   ):
@@ -342,14 +342,14 @@ class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
 
 
 @dataclasses.dataclass
-class MultiObservationOperator(ObservationOperator):
+class MultiObservationOperator(ObservationOperatorABC):
   """Operator that dispatches queries to multiple operators.
 
   Attributes:
     keys_to_operator: A dictionary mapping query keys to observation operators.
   """
 
-  keys_to_operator: dict[tuple[str, ...], ObservationOperator]
+  keys_to_operator: dict[tuple[str, ...], typing.ObservationOperator]
 
   def observe(
       self,

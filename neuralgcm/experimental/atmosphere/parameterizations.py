@@ -24,7 +24,6 @@ from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
-from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 
 
@@ -41,9 +40,9 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
       levels: coordinates.SigmaLevels | coordinates.HybridLevels,
       surface_field_names: tuple[str, ...],
       volume_field_names: tuple[str, ...],
-      features_module: transforms.Transform,
-      mapping_factory: transforms.TransformFactory,
-      tendency_transform: transforms.Transform,
+      features_module: typing.Transform,
+      mapping_factory: typing.TransformFactory,
+      tendency_transform: typing.Transform,
       modal_filter: spatial_filters.ModalSpatialFilter,
       input_state_shapes: typing.Pytree,
       u_key: str = 'u_component_of_wind',

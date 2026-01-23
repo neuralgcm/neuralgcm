@@ -63,7 +63,7 @@ class Lorenz96Base(api.Model):
   time_integrator_cls: IntegratorCls = dataclasses.field(
       default=time_integrators.RungeKutta4, kw_only=True
   )
-  operators: dict[str, observation_operators.ObservationOperator] = (
+  operators: dict[str, observation_operators.ObservationOperatorABC] = (
       dataclasses.field(default_factory=dict, kw_only=True)
   )
 

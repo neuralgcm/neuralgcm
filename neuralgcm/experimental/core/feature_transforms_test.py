@@ -40,7 +40,7 @@ class FeatureTransformsTest(parameterized.TestCase):
 
   def _test_feature_module(
       self,
-      feature_module: transforms.Transform,
+      feature_module: typing.Transform,
       inputs: typing.Pytree,
   ):
     features = feature_module(inputs)

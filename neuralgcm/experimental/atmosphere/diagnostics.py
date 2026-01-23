@@ -134,7 +134,7 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
       output.
   """
 
-  observation_operator: observation_operators.ObservationOperator
+  observation_operator: observation_operators.ObservationOperatorABC
   operator_query: dict[str, cx.Coordinate]
   extract_p_plus_e: ExtractPrecipitationPlusEvaporation
   prognostics_arg_key: str | int = 'prognostics'
@@ -284,7 +284,7 @@ class ExtractEnergyResiduals(nnx.Module):
   levels: coordinates.SigmaLevels | coordinates.HybridLevels
   sim_units: units.SimUnits
   model_orography: orographies.ModalOrography
-  observation_operator: observation_operators.ObservationOperator
+  observation_operator: observation_operators.ObservationOperatorABC
   in_out_fluxes_query: dict[str, cx.Coordinate]
   prognostics_arg_key: str | int = 'prognostics'
   use_evaporation_for_latent_heat: bool = False

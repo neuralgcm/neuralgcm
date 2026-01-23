@@ -38,7 +38,7 @@ def get_temperature_linearization_transform(
     levels: coordinates.SigmaLevels | coordinates.HybridLevels |None,
     abs_temperature_key: str = 'temperature',
     del_temperature_key: str = 'temperature_variation',
-) -> transforms.Transform:
+) -> typing.Transform:
   """Constructs transform for linearizing temperature around `ref_temperature`."""
   if isinstance(ref_temperatures, cx.Field):
     if levels is not None and cx.get_coordinate(ref_temperatures) != levels:
@@ -80,7 +80,7 @@ def get_temperature_delinearization_transform(
     levels: coordinates.SigmaLevels | coordinates.HybridLevels | None,
     abs_temperature_key: str = 'temperature',
     del_temperature_key: str = 'temperature_variation',
-) -> transforms.Transform:
+) -> typing.Transform:
   """Constructs transform for reversing temperature linearization."""
   if isinstance(ref_temperatures, cx.Field):
     if levels is not None and cx.get_coordinate(ref_temperatures) != levels:

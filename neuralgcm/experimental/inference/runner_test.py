@@ -80,20 +80,20 @@ class MockModel(api.Model):
     if self.assimilation_noise is not None:
       noise = self.assimilation_noise.state_values()
       state['foo'] = state['foo'] + noise
-    self.prognostics.value = state
+    self.prognostics.set_value(state)
 
   def advance(self) -> None:
-    prognostics = self.prognostics.value
+    prognostics = self.prognostics.get_value()
     time = prognostics.pop('time')
     sliced_inputs = self.dynamic_input_slice(time)
     next_prognostics = jax.tree.map(
         operator.add, prognostics, sliced_inputs, is_leaf=cx.is_field
     )
     next_prognostics['time'] = time + self.timestep
-    self.prognostics.value = next_prognostics
+    self.prognostics.set_value(next_prognostics)
 
   def observe(self, query: typing.Query) -> typing.Observation:
-    prognostics = self.prognostics.value
+    prognostics = self.prognostics.get_value()
     return {
         'state': {k: v for k, v in prognostics.items() if k in query['state']}
     }

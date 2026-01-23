@@ -169,7 +169,8 @@ class ForwardTowerTest(parameterized.TestCase):
         neural_net_factory=cnn_level_factory,
         rngs=nnx.Rngs(0),
     )
-    transposed_inputs = cx.field(  # despite suitable shape, axes are misaligned.
+    # Despite suitable shape, axes are misaligned.
+    transposed_inputs = cx.field(
         jnp.ones(self.levels.shape + (8,) + self.grid.shape),
         self.levels,
         'd',
@@ -186,7 +187,7 @@ class RecurrentTowerTest(parameterized.TestCase):
     super().setUp()
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SigmaLevels.equidistant(12)
-    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.coord = cx.coords.compose(self.levels, self.grid)
 
   @parameterized.parameters(
       dict(rnn_cell_factory=standard_layers.LSTMCell, is_tuple_carry=True),
@@ -208,9 +209,9 @@ class RecurrentTowerTest(parameterized.TestCase):
         rnn_cell_factory=rnn_cell_factory,
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
-    c = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
-    h = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+    inputs = cx.field(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    c = cx.field(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+    h = cx.field(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
     carry = (c, h) if is_tuple_carry else h
     new_carry, out = tower(carry, inputs)
 
@@ -262,13 +263,13 @@ class RecurrentTowerTest(parameterized.TestCase):
         rnn_cell_factory=rnn_cell_factory,
         rngs=nnx.Rngs(0),
     )
-    inputs = cx.wrap(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
+    inputs = cx.field(jnp.ones((7,) + self.grid.shape), 'din', self.grid)
     if is_tuple_carry:
-      c = cx.wrap(jnp.ones((13,)), 'dout')  # c lacks grid dims
-      h = cx.wrap(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
+      c = cx.field(jnp.ones((13,)), 'dout')  # c lacks grid dims
+      h = cx.field(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
       carry = (c, h)
     else:
-      carry = cx.wrap(jnp.ones((13,)), 'dout')  # carry lacks grid dims
+      carry = cx.field(jnp.ones((13,)), 'dout')  # carry lacks grid dims
 
     with self.assertRaisesRegex(
         ValueError, 'Vectorized dimensions on inputs .* do not match'

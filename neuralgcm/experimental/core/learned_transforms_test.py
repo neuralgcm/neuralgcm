@@ -267,7 +267,7 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
     super().setUp()
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SoilLevels.with_era5_levels()
-    self.coord = cx.compose_coordinates(self.levels, self.grid)
+    self.coord = cx.coords.compose(self.levels, self.grid)
     self.rnn_state_size = 10
     self.rnn_dim_axis = cx.SizedAxis('rnn_dim', self.rnn_state_size)
     self.forward_tower_factory = functools.partial(
@@ -307,19 +307,19 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
         'evaporation': ones_field_for_coord(self.coord),
     }
     for key in state_keys:
-      test_inputs[key] = cx.wrap(
+      test_inputs[key] = cx.field(
           np.ones((state_size,) + self.grid.shape),
-          cx.compose_coordinates(state_axis, self.grid),
+          cx.coords.compose(state_axis, self.grid),
       )
 
     input_shapes = pytree_utils.shape_structure(test_inputs)
     target_coords = {
-        'rnn_raw_output': cx.compose_coordinates(
+        'rnn_raw_output': cx.coords.compose(
             cx.SizedAxis('rnn_dim', 10), self.grid
         ),
     }
     internal_coords = {
-        key: cx.compose_coordinates(state_axis, self.grid) for key in state_keys
+        key: cx.coords.compose(state_axis, self.grid) for key in state_keys
     }
     output_coords_with_state = target_coords | internal_coords
 
@@ -382,12 +382,12 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
     state_size = self.rnn_state_size
     state_axis = self.rnn_dim_axis
     test_inputs = {
-        'time': cx.wrap(jdt.to_datetime('2025-05-21T00')),
+        'time': cx.field(jdt.to_datetime('2025-05-21T00')),
     }
     for key in state_keys:
-      test_inputs[key] = cx.wrap(
+      test_inputs[key] = cx.field(
           np.ones((state_size,) + self.grid.shape),
-          cx.compose_coordinates(state_axis, self.grid),
+          cx.coords.compose(state_axis, self.grid),
       )
 
     features = transforms.Merge({
@@ -396,10 +396,10 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
         'prognostics': transforms.Select(r'(?!time).*'),
     })
     input_shapes = pytree_utils.shape_structure(test_inputs)
-    # These are the shapes of outputs from RecurrentTower + state, which are inputs
-    # to ForwardTowerTransform.
+    # These are the shapes of outputs from RecurrentTower + state, which are
+    # inputs to ForwardTowerTransform.
     target_coords = {
-        'rnn_raw_output': cx.compose_coordinates(
+        'rnn_raw_output': cx.coords.compose(
             cx.SizedAxis('rnn_dim', 10), self.grid
         ),
     }
@@ -409,7 +409,7 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
     )
     # These are the final targets in "physical space".
     final_target_coords = {
-        'volumetric_soil_water': cx.compose_coordinates(self.levels, self.grid),
+        'volumetric_soil_water': cx.coords.compose(self.levels, self.grid),
         'snow_depth': self.grid,
     }
     out_transform = (
@@ -446,7 +446,7 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
     )
 
     internal_coords = {
-        key: cx.compose_coordinates(state_axis, self.grid) for key in state_keys
+        key: cx.coords.compose(state_axis, self.grid) for key in state_keys
     }
     with self.subTest('output_shapes'):
       actual = pytree_utils.shape_structure(transform(test_inputs))

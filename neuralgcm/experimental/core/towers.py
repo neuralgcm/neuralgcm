@@ -111,16 +111,11 @@ class RecurrentTower(nnx.Module):
       inputs: cx.Field,
   ) -> tuple[Any, cx.Field]:
     inputs_untagged = inputs.untag(*self.inputs_in_dims)
-
-    def untag(x):
-      return x.untag(*self.state_dims)
-
-    is_field = lambda x: isinstance(x, cx.Field)
-    carry_untagged = jax.tree_util.tree_map(untag, carry, is_leaf=is_field)
+    carry_untagged = cx.untag(carry, *self.state_dims)
     batch_axes = inputs_untagged.named_axes
 
     # Verify that all parts of carry have matching batch axes
-    for leaf in jax.tree_util.tree_leaves(carry_untagged, is_leaf=is_field):
+    for leaf in jax.tree.leaves(carry_untagged, is_leaf=cx.is_field):
       if leaf.named_axes != batch_axes:
         raise ValueError(
             f'Vectorized dimensions on inputs {batch_axes} and carry leaf'
@@ -137,11 +132,7 @@ class RecurrentTower(nnx.Module):
     out_carry, output = cmap_apply_cell(
         self.rnn_cell, carry_untagged, inputs_untagged
     )
-
-    def tag(x):
-      return x.tag(*self.state_dims)
-
-    new_carry = jax.tree_util.tree_map(tag, out_carry, is_leaf=is_field)
+    new_carry = cx.tag(out_carry, *self.state_dims)
     output = output.tag(*self.out_dims)
     return new_carry, output
 

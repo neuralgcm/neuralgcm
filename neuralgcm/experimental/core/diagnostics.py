@@ -207,7 +207,9 @@ class IntervalDiagnostic(DiagnosticModule):
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
     self.dt_mod_freq.set_value(cx.field(jdt.Timedelta()))
-    zeros_like = lambda v: cx.field(jnp.zeros_like(v.get_value().data), v.get_value().coordinate)
+    zeros_like = lambda v: cx.field(
+        jnp.zeros_like(v.get_value().data), v.get_value().coordinate
+    )
     for k in self.extract_coords:
       self.since_last_update[k].set_value(zeros_like(self.since_last_update[k]))
       self.per_period[k].set_value(zeros_like(self.per_period[k]))
@@ -238,9 +240,9 @@ class IntervalDiagnostic(DiagnosticModule):
     is_update_step = (dt >= self.resolution).data
     recenter_timedelta = lambda t: t - self.resolution
     keep_timedelta = lambda t: t
-    self.dt_mod_freq.set_value(jax.lax.cond(
-        is_update_step, recenter_timedelta, keep_timedelta, dt
-    ))
+    self.dt_mod_freq.set_value(
+        jax.lax.cond(is_update_step, recenter_timedelta, keep_timedelta, dt)
+    )
 
     for k in self.extract_coords:
       per_period = self.per_period[k].get_value()
@@ -255,16 +257,23 @@ class IntervalDiagnostic(DiagnosticModule):
       update_per_period = cx.cmap(_update_per_period, per_period.named_axes)
       updated_per_period = update_per_period(per_period, since_last).tag(i_ax)
       self.per_period[k].set_value(updated_per_period)
-      self.since_last_update[k].set_value(jax.lax.cond(
-          is_update_step, cx.field(0.0).broadcast_like, lambda x: x, since_last
-      ))
+      self.since_last_update[k].set_value(
+          jax.lax.cond(
+              is_update_step,
+              cx.field(0.0).broadcast_like,
+              lambda x: x,
+              since_last,
+          )
+      )
 
   def diagnostic_values(self) -> typing.Pytree:
     """Returns formatted diagnostics computed from the internal module state."""
     values = {}
     for k, v in self.per_period.items():
       sum_fn = lambda x: jnp.sum(x, axis=0) if x.ndim > 0 else x
-      sum_over_intervals = cx.cmap(sum_fn)(v.get_value().untag(self.interval_axis))
+      sum_over_intervals = cx.cmap(sum_fn)(
+          v.get_value().untag(self.interval_axis)
+      )
       values[k] = sum_over_intervals
     if self.include_instant:
       for k, v in self.instants.items():
@@ -277,6 +286,44 @@ class IntervalDiagnostic(DiagnosticModule):
     diagnostics = self.extract(inputs, *args, **kwargs)
     for k, v in diagnostics.items():
       if k in self.extract_coords:
-        self.since_last_update[k].set_value(self.since_last_update[k].get_value() + v)
+        self.since_last_update[k].set_value(
+            self.since_last_update[k].get_value() + v
+        )
         if self.include_instant:
           self.instants[k].set_value(v)
+
+
+@nnx_compat.dataclass
+class ExtractTransformedOutputs(nnx.Module):
+  """Extract module that applies `transform` to the diagnosed module outputs."""
+
+  transform: typing.Transform
+
+  def __call__(self, result, *args, **kwargs) -> dict[str, cx.Field]:
+    del args, kwargs  # unused.
+    return self.transform(result)
+
+
+@nnx_compat.dataclass
+class ExtractFixedQueryObservations(nnx.Module):
+  """Extract module that evaluates observation operator with a fixed query."""
+
+  observation_operator: typing.ObservationOperator
+  query: dict[str, cx.Coordinate | cx.Field]
+  prognostics_arg_key: str | int = 'prognostics'
+
+  def _extract_prognostics(self, *args, **kwargs) -> dict[str, cx.Field]:
+    if isinstance(self.prognostics_arg_key, int):
+      prognostics = args[self.prognostics_arg_key]
+    else:
+      prognostics = kwargs.get(self.prognostics_arg_key)
+    if not isinstance(prognostics, dict):
+      raise ValueError(
+          f'Prognostics must be a dictionary, got {type(prognostics)=} instead.'
+      )
+    return prognostics
+
+  def __call__(self, result, *args, **kwargs) -> dict[str, cx.Field]:
+    del result  # unused.
+    prognostics = self._extract_prognostics(*args, **kwargs)
+    return self.observation_operator.observe(prognostics, query=self.query)

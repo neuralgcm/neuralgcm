@@ -411,6 +411,17 @@ class AddShardingConstraint(TransformABC):
     return self.mesh.with_sharding_constraint(inputs, self.schema)
 
 
+@nnx_compat.dataclass
+class Scale(TransformABC):
+  """Applies x * `self.scale` to all fields in inputs."""
+
+  scale: cx.Field
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    scale_fn = lambda x: x * self.scale
+    return {k: scale_fn(v) for k, v in inputs.items()}
+
+
 class ShiftAndNormalize(TransformABC):
   """Applies (x - shift) / scale to all input fields when reverse is False.
 

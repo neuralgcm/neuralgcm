@@ -22,8 +22,13 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
+from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import module_utils
+from neuralgcm.experimental.core import observation_operators
+from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import spherical_harmonics
+from neuralgcm.experimental.core import transforms
 import numpy as np
 
 
@@ -390,6 +395,39 @@ class DiagnosticsTest(parameterized.TestCase):
           interval=np.timedelta64(3, 's'),
           resolution=np.timedelta64(2, 's'),
       )
+
+
+class ExtractModulesTest(parameterized.TestCase):
+
+  def test_extract_transformed_outputs(self):
+    mesh = parallelism.Mesh()
+    grid = coordinates.LonLatGrid.T21()
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid, mesh, None)
+
+    to_nodal = transforms.ToNodal(ylm_map)
+    extract = diagnostics.ExtractTransformedOutputs(to_nodal)
+
+    inputs = {'u': cx.field(jnp.zeros(ylm_grid.shape), ylm_grid)}
+    actual = extract(inputs)
+
+    expected_grid = grid
+    self.assertEqual(actual['u'].coordinate, expected_grid)
+
+  def test_extract_fixed_query_observations(self):
+    pressure_coord = cx.LabeledAxis('pressure', np.arange(5))
+    field_data = cx.field(np.arange(5), pressure_coord)
+    obs_op = observation_operators.DataObservationOperator({'a': field_data})
+
+    query_coord = cx.LabeledAxis('pressure', np.array([0, 2, 4]))
+    query = {'a': query_coord}
+
+    extract = diagnostics.ExtractFixedQueryObservations(obs_op, query)
+    prognostics = {}
+    actual = extract(result={}, prognostics=prognostics)
+
+    expected = {'a': cx.field(np.array([0, 2, 4]), query_coord)}
+    chex.assert_trees_all_equal(actual, expected)
 
 
 if __name__ == '__main__':

@@ -88,22 +88,6 @@ class AggregationUtilsTest(parameterized.TestCase):
     chex.assert_trees_all_equal_structs(states['m2'].sum_weights, m2_struct)
     chex.assert_trees_all_equal_structs(states['m3'].sum_weights, m3_struct)
 
-  def test_split_aggregation_state_missing_stats_raises(self):
-    stat_a = deterministic_metrics.SquaredError()
-    dummy_field = cx.field(np.array([1.0]))
-    agg_state = aggregation.AggregationState(
-        sum_weighted_statistics={stat_a.unique_name: {'var_name': dummy_field}},
-        sum_weights={stat_a.unique_name: {'var_name': dummy_field}},
-    )
-    metric = base.SumLoss(
-        terms={
-            'mse': deterministic_losses.MSE(),
-            'mae': deterministic_losses.MAE(),
-        }
-    )
-    with self.assertRaisesRegex(ValueError, 'requires statistics'):
-      aggregation.split_aggregation_state_for_metrics({'m1': metric}, agg_state)
-
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

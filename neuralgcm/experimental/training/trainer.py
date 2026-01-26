@@ -768,7 +768,7 @@ class RolloutTrainer:
         eval_data = self.data_loader.build_eval_inputs(
             input_data_specs=eval_stage.inputs_spec,
             dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-            dataset_time_slices=eval_stage.time_slice,
+            dataset_time_slice=eval_stage.time_slice,
             batch_size_per_device=eval_stage.batch_size_per_device,
             time_sample_offset=eval_stage.time_sample_offset,
             batch_count=eval_stage.num_batches,
@@ -777,7 +777,7 @@ class RolloutTrainer:
         train_data = self.data_loader.build_eval_inputs(
             input_data_specs=eval_stage.inputs_spec,
             dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-            dataset_time_slices=train_stage.time_slice,
+            dataset_time_slice=train_stage.time_slice,
             batch_size_per_device=eval_stage.batch_size_per_device,
             time_sample_offset=eval_stage.time_sample_offset,
             batch_count=eval_stage.num_batches,

@@ -411,14 +411,15 @@ class AddShardingConstraint(TransformABC):
     return self.mesh.with_sharding_constraint(inputs, self.schema)
 
 
-@nnx_compat.dataclass
 class Scale(TransformABC):
   """Applies x * `self.scale` to all fields in inputs."""
 
-  scale: cx.Field
+  def __init__(self, scale: cx.Field):
+    self.scale = TransformParams(scale)
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    scale_fn = lambda x: x * self.scale
+    scale = self.scale.get_value()
+    scale_fn = lambda x: x * scale
     return {k: scale_fn(v) for k, v in inputs.items()}
 
 

@@ -266,7 +266,9 @@ class Aggregator:
       for term_name, stat_field in sorted(statistic_values.items()):
         # TODO(dkochkov): Could weights averaging be done more efficiently by
         # exposing the outer product structure?
-        weight_field = cx.field(np.ones(stat_field.shape), stat_field.coordinate)
+        weight_field = cx.field(
+            np.ones(stat_field.shape), stat_field.coordinate
+        )
         if self.skipna:
 
           def _apply_nan_mask(x, nan_mask):
@@ -345,24 +347,20 @@ def split_aggregation_state_for_metrics(
     A dictionary mapping metric names to `AggregationState` instances, where
     each `AggregationState` contains only the statistics required by the
     corresponding metric.
-
-  Raises:
-    ValueError: If a metric requires statistics not in `aggregation_state`.
   """
-  unique_stat_keys = aggregation_state.sum_weighted_statistics.keys()
   aggregation_state_per_metric = {}
   for metric_name, metric in metrics.items():
-    required_stats = {s.unique_name for s in metric.statistics.values()}
-    if not required_stats.issubset(set(unique_stat_keys)):
-      raise ValueError(
-          f'Metric {metric_name} requires statistics {required_stats}, but '
-          f'aggregation state with {unique_stat_keys=} does not contain them.'
-      )
+    metric_stats = {s.unique_name for s in metric.statistics.values()}
+    # Missing statistics is allowed at aggregation level, since it might be
+    # filled in at a later stage. If not, the error would be raised when metric
+    # values are being computed.
     metric_sum_weighted_statistics = {
-        k: aggregation_state.sum_weighted_statistics[k] for k in required_stats
+        k: aggregation_state.sum_weighted_statistics[k] for k in metric_stats
+        if k in aggregation_state.sum_weighted_statistics
     }
     metric_sum_weights = {
-        k: aggregation_state.sum_weights[k] for k in required_stats
+        k: aggregation_state.sum_weights[k] for k in metric_stats
+        if k in aggregation_state.sum_weights
     }
     aggregation_state_per_metric[metric_name] = AggregationState(
         sum_weighted_statistics=metric_sum_weighted_statistics,

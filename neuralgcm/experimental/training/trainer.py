@@ -674,6 +674,7 @@ class RolloutTrainer:
 
     self._ema_init = jax.jit(init_ema)
     self._ema_update = jax.jit(update_ema)
+    self._eval_components_cache = {}
 
   @property
   def training_mesh(self) -> parallelism.Mesh:
@@ -706,40 +707,76 @@ class RolloutTrainer:
     steps = scan_utils.nested_scan_steps(flat_spec, dt=dt)
     return steps, nested_specs
 
+  def _setup_callbacks(
+      self, stage: EvalSchema | TrainStage
+  ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    """Returns tuples of retrieve_fns and buffers for a given stage."""
+    data_spec = data_loading.select_targets(
+        stage.inputs_spec, stage.queries_spec
+    )  # TODO(dkochkov) ensure this retains FieldInQuery entries.
+    nested_steps, nested_data_specs = self._get_nested_steps_and_specs(
+        data_spec
+    )
+    # idx_steps starts with 1 for most frequent and follows the product of
+    # nested step frequencies for each subsequent level.
+    idx_steps = [1] + list(map(int, np.cumprod(nested_steps)[:-1]))
+    retrieve_fns, buffers = [], []
+    for stride, data_spec in zip(idx_steps, nested_data_specs):
+      data_slice_struct = self.data_loader.data_slice_struct(
+          data_spec, batch_size_per_device=stage.batch_size_per_device
+      )  # computes structure of a single time slice at this scan level.
+      retrieve_fn, data_buffer = self.data_loader.setup_targets_via_callback(
+          data_slice_struct=data_slice_struct,
+          callback_pinned_host=self.callback_pinned_host,
+          callback_spatial_dims_layout=self.callback_spatial_dims_layout,
+          idx_step=stride,
+      )
+      retrieve_fns.append(retrieve_fn)
+      buffers.append(data_buffer)
+    return tuple(retrieve_fns), tuple(buffers)
+
+  def _get_eval_components(self, eval_stage: EvalSchema):
+    """Returns cached or new evaluation components for a given stage."""
+    stage_id = id(eval_stage)
+    if stage_id in self._eval_components_cache:
+      return self._eval_components_cache[stage_id]
+
+    if self.use_data_loading_callback:
+      retrieve_fns, buffers = self._setup_callbacks(eval_stage)
+    else:
+      retrieve_fns, buffers = None, None
+
+    eval_statistics_fn = self.get_eval_statistics_fn(
+        eval_schema=eval_stage,
+        seed=0,
+        retrieve_fns=retrieve_fns,
+    )
+
+    if eval_stage.num_batches:
+      eval_data = self.data_loader.build_eval_inputs(
+          input_data_specs=eval_stage.inputs_spec,
+          dynamic_input_specs=eval_stage.dynamic_inputs_spec,
+          dataset_time_slice=eval_stage.time_slice,
+          batch_size_per_device=eval_stage.batch_size_per_device,
+          time_sample_offset=eval_stage.time_sample_offset,
+          batch_count=eval_stage.num_batches,
+          data_buffer=buffers,
+      )
+    else:
+      eval_data = None
+
+    components = (eval_statistics_fn, eval_data, retrieve_fns, buffers)
+    self._eval_components_cache[stage_id] = components
+    return components
+
   def build_train_and_eval_iterators(
       self, schedule_idx: int
   ) -> TrainEvalIteratorTuple:
     """Build new iterators for training at schedule_idx."""
     train_stage = self.train_schedule.stages[schedule_idx]
 
-    def setup_callbacks(stage) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-      """Returns tuples of retrieve_fns and buffers for a given stage."""
-      data_spec = data_loading.select_targets(
-          stage.inputs_spec, stage.queries_spec
-      )  # TODO(dkochkov) ensure this retains FieldInQuery entries.
-      nested_steps, nested_data_specs = self._get_nested_steps_and_specs(
-          data_spec
-      )
-      # idx_steps starts with 1 for most frequent and follows the product of
-      # nested step frequencies for each subsequent level.
-      idx_steps = [1] + list(map(int, np.cumprod(nested_steps)[:-1]))
-      retrieve_fns, buffers = [], []
-      for stride, data_spec in zip(idx_steps, nested_data_specs):
-        data_slice_struct = self.data_loader.data_slice_struct(
-            data_spec, batch_size_per_device=stage.batch_size_per_device
-        )  # computes structure of a single time slice at this scan level.
-        retrieve_fn, data_buffer = self.data_loader.setup_targets_via_callback(
-            data_slice_struct=data_slice_struct,
-            callback_pinned_host=self.callback_pinned_host,
-            callback_spatial_dims_layout=self.callback_spatial_dims_layout,
-            idx_step=stride,
-        )
-        retrieve_fns.append(retrieve_fn)
-        buffers.append(data_buffer)
-      return tuple(retrieve_fns), tuple(buffers)
-
     if self.use_data_loading_callback:
-      train_retrieve_fns, train_buffers = setup_callbacks(train_stage)
+      train_retrieve_fns, train_buffers = self._setup_callbacks(train_stage)
     else:
       train_retrieve_fns, train_buffers = None, None
 
@@ -759,25 +796,18 @@ class RolloutTrainer:
     )
     stages = [loss_eval_schema] + list(self.eval_schedule.stages)
     for eval_stage in stages:
-      if self.use_data_loading_callback:
-        eval_retrieve_fns, eval_buffers = setup_callbacks(eval_stage)
-      else:
-        eval_retrieve_fns, eval_buffers = None, None
+      (
+          eval_statistics_fn,
+          eval_data,
+          _,
+          eval_buffers,
+      ) = self._get_eval_components(eval_stage)
 
       if eval_stage.num_batches:
-        eval_data = self.data_loader.build_eval_inputs(
-            input_data_specs=eval_stage.inputs_spec,
-            dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-            dataset_time_slices=eval_stage.time_slice,
-            batch_size_per_device=eval_stage.batch_size_per_device,
-            time_sample_offset=eval_stage.time_sample_offset,
-            batch_count=eval_stage.num_batches,
-            data_buffer=eval_buffers,
-        )
         train_data = self.data_loader.build_eval_inputs(
             input_data_specs=eval_stage.inputs_spec,
             dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-            dataset_time_slices=train_stage.time_slice,
+            dataset_time_slice=train_stage.time_slice,
             batch_size_per_device=eval_stage.batch_size_per_device,
             time_sample_offset=eval_stage.time_sample_offset,
             batch_count=eval_stage.num_batches,
@@ -785,11 +815,7 @@ class RolloutTrainer:
         )
         evaluate_fn = functools.partial(
             self.evaluate,
-            eval_statistics_fn=self.get_eval_statistics_fn(
-                eval_schema=eval_stage,
-                seed=0,
-                retrieve_fns=eval_retrieve_fns,
-            ),
+            eval_statistics_fn=eval_statistics_fn,
             eval_data=eval_data,
             train_data=train_data,
             eval_schema=eval_stage,

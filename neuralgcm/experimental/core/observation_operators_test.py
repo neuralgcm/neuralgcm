@@ -116,8 +116,8 @@ class DataObservationOperatorsTest(parameterized.TestCase):
       operator.observe(inputs={}, query=query)
 
 
-class FixedLearnedObservationOperatorTest(parameterized.TestCase):
-  """Tests FixedLearnedObservationOperator implementation."""
+class LearnedTransformObservationOperatorTest(parameterized.TestCase):
+  """Tests TransformObservationOperator with learned transform."""
 
   def setUp(self):
     super().setUp()
@@ -157,7 +157,7 @@ class FixedLearnedObservationOperatorTest(parameterized.TestCase):
     )
 
   def test_predictions_have_correct_coordinates(self):
-    operator = observation_operators.FixedLearnedObservationOperator(
+    operator = observation_operators.TransformObservationOperator(
         self.observation_transform
     )
     full_coord = cx.coords.compose(self.sigma_levels, self.lon_lat_grid)
@@ -169,7 +169,7 @@ class FixedLearnedObservationOperatorTest(parameterized.TestCase):
 
 
 class LearnedSparseScalarObservationFromNeighborsTest(parameterized.TestCase):
-  """Tests FixedLearnedObservationOperator implementation."""
+  """Tests learned sparse scalar observation from neighbors implementation."""
 
   def setUp(self):
     super().setUp()

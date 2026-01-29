@@ -120,7 +120,7 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
             rngs=nnx.Rngs(0),
         )
     )
-    operator = observation_operators.FixedLearnedObservationOperator(
+    operator = observation_operators.TransformObservationOperator(
         surface_observation_operator_transform
     )
     precip_plus_evap = atmos_diagnostics.ExtractPrecipitationPlusEvaporation(

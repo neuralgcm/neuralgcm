@@ -182,26 +182,6 @@ class ObservationOperatorWithRenaming(ObservationOperatorABC):
     return {inverse_renaming_dict.get(k, k): v for k, v in observation.items()}
 
 
-# TODO(dkochkov): This operator is deprecated, remove it once all new models
-# have been transitioned to use TransformObservationOperator.
-
-
-@dataclasses.dataclass
-class FixedLearnedObservationOperator(ObservationOperatorABC):
-  """Operator that computes fixed set of observations using state mapping."""
-
-  coordinate_mapping: learned_transforms.ForwardTowerTransform
-
-  def observe(
-      self,
-      inputs: dict[str, cx.Field],
-      query: dict[str, cx.Field | cx.Coordinate],
-  ) -> dict[str, cx.Field]:
-    """Returns predicted observations matching `query`."""
-    predictions = self.coordinate_mapping(inputs)
-    return DataObservationOperator(predictions).observe(inputs, query)
-
-
 @nnx_compat.dataclass
 class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
   """Observation operator for scalar observations at sparse locations.

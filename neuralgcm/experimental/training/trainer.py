@@ -172,6 +172,13 @@ def _remove_timedelta(c: cx.Coordinate) -> cx.Coordinate:
   )
 
 
+def _drop_empty_agg_state(
+    in_dict: dict[str, aggregation.AggregationState],
+) -> dict[str, aggregation.AggregationState]:
+  """Drops empty aggregation state entries from a dicts."""
+  return {k: v for k, v in in_dict.items() if jax.tree.leaves(v)}
+
+
 def _untag_positional(inputs: PyTree, axis: cx.Coordinate) -> PyTree:
   """Untags `axis` from fields in `inputs` even if they have positional axes."""
   # TODO(dkochkov): Consider supporting untag on Fields with positional axes.
@@ -768,7 +775,7 @@ class RolloutTrainer:
         eval_data = self.data_loader.build_eval_inputs(
             input_data_specs=eval_stage.inputs_spec,
             dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-            dataset_time_slices=eval_stage.time_slice,
+            dataset_time_slice=eval_stage.time_slice,
             batch_size_per_device=eval_stage.batch_size_per_device,
             time_sample_offset=eval_stage.time_sample_offset,
             batch_count=eval_stage.num_batches,
@@ -777,7 +784,7 @@ class RolloutTrainer:
         train_data = self.data_loader.build_eval_inputs(
             input_data_specs=eval_stage.inputs_spec,
             dynamic_input_specs=eval_stage.dynamic_inputs_spec,
-            dataset_time_slices=train_stage.time_slice,
+            dataset_time_slice=train_stage.time_slice,
             batch_size_per_device=eval_stage.batch_size_per_device,
             time_sample_offset=eval_stage.time_sample_offset,
             batch_count=eval_stage.num_batches,
@@ -1242,7 +1249,7 @@ class RolloutTrainer:
       )
       # Flatten aggregation states from all levels.
       full_agg_state = functools.reduce(
-          lambda c, x: c | x, loss_agg_state_tuple, {}
+          lambda c, x: c | _drop_empty_agg_state(x), loss_agg_state_tuple, {}
       )
       loss_value = loss_evaluator.evaluate_total({}, {}, full_agg_state).data
       return loss_value
@@ -1438,10 +1445,10 @@ class RolloutTrainer:
       # pylint: enable=unbalanced-tuple-unpacking
 
       full_metrics_agg = functools.reduce(
-          lambda c, x: c | x, metrics_agg_tuple, {}
+          lambda c, x: c | _drop_empty_agg_state(x), metrics_agg_tuple, {}
       ) if metrics_agg_tuple else None
       full_loss_agg = functools.reduce(
-          lambda c, x: c | x, loss_agg_tuple, {}
+          lambda c, x: c | _drop_empty_agg_state(x), loss_agg_tuple, {}
       ) if loss_agg_tuple else None
       return full_metrics_agg, full_loss_agg
 

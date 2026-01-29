@@ -94,6 +94,7 @@ def _transpose_for_to_global_array(
 def _get_datetime_forecast_starts(
     sample_count: int,
     candidates: pd.DatetimeIndex,
+    add_half_day_shifts: bool = True,
 ) -> np.ndarray:
   """Get equispaced forecast start times for evaluating against ERA5."""
 
@@ -125,9 +126,10 @@ def _get_datetime_forecast_starts(
   idx = np.round(np.arange(sample_count) * stride).astype(int)
   ideal_start_times = rounded_candidates[idx]
 
-  # increment every other one by 12h
-  parity = np.arange(sample_count) % 2
-  ideal_start_times = ideal_start_times + parity * pd.Timedelta('12h')
+  if add_half_day_shifts:
+    # increment every other one by 12h
+    parity = np.arange(sample_count) % 2
+    ideal_start_times = ideal_start_times + parity * pd.Timedelta('12h')
 
   indices = candidates.get_indexer(
       ideal_start_times, method='nearest', tolerance='24h'
@@ -190,7 +192,16 @@ def _get_eval_sample_origins(
       stencil=stencil,
       time_sample_offset=time_sample_offset,
   )
-  return _get_datetime_forecast_starts(sample_count, sample_origins)
+  # If 12hr are not divisible by the valid time sample offset, skip 12hr shifts,
+  # as they would lead to invalid sample origins.
+  _, reminder = divmod(pd.Timedelta('12h'), time_sample_offset)
+  if reminder:
+    add_half_day_shifts = False
+  else:
+    add_half_day_shifts = True
+  return _get_datetime_forecast_starts(
+      sample_count, sample_origins, add_half_day_shifts
+  )
 
 
 def _make_slice(x: None | slice | Sequence[str]) -> slice:
@@ -605,6 +616,8 @@ class DataLoader:
         list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
     )
     all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
+    # Remove datasets from which we are not loading any variables.
+    all_data = {k: v for k, v in all_data.items() if v > 0}
 
     inputs_stencils = infer_stencils(input_data_specs)
     dynamic_stencils = infer_stencils(dynamic_input_specs)
@@ -1106,7 +1119,7 @@ class DataLoader:
       self,
       input_data_specs: typing.Pytree,
       dynamic_input_specs: typing.Pytree,
-      dataset_time_slices: tuple[str, str] | list[tuple[str, str]] | None,
+      dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
       batch_count: int = 1,
@@ -1117,7 +1130,7 @@ class DataLoader:
     Args:
       input_data_specs: Specifications for input data fields.
       dynamic_input_specs: Specifications for dynamic input fields.
-      dataset_time_slices: Time period(s) to select evaluation data from.
+      dataset_time_slice: Time period(s) to select evaluation data from.
       batch_size_per_device: Number of samples per batch per device.
       time_sample_offset: Time between consecutive valid sample origins.
       batch_count: Number of batches of evaluation data to return.
@@ -1141,7 +1154,7 @@ class DataLoader:
 
     origins = _get_eval_sample_origins(
         all_data,
-        dataset_time_slices,
+        dataset_time_slice,
         stencils,
         batch_count,
         total_sample_count,

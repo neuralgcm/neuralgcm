@@ -222,6 +222,8 @@ class TrainerTest(parameterized.TestCase):
               time_sample_offset=dt_slow,
               batch_size_per_device=1,
               shuffle_buffer_size=0,
+              train_time_slice=None,
+              eval_time_slice=None,
           )
       )
     train_schedule = trainer.TrainSchedule(stages=train_stages)
@@ -240,6 +242,8 @@ class TrainerTest(parameterized.TestCase):
             time_sample_offset=dt_slow,
             batch_size_per_device=1,
             num_batches=1,
+            train_time_slice=None,
+            eval_time_slice=None,
         )
     ])
 
@@ -317,6 +321,8 @@ class TrainerTest(parameterized.TestCase):
             time_sample_offset=dt_slow,
             batch_size_per_device=1,
             shuffle_buffer_size=0,
+            train_time_slice=None,
+            eval_time_slice=None,
         )
     )
     train_schedule = trainer.TrainSchedule(stages=train_stages)
@@ -341,6 +347,8 @@ class TrainerTest(parameterized.TestCase):
             time_sample_offset=dt_slow,
             batch_size_per_device=1,
             num_batches=1,
+            train_time_slice=None,
+            eval_time_slice=None,
         )
     ])
 

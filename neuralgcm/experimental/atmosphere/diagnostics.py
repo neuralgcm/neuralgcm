@@ -397,7 +397,7 @@ class ExtractEnergyResiduals(nnx.Module):
     )
 
     energy_tendency_data = (1 / g) * (
-        (phi_s + i1) * log_sp_tend_nodal_field + i2
+        (p_surface_field * phi_s + i1) * log_sp_tend_nodal_field + i2
     )
 
     return energy_tendency_data

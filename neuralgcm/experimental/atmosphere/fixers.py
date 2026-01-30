@@ -98,7 +98,9 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
     p_surface = cx.cmap(jnp.exp)(to_nodal(prognostics['log_surface_pressure']))
     cp = self.sim_units.Cp
     g = self.sim_units.gravity_acceleration
-    delta_t_tendency = imbalance['imbalance'] * g / (cp * p_surface)
+    delta_t_tendency = (
+        imbalance[self.imbalance_diagnostic_key] * g / (cp * p_surface)
+    )
 
     delta_t_tendency_modal = self.ylm_map.to_modal(delta_t_tendency)
     tendencies['temperature'] += delta_t_tendency_modal

@@ -188,11 +188,12 @@ class TransformsTest(parameterized.TestCase):
   def test_mask_nan_to_0(self):
     x = cx.LabeledAxis('x', np.linspace(0, 1, 4))
     y = cx.SizedAxis('y', 10)
+    xy = cx.coords.compose(x, y)
     mask = cx.field(np.array([0.1, np.nan, 10.4, np.nan]), x)
     one_hot_mask = cx.field(np.array([1.0, np.nan, 1.0, np.nan]), x)
     inputs = {
         'mask': mask,
-        'nan_at_mask': one_hot_mask * cx.field(np.ones(x.shape + y.shape), x, y),
+        'nan_at_mask': one_hot_mask * cx.field(np.ones(xy.shape), xy),
         'no_nans': cx.field(np.arange(x.shape[0]), x),  # no nan in v.
         'all_nans': cx.field(np.ones(x.shape) * np.nan, x),
     }
@@ -335,6 +336,37 @@ class TransformsTest(parameterized.TestCase):
       to_nodal = transforms.ToNodal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_nodal(linear_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
+
+  def test_insert_axis(self):
+    x = cx.SizedAxis('x', 3)
+    y = cx.SizedAxis('y', 2)
+    inputs = {'field_a': cx.field(np.array([1, 2, 3]), x)}
+
+    with self.subTest('insert_by_index'):
+      # Insert 'y' at index 0 (before 'x')
+      insert_y = transforms.InsertAxis(axis=y, loc=0)
+      actual = insert_y(inputs)
+      expected = {'field_a': cx.field(np.array([[1, 2, 3], [1, 2, 3]]), y, x)}
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('insert_by_name'):
+      # Insert 'y' at loc 'x' (before 'x')
+      insert_y = transforms.InsertAxis(axis=y, loc='x')
+      actual = insert_y(inputs)
+      expected = {'field_a': cx.field(np.array([[1, 2, 3], [1, 2, 3]]), y, x)}
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('insert_at_end'):
+      # Insert 'y' at index 1 (after 'x')
+      insert_y = transforms.InsertAxis(axis=y, loc=1)
+      actual = insert_y(inputs)
+      expected = {'field_a': cx.field(np.array([[1, 1], [2, 2], [3, 3]]), x, y)}
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('raises_if_missing'):
+      insert_y = transforms.InsertAxis(axis=y, loc='z')
+      with self.assertRaisesRegex(ValueError, 'Axis z not present'):
+        insert_y(inputs)
 
   def test_apply_to_keys(self):
     x = cx.SizedAxis('x', 3)
@@ -761,6 +793,176 @@ class TransformsTest(parameterized.TestCase):
     inpainted_values = output['u'].data[mask_data]
     np.testing.assert_array_less(inpainted_values, 50.0)
     np.testing.assert_allclose(inpainted_values, 1.0, atol=1e-5)
+
+
+class PointNeighborsFromGridTest(parameterized.TestCase):
+
+  def test_nearest_neighbor_on_spherical_grid(self):
+    """Verifies that width=1 returns the single nearest value on a TL63 grid."""
+    grid = coordinates.LonLatGrid.TL63()
+    lons = grid.fields['longitude']
+    lats = grid.fields['latitude']
+    # Use complex values to encode (longitude, latitude) into a single field.
+    field = lons + 1j * lats
+    transform = transforms.PointNeighborsFromGrid(width=1)
+
+    with self.subTest('on_grid'):
+      lon_idx, lat_idx = 12, 15
+      lon_q, lat_q = lons.data[lon_idx], lats.data[lat_idx]
+      output = transform({
+          'longitude': cx.field(lon_q),
+          'latitude': cx.field(lat_q),
+          'f': field,
+      })
+      self.assertEqual(output['f'].data, lon_q + 1j * lat_q)
+
+    with self.subTest('off_grid'):
+      lon_idx, lat_idx = 0, 2
+      lon_q, lat_q = lons.data[lon_idx], lats.data[lat_idx]
+      # delta is smaller than half-spacing, should round to the original.
+      lon_off, lat_off = lon_q + 0.1, lat_q + 0.1
+      output = transform({
+          'longitude': cx.field(lon_off),
+          'latitude': cx.field(lat_off),
+          'f': field,
+      })
+      self.assertEqual(output['f'].data, lon_q + 1j * lat_q)
+
+  def test_even_width_patch(self):
+    """Verifies even width=2 patch orientation around a query point."""
+    lons = np.arange(0, 360, 10)
+    lats = np.arange(-90, 100, 10)
+    grid = cx.coords.compose(
+        cx.LabeledAxis('longitude', lons),
+        cx.LabeledAxis('latitude', lats),
+    )
+    field = cx.field(lons[:, None] + 1j * lats[None, :], grid)
+    transform = transforms.PointNeighborsFromGrid(width=2)
+
+    # Query point at (15, 15), which is in the center of the 4 grid points:
+    # (10, 10), (10, 20), (20, 10), (20, 20).
+    output = transform({
+        'longitude': cx.field(15.0),
+        'latitude': cx.field(15.0),
+        'f': field,
+    })
+
+    # Expected patch is 2x2 with these 4 values.
+    # Orientation in cx.Field is (longitude, latitude).
+    expected = [
+        [10 + 10j, 10 + 20j],
+        [20 + 10j, 20 + 20j],
+    ]
+    np.testing.assert_array_equal(output['f'].data, expected)
+
+  def test_odd_width_patch(self):
+    """Verifies odd width=3 patch is centered on the nearest neighbor."""
+    lons = np.arange(0, 360, 10)
+    lats = np.arange(-90, 100, 10)
+    grid = cx.coords.compose(
+        cx.LabeledAxis('longitude', lons),
+        cx.LabeledAxis('latitude', lats),
+    )
+    field = cx.field(lons[:, None] + 1j * lats[None, :], grid)
+    transform = transforms.PointNeighborsFromGrid(width=3)
+
+    # Queries within +\-5 of (20, 20) should return the same patch.
+    # Width 3 patch should be centered at (20, 20), i.e., indices [1, 2, 3]
+    # for both dims, which corresponds to values [10, 20, 30].
+    expected = [
+        [10 + 10j, 10 + 20j, 10 + 30j],
+        [20 + 10j, 20 + 20j, 20 + 30j],
+        [30 + 10j, 30 + 20j, 30 + 30j],
+    ]
+    for lon in [16, 23]:
+      for lat in [17, 22]:
+        output = transform({
+            'longitude': cx.field(lon),
+            'latitude': cx.field(lat),
+            'f': field,
+        })
+        np.testing.assert_array_equal(output['f'].data, expected)
+
+  def test_longitude_wrapping_at_equator(self):
+    """Tests longitude wrapping at the central band (equator)."""
+    lons = np.arange(0, 360, 60)  # [0, 60, 120, 180, 240, 300]
+    lats = np.arange(-20, 30, 10)  # [-20, -10, 0, 10, 20] -> 0 is index 2.
+    grid = cx.coords.compose(
+        cx.LabeledAxis('longitude', lons),
+        cx.LabeledAxis('latitude', lats),
+    )
+    field = cx.field(lons[:, None] + 1j * lats[None, :], grid)
+    transform = transforms.PointNeighborsFromGrid(width=2)
+
+    # Query at 330 (between 300 and 0) and latitude 5 (between 0 and 10).
+    output = transform({
+        'longitude': cx.field(330.0),
+        'latitude': cx.field(5.0),
+        'f': field,
+    })
+    expected = [
+        [300 + 0j, 300 + 10j],
+        [0 + 0j, 0 + 10j],
+    ]
+    np.testing.assert_array_equal(output['f'].data, expected)
+
+  def test_multiple_grids_and_batching(self):
+    """Tests handling of multiple fields on different grids and batched queries."""
+    # Field 1 on a 10-degree grid.
+    grid1 = cx.coords.compose(
+        cx.LabeledAxis('longitude', np.arange(0, 40, 10)),
+        cx.LabeledAxis('latitude', np.arange(0, 40, 10)),
+    )
+    field1 = cx.field(np.arange(16).reshape(4, 4), grid1)
+
+    # Field 2 on a shifted by 5-degree grid.
+    grid2 = cx.coords.compose(
+        cx.LabeledAxis('longitude', np.arange(5, 45, 10)),
+        cx.LabeledAxis('latitude', np.arange(5, 45, 10)),
+    )
+    field2 = cx.field(np.arange(16).reshape(4, 4) + 100, grid2)
+
+    # Batched query:
+    sparse = cx.SizedAxis('points', 2)
+    inputs = {
+        'longitude': cx.field(np.array([8.0, 24.0]), sparse),
+        'latitude': cx.field(np.array([9.0, 24.0]), sparse),
+        'f1': field1,
+        'f2': field2,
+    }
+    transform = transforms.PointNeighborsFromGrid(width=1)
+    output = transform(inputs)
+
+    # For point 0: (8, 9).
+    # f1: nearest is (10, 10) at index (1, 1) -> 5.
+    # f2: nearest is (5, 5) at index (0, 0) -> 100.
+    # For point 1: (24, 24).
+    # f1: nearest is (20, 20) at index (2, 2) -> 10.
+    # f2: nearest is (25, 25) at index (2, 2) -> 110.
+    np.testing.assert_array_equal(output['f1'].data, [5, 10])
+    np.testing.assert_array_equal(output['f2'].data, [100, 110])
+
+  def test_extra_dimensions(self):
+    """Tests that PointNeighborsFromGrid handles extra dimensions correctly."""
+    grid = coordinates.LonLatGrid.T21()
+    z_axis = cx.SizedAxis('z', 4)
+    f1 = cx.field(np.ones(z_axis.shape + grid.shape), z_axis, grid)
+    f2 = cx.field(np.ones(grid.shape), grid)
+
+    sparse = cx.SizedAxis('points', 2)
+    inputs = {
+        'longitude': cx.field(np.array([10.0, 30.0]), sparse),
+        'latitude': cx.field(np.array([5.0, 25.0]), sparse),
+        'f1': f1,
+        'f2': f2,
+    }
+    transform = transforms.PointNeighborsFromGrid(width=1, include_offset=True)
+    output = transform(inputs)
+
+    self.assertEqual(output['f1'].dims, ('points', 'z'))
+    self.assertEqual(output['f2'].dims, ('points',))
+    self.assertIn('delta_longitude_0', output)
+    self.assertIn('delta_latitude_0', output)
 
 
 if __name__ == '__main__':

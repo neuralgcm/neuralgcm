@@ -25,6 +25,7 @@ These transformations are most often used in two different settings:
 from __future__ import annotations
 
 import abc
+import dataclasses
 import itertools
 import re
 from typing import Callable, Literal, Sequence, TypeAlias
@@ -34,6 +35,7 @@ from flax import nnx
 import jax.nn
 import jax.numpy as jnp
 import jax_datetime as jdt
+from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import interpolators
@@ -285,6 +287,29 @@ class Sel(TransformABC):
       else:
         slices[k] = field
     return slices
+
+
+@nnx_compat.dataclass
+class InsertAxis(TransformABC):
+  """Inserts `self.axis` at `self.loc` in all fields in `inputs`."""
+
+  axis: cx.Coordinate
+  loc: int | str | cx.Coordinate
+
+  def _expand_axis(self, field: cx.Field) -> cx.Field:
+    if isinstance(self.loc, int):
+      loc = self.loc
+    else:
+      if cx.contains_dims(field, self.loc):
+        axis_to_the_right = cx.get_coordinate_part(field, self.loc)
+        loc = field.named_axes[axis_to_the_right.dims[0]]
+      else:
+        raise ValueError(f'Axis {self.loc} not present in {field=}')
+    out_coord = cx.coords.insert_axes(field.coordinate, {loc: self.axis})
+    return field.broadcast_like(out_coord)
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    return {k: self._expand_axis(v) for k, v in inputs.items()}
 
 
 def _get_shared_axis(
@@ -1207,3 +1232,147 @@ class DivCurlFromNodalVelocity(TransformABC):
         u, v, self.ylm_map, clip=self.clip
     )
     return {self.divergence_key: div, self.vorticity_key: vorticity}
+
+
+@nnx_compat.dataclass
+class PointNeighborsFromGrid(TransformABC):
+  """Extracts a patch of neighbors from gridded fields around query points.
+
+  This transform splits inputs into two parts: query longitude/latitude fields
+  and gridded inputs. The query fields are used to determine the patch to
+  extract from the remaining gridded data. The gridded inputs are expected
+  to include longitude and latitude coordinate fields in degrees and be in the
+  ascending order, with longitudes in the range [-180, 180] and latitudes in
+  the range [-90, 90].
+
+  Attributes:
+    width: The width of the square patch to extract. Default is 1.
+    lon_query_key: Key for query longitudes in inputs.
+    lat_query_key: Key for query latitudes in inputs.
+  """
+
+  width: int = 1
+  lon_query_key: str = 'longitude'
+  lat_query_key: str = 'latitude'
+  include_offset: bool = True
+  boundary_condition: boundaries.BoundaryCondition = dataclasses.field(
+      init=False
+  )
+  padding: int = dataclasses.field(init=False)
+
+  def __post_init__(self):
+    self.boundary_condition = boundaries.LonLatBoundary()
+    self.padding = (self.width + 1) // 2  # Safe padding amount.
+    self.pad_sizes = {
+        'longitude': (self.padding, self.padding),
+        'latitude': (self.padding, self.padding),
+    }
+
+  def _1d_indices(
+      self,
+      query: typing.Array,
+      grid_vals: typing.Array,
+      period: float | None = None,
+  ) -> typing.Array:
+    """Returns indices of neighbors for `query` in `grid_vals`."""
+    diff = grid_vals - query
+    if period is not None:
+      diff = jnp.mod(diff + period / 2, period) - period / 2
+    idx = jnp.argmin(jnp.abs(diff))
+    # Returned indices must be computed relative to the padded array.
+    radius = (self.width - 1) // 2  # accounts for patch centering.
+    start = idx + self.padding - radius
+
+    if self.width % 2 == 0:
+      # Bias towards the interval containing the point for even widths.
+      start = jnp.where(diff[idx] > 0, start - 1, start)
+
+    if self.width == 1:
+      return start
+    return start + jnp.arange(self.width)
+
+  def _indices_and_patch(
+      self,
+      lon_grid: cx.Field,
+      lat_grid: cx.Field,
+      lon_query: cx.Field,
+      lat_query: cx.Field,
+  ) -> tuple[cx.Field, cx.Field, cx.Coordinate]:
+    """Returns longitude and latitude indices and patch coordinate."""
+    get_lon_indices = lambda q: self._1d_indices(q, lon_grid.data, 360.0)
+    get_lat_indices = lambda q: self._1d_indices(q, lat_grid.data)
+    lon_indices = cx.cmap(get_lon_indices)(lon_query)
+    lat_indices = cx.cmap(get_lat_indices)(lat_query)
+
+    if self.width == 1:
+      patch_coord = cx.Scalar()
+    else:
+      patch_lon = cx.SizedAxis('longitude', self.width)
+      patch_lat = cx.SizedAxis('latitude', self.width)
+      patch_coord = cx.coords.compose(patch_lon, patch_lat)
+
+    return lon_indices, lat_indices, patch_coord
+
+  @nnx.jit
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    inputs = inputs.copy()
+    if self.lon_query_key not in inputs or self.lat_query_key not in inputs:
+      raise ValueError(
+          f'Inputs must contain {self.lon_query_key} and {self.lat_query_key}.'
+      )
+    lon_query = inputs.pop(self.lon_query_key)
+    lat_query = inputs.pop(self.lat_query_key)
+    if lon_query.positional_shape or lat_query.positional_shape:
+      raise ValueError(
+          f'Query fields {lon_query} and {lat_query} must be fully labeled.'
+      )
+    lon_lat_dims = ('longitude', 'latitude')
+    padded_lon_lat = tuple(f'padded_{d}' for d in lon_lat_dims)
+
+    if self.width == 1:
+      extract_fn = lambda lo, la, f: f[lo, la]
+    else:
+      # Broadcast indices so that we extract a patch rather than the diagonal.
+      extract_fn = lambda lo, la, f: f[lo[:, None], la]
+    extract_fn = cx.cmap(extract_fn, 'leading')
+
+    cache = {}
+    outputs = {}
+    for k, f in inputs.items():
+      if any(d not in f.dims for d in lon_lat_dims):
+        raise ValueError(f'{k=} -> {f} does not have {lon_lat_dims=} axes.')
+
+      grid = cx.coords.compose(f.axes['longitude'], f.axes['latitude'])
+
+      if grid not in cache:
+        lon_1d, lat_1d = f.coord_fields['longitude'], f.coord_fields['latitude']
+        lon_indices, lat_indices, patch_coord = self._indices_and_patch(
+            lon_1d, lat_1d, lon_query, lat_query
+        )
+        cache[grid] = (lon_indices, lat_indices, patch_coord, lon_1d, lat_1d)
+
+      lon_indices, lat_indices, patch_coord, _, _ = cache[grid]
+      padded_f = self.boundary_condition.pad(f, self.pad_sizes)
+      untagged_f = padded_f.untag(*padded_lon_lat)
+      patch = extract_fn(lon_indices, lat_indices, untagged_f).tag(patch_coord)
+      outputs[k] = patch
+
+    if self.include_offset:
+      for grid_idx, (grid, cached_values) in enumerate(cache.items()):
+        lon_indices, lat_indices, patch_coord, lon_1d, lat_1d = cached_values
+        lons = lon_1d.broadcast_like(grid)
+        lats = lat_1d.broadcast_like(grid)
+        padded_lon = self.boundary_condition.pad(lons, self.pad_sizes)
+        padded_lat = self.boundary_condition.pad(lats, self.pad_sizes)
+        patch_lon = extract_fn(
+            lon_indices, lat_indices, padded_lon.untag(*padded_lon_lat)
+        ).tag(patch_coord)
+        patch_lat = extract_fn(
+            lon_indices, lat_indices, padded_lat.untag(*padded_lon_lat)
+        ).tag(patch_coord)
+
+        norm_lon = cx.cmap(lambda x: jnp.mod(x + 180.0, 360.0) - 180.0)
+        outputs[f'delta_longitude_{grid_idx}'] = norm_lon(patch_lon - lon_query)
+        outputs[f'delta_latitude_{grid_idx}'] = patch_lat - lat_query
+
+    return outputs

@@ -18,8 +18,66 @@ from absl.testing import parameterized
 import chex
 import coordax as cx
 import jax
+from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import field_utils
 import numpy as np
+
+
+class SplitFieldAxisTest(parameterized.TestCase):
+  """Tests that split_field_axis works as expected."""
+
+  def test_split_field_axis(self):
+    axis = cx.SizedAxis('x', 3)
+    field = cx.field(np.arange(3), axis)
+
+    split_axes = {
+        'a': cx.Scalar(),
+        'b': cx.SizedAxis('sub_x', 2),
+    }
+    expected = {
+        'a': cx.field(np.array(0), cx.Scalar()),
+        'b': cx.field(np.array([1, 2]), cx.SizedAxis('sub_x', 2)),
+    }
+
+    with self.subTest('axis_as_coordinate'):
+      actual = field_utils.split_field_axis(field, axis, split_axes)
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('axis_as_string'):
+      actual = field_utils.split_field_axis(field, 'x', split_axes)
+      chex.assert_trees_all_close(actual, expected)
+
+  def test_split_field_axis_preserves_coords_order(self):
+    b = cx.SizedAxis('b', 4)
+    z = cx.SizedAxis('z', 2)
+    grid = coordinates.LonLatGrid.T21()
+    field = cx.field(np.zeros((4, 2,) + grid.shape), b, z, grid)
+
+    split_axes = {
+        'z1': cx.SizedAxis('z1', 1),
+        'z2': cx.SizedAxis('z2', 1),
+    }
+    actual = field_utils.split_field_axis(field, z, split_axes)
+
+    expected_z1 = cx.coords.compose(b, cx.SizedAxis('z1', 1), grid)
+    expected_z2 = cx.coords.compose(b, cx.SizedAxis('z2', 1), grid)
+    self.assertEqual(actual['z1'].coordinate, expected_z1)
+    self.assertEqual(actual['z2'].coordinate, expected_z2)
+
+  def test_split_field_axis_to_multidim_coord(self):
+    flat_size = 10
+    flat_axis = cx.SizedAxis('flat', flat_size)
+    field = cx.field(np.zeros((flat_size,)), flat_axis)
+
+    x_patch = cx.SizedAxis('x', 3)
+    y_patch = cx.SizedAxis('y', 3)
+    xy_patch = cx.coords.compose(x_patch, y_patch)
+
+    split_axes = {'patch': xy_patch, 'scalar': cx.Scalar()}
+    actual = field_utils.split_field_axis(field, flat_axis, split_axes)
+
+    self.assertEqual(actual['patch'].coordinate, xy_patch)
+    self.assertEqual(actual['scalar'].shape, ())
 
 
 class SplitToFieldsTest(parameterized.TestCase):
@@ -147,7 +205,7 @@ class CombineFieldsTest(parameterized.TestCase):
     x, y = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
     level = cx.SizedAxis('level', 7)
     fields = {
-        'a_surf': cx.field(np.ones((3, 5)), x, y),  # should expand as (1, 3, 5).
+        'a_surf': cx.field(np.ones((3, 5)), x, y),  # expands as (1, 3, 5).
         'b': cx.field(np.ones((7, 3, 5)), level, x, y),
         'c': cx.field(np.ones((7, 3, 5)), level, x, y),
     }
@@ -518,6 +576,61 @@ class Reconstruct1dFieldFromRefValuesTest(parameterized.TestCase):
           ref_values=[1, 2],
           interpolation_space='bad_space',
       )
+
+
+class EnsurePositionalAxisIdxTest(parameterized.TestCase):
+  """Tests ensure_positional_axis_idx utility function."""
+
+  def test_mixed_coords_negative_idx(self):
+    x = cx.SizedAxis('x', 3)
+    y = cx.SizedAxis('y', 4)
+    f1 = cx.field(np.zeros((3,)), x)
+    f2 = cx.field(np.zeros((3, 2)), x, None)
+    f3 = cx.field(np.zeros((4, 3, 1)), y, x, None)
+
+    pytree = [f1, {'a': f2, 'b': f3}]
+    actual = field_utils.ensure_positional_axis_idx(pytree, idx=-1)
+
+    add_dummy = lambda s, *c: cx.coords.compose(*c, cx.DummyAxis(None, s))
+    self.assertEqual(actual[0].coordinate, add_dummy(1, x))
+    self.assertEqual(actual[1]['a'].coordinate, add_dummy(2, x))
+    self.assertEqual(actual[1]['b'].coordinate, add_dummy(1, y, x))
+
+  def test_mixed_coords_positive_idx(self):
+    x = cx.SizedAxis('x', 3)
+    y = cx.SizedAxis('y', 4)
+    f1 = cx.field(np.zeros((3, 4)), x, y)
+    f2 = cx.field(np.zeros((3, 5)), x, None)
+    f3 = cx.field(np.zeros((4, 2, 3)), y, None, x)
+
+    pytree = (f1, f2, f3)
+    actual = field_utils.ensure_positional_axis_idx(pytree, idx=1)
+
+    dummy = lambda s: cx.DummyAxis(None, s)
+    self.assertEqual(actual[0].coordinate, cx.coords.compose(x, dummy(1), y))
+    self.assertEqual(actual[1].coordinate, cx.coords.compose(x, dummy(5)))
+    self.assertEqual(actual[2].coordinate, cx.coords.compose(y, dummy(2), x))
+
+  def test_raises_on_multiple_positional_axes(self):
+    f = cx.field(np.zeros((1, 1)), None, None)
+    with self.assertRaisesRegex(
+        ValueError, 'Field has multiple positional axes'
+    ):
+      field_utils.ensure_positional_axis_idx(f, idx=0)
+
+  def test_raises_on_misaligned_positional_axes_positive_idx(self):
+    x = cx.SizedAxis('x', 3)
+    # Target idx=0; f1 has positional at 1: (x, None)
+    f1 = cx.field(np.zeros((3, 1)), x, None)
+    with self.assertRaisesRegex(ValueError, 'Expected positional axes at'):
+      field_utils.ensure_positional_axis_idx({'f': f1}, idx=0)
+
+  def test_raises_on_misaligned_positional_axes_negative_idx(self):
+    x = cx.SizedAxis('x', 3)
+    # Target idx=-1; f1 has positional at 0: (None, x). dims[-1] is x.
+    f1 = cx.field(np.zeros((1, 3)), None, x)
+    with self.assertRaisesRegex(ValueError, 'Expected positional axes at'):
+      field_utils.ensure_positional_axis_idx([f1], idx=-1)
 
 
 if __name__ == '__main__':

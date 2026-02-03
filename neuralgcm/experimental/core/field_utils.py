@@ -16,12 +16,12 @@
 
 import functools
 import itertools
+import math
 from typing import Callable, overload, Literal, Sequence
 
 import coordax as cx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -164,6 +164,92 @@ def split_to_fields(
       k: maybe_tag(splits[i], new_axes[i]).order_as(*c.dims)
       for i, (k, c) in enumerate(targets.items())
   }
+
+
+def split_field_axis(
+    field: cx.Field,
+    axis: cx.Coordinate | str,
+    split_axes: typing.Pytree,
+) -> typing.Pytree:
+  """Splits a field along `axis` into multiple fields.
+
+  Args:
+    field: The field to split.
+    axis: The axis along which to split.
+    split_axes: Pytree of coordinates defining the splits.
+
+  Returns:
+    Pytree of fields resulting from the split, with the same structure as
+    `split_axes`.
+  """
+  axes_leaves, treedef = jax.tree.flatten(split_axes, is_leaf=cx.is_coord)
+  split_axis = cx.get_coordinate_part(field, axis)
+  if split_axis.ndim != 1:
+    raise ValueError(f'Split axis must be 1d, got {split_axis}.')
+
+  sizes = [math.prod(c.shape) for c in axes_leaves]
+  total_size = sum(sizes)
+  field_axis_size = math.prod(split_axis.shape)
+  if total_size != field_axis_size:
+    raise ValueError(
+        f'Sum of splits ({total_size}) does not match size of {split_axis=}.'
+    )
+
+  splits = np.cumsum(sizes)
+  field_untagged = field.untag(split_axis)
+  split_fn = functools.partial(jnp.split, indices_or_sections=splits[:-1])
+  split_results = cx.cpmap(split_fn)(field_untagged)
+
+  leaves = []
+  for i, axis in enumerate(axes_leaves):
+    field_shard = split_results[i]
+    if isinstance(axis, cx.Scalar):
+      leaves.append(cx.cmap(lambda x: jnp.squeeze(x, axis=0))(field_shard))
+    elif axis.ndim == 1:
+      leaves.append(field_shard.tag(axis))
+    else:
+      ndim, pos_idx = axis.ndim, field_shard.dims.index(None)
+      out_axes = {
+          k: v if v < pos_idx else v + ndim - 1
+          for k, v in field_shard.named_axes.items()
+      }
+      reshape = functools.partial(jnp.reshape, shape=axis.shape)
+      leaves.append(cx.cmap(reshape, out_axes=out_axes)(field_shard).tag(axis))
+
+  return jax.tree.unflatten(treedef, leaves)
+
+
+
+def ensure_positional_axis_idx(
+    pytree: typing.Pytree,
+    idx: int,
+) -> typing.Pytree:
+  """Ensures fields in `pytree` have a positional axis at the specified index.
+
+  This function checks that all fields in `pytree` have at most one positional
+  axis and that it corresponds to index `idx`. If a field is fully labeled, a
+  positional axis of size 1 is inserted at `idx`.
+
+  Args:
+    pytree: Pytree for which to ensure positional axis alignment.
+    idx: Index at which to insert positional axis if none is found in `pytree`.
+
+  Returns:
+    `pytree` with an aligned positional axis at the specified index.
+  """
+  f_leaves, treedef = jax.tree.flatten(pytree, is_leaf=cx.is_field)
+  if any(f.dims.count(None) > 1 for f in f_leaves):
+    raise ValueError('Field has multiple positional axes, expected at most 1.')
+  expand_fn = lambda f: f.broadcast_like(
+      cx.coords.insert_axes(f.coordinate, {idx: cx.DummyAxis(None, 1)})
+  )
+  f_leaves = [f if f.positional_shape else expand_fn(f) for f in f_leaves]
+  dims_at_idx = [f.dims[idx] for f in f_leaves]
+  if any(dim is not None for dim in dims_at_idx):
+    raise ValueError(
+        f'Expected positional axes at {idx=} in pytree, got {dims_at_idx=}'
+    )
+  return jax.tree.unflatten(treedef, f_leaves)
 
 
 @overload

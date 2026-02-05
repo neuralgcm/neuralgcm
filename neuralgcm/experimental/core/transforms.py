@@ -242,6 +242,46 @@ class Islice(TransformABC):
 
 
 @nnx_compat.dataclass
+class MeanOverAxes(TransformABC):
+  """Computes mean over specified dims, accounting for grid geometry."""
+
+  dims: tuple[str | cx.Coordinate, ...]
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    outputs = {}
+    for k, v in inputs.items():
+      dim_names = set()
+      for d in self.dims:
+        if isinstance(d, cx.Coordinate):
+          dim_names.update(d.dims)
+        else:
+          dim_names.add(d)
+
+      if not cx.fields.contains_dims(v, self.dims):
+        raise ValueError(f'Dims {self.dims} not found in {v.axes=} for key={k}')
+
+      try:
+        grid = cx.coords.extract(v.coordinate, coordinates.LonLatGrid)
+      except ValueError:
+        grid = None
+
+      if grid is not None:
+        spatial_dims = dim_names & {'latitude', 'longitude'}
+        if spatial_dims:
+          v = grid.mean(v, dims=tuple(spatial_dims))
+          dim_names -= spatial_dims
+
+      if dim_names:
+        # Sort dimensions to untag based on their order in the field.
+        ordered_dims = [d for d in v.dims if d in dim_names]
+        outputs[k] = cx.cmap(jnp.mean)(v.untag(*ordered_dims))
+      else:
+        outputs[k] = v
+
+    return outputs
+
+
+@nnx_compat.dataclass
 class Sel(TransformABC):
   """Selects a slice and an index along a specified dimensions."""
 

@@ -131,6 +131,70 @@ class TransformsTest(parameterized.TestCase):
     expected = {'a': cx.field(np.array([2, 3, 4]), x)}
     chex.assert_trees_all_close(actual, expected)
 
+  def test_mean_over_axes(self):
+    x, y = cx.SizedAxis('x', 4), cx.SizedAxis('y', 5)
+    xy = cx.coords.compose(x, y)
+    # Mean of (0+1+2+3)/4 + (0+1+2+3+4)/5 = 1.5 + 2.0 = 3.5
+    inputs = {
+        'a': cx.field(np.arange(4)[:, None] + np.arange(5)[None, :], xy)
+    }
+
+    with self.subTest('standard_mean'):
+      transform = transforms.MeanOverAxes(dims=('x', 'y'))
+      actual = transform(inputs)
+      expected = {'a': cx.field(3.5)}
+      chex.assert_trees_all_close(actual, expected)
+
+    grid = coordinates.LonLatGrid.T21()
+    lats = np.deg2rad(grid.fields['latitude'].data)
+    lons = np.deg2rad(grid.fields['longitude'].data)
+    # sin(lat) integrates to 0 over the sphere.
+    # sin(lon) integrates to 0 over longitude.
+    # 3.0 is the constant offset.
+    data = 3.0 + np.sin(lats)[None, :] + np.sin(lons)[:, None]
+    inputs_sphere = {'u': cx.field(data, grid)}
+
+    with self.subTest('spherical_mean_lat_lon'):
+      transform = transforms.MeanOverAxes(dims=('latitude', 'longitude'))
+      actual = transform(inputs_sphere)
+      expected = {'u': cx.field(3.0)}
+      chex.assert_trees_all_close(actual, expected, atol=1e-6)
+
+    with self.subTest('spherical_mean_lon'):
+      transform = transforms.MeanOverAxes(dims=('longitude',))
+      actual = transform(inputs_sphere)
+      # Mean over lon of sin(lon) is 0.
+      # Mean over lon of 3.0 + sin(lat) is 3.0 + sin(lat).
+      expected_data = 3.0 + np.sin(lats)
+      expected = {'u': cx.field(expected_data, grid.axes[1])}
+      chex.assert_trees_all_close(actual, expected, atol=1e-6)
+
+    with self.subTest('spherical_mean_lat'):
+      transform = transforms.MeanOverAxes(dims=('latitude',))
+      actual = transform(inputs_sphere)
+      # Mean over lat of sin(lat) is 0.
+      # Mean over lat of 3.0 + sin(lon) is 3.0 + sin(lon).
+      expected_data = 3.0 + np.sin(lons)
+      expected = {'u': cx.field(expected_data, grid.axes[0])}
+      chex.assert_trees_all_close(actual, expected, atol=1e-6)
+
+    with self.subTest('spherical_mean_lat_and_pressure'):
+      p = cx.SizedAxis('pressure', 2)
+      # Create data that varies along pressure: 1.0 at index 0, 2.0 at index 1.
+      data_varying = np.ones(p.shape + grid.shape)
+      data_varying[1, ...] = 2.0
+      inputs_sphere_p = {'u': cx.field(data_varying, p, grid)}
+
+      # Should average over lat (spatial) then mean over pressure (arithmetic).
+      # Spatial mean of a constant field is the constant.
+      # Mean of 1.0 and 2.0 is 1.5.
+      transform = transforms.MeanOverAxes(dims=('latitude', 'pressure'))
+      actual = transform(inputs_sphere_p)
+      expected = {
+          'u': cx.field(np.ones(grid.axes[0].shape) * 1.5, grid.axes[0])
+      }
+      chex.assert_trees_all_close(actual, expected)
+
   def test_mask_by_threshold(self):
     x = cx.LabeledAxis('x', np.linspace(0, 1, 10))
     inputs = {

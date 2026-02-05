@@ -289,6 +289,36 @@ class LonLatGrid(cx.Coordinate):
             f'thereof, got {dims}'
         )
 
+  def mean(
+      self,
+      x: cx.Field,
+      dims: str | Sequence[str] = ('longitude', 'latitude'),
+  ) -> cx.Field:
+    """Computes mean of `x` over dimensions in `dims`.
+
+    Args:
+      x: Field to average.
+      dims: Dimensions to average over. Can be 'longitude', 'latitude', or a
+        sequence of thereof.
+
+    Returns:
+      Field with all or a subset of dimensions of LonLatGrid averaged out.
+    """
+    integral = self.integrate(x, dims, radius=1.0)
+    dims_tuple = tuple(sorted({dims} if isinstance(dims, str) else set(dims)))
+    match dims_tuple:
+      case ('longitude',):
+        return integral / (2 * np.pi)
+      case ('latitude',):
+        return integral / 2.0
+      case ('latitude', 'longitude'):
+        return integral / (4 * np.pi)
+      case _:
+        raise ValueError(
+            'dims must be "longitude", "latitude", or a sequence '
+            f'thereof, got {dims}'
+        )
+
   @classmethod
   def from_dinosaur_grid(
       cls,

@@ -357,6 +357,40 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     cx.testing.assert_fields_allclose(sclar_from_lon, scalar)
     cx.testing.assert_fields_allclose(sclar_from_lat, scalar)
 
+  def test_lon_lat_grid_mean(self):
+    grid = coordinates.LonLatGrid.T21()
+    field = cx.field(np.ones(grid.shape), grid)
+    mean = grid.mean(field)
+    np.testing.assert_allclose(mean.data, 1.0, rtol=1e-5)
+
+    n_lon, n_lat = 64, 32
+    grid = coordinates.LonLatGrid(
+        longitude_nodes=n_lon,
+        latitude_nodes=n_lat,
+        lon_lat_padding=(8, 4),
+    )
+    # data that is 1 everywhere except 2 on first half of longitudes
+    data = np.ones(grid.shape)
+    data[: (n_lon // 2), :] = 2
+    field = cx.field(data, grid)
+
+    field_lat = grid.mean(field, dims='longitude')
+    self.assertEqual(field_lat.coordinate, cx.SelectedAxis(grid, axis=1))
+    np.testing.assert_allclose(field_lat.data, 1.5, rtol=1e-5)
+
+    field_lon = grid.mean(field, dims='latitude')
+    self.assertEqual(field_lon.coordinate, cx.SelectedAxis(grid, axis=0))
+    np.testing.assert_allclose(field_lon.data, data[:, 0], rtol=1e-5)
+
+    scalar = grid.mean(field)
+    self.assertEqual(scalar.coordinate, cx.Scalar())
+    np.testing.assert_allclose(scalar.data, 1.5, rtol=1e-5)
+
+    sclar_from_lon = grid.mean(field_lon, dims='longitude')
+    sclar_from_lat = grid.mean(field_lat, dims='latitude')
+    cx.testing.assert_fields_allclose(sclar_from_lon, scalar)
+    cx.testing.assert_fields_allclose(sclar_from_lat, scalar)
+
   @parameterized.named_parameters(
       dict(testcase_name='float', c=2.5),
       dict(testcase_name='array', c=np.array(2.5)),

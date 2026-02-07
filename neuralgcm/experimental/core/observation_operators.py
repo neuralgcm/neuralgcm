@@ -15,18 +15,10 @@
 """Defines observation operator API and sample operators for NeuralGCM."""
 
 import abc
-import copy
 import dataclasses
 
 import coordax as cx
 from flax import nnx
-import jax.numpy as jnp
-from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import learned_transforms
-from neuralgcm.experimental.core import nnx_compat
-from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import towers
-from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -148,14 +140,20 @@ class TransformObservationOperator(ObservationOperatorABC):
   """Operator that returns transformed inputs as observations."""
 
   transform: typing.Transform
+  requested_fields_from_query: tuple[str, ...] = ()
 
   def observe(
       self,
       inputs: dict[str, cx.Field],
       query: dict[str, cx.Field | cx.Coordinate],
   ) -> typing.Observation:
-    data_observation = DataObservationOperator(self.transform(inputs))
-    return data_observation.observe({}, query)
+    q_fields = {k: query.get(k, None) for k in self.requested_fields_from_query}
+    bad_fields = {k: v for k, v in q_fields.items() if not cx.is_field(v)}
+    if bad_fields:
+      raise ValueError(f'Got {query=} that contains {bad_fields=}.')
+    data_obserator = DataObservationOperator(self.transform(inputs | q_fields))
+    coord_queries = {k: v for k, v in query.items() if cx.is_coord(v)}
+    return data_obserator.observe({}, coord_queries)
 
 
 @dataclasses.dataclass
@@ -180,145 +178,6 @@ class ObservationOperatorWithRenaming(ObservationOperatorABC):
     observation = self.operator.observe(inputs, renamed_query)
     inverse_renaming_dict = {v: k for k, v in self.renaming_dict.items()}
     return {inverse_renaming_dict.get(k, k): v for k, v in observation.items()}
-
-
-@nnx_compat.dataclass
-class LearnedSparseScalarObservationFromNeighbors(nnx.Module):
-  """Observation operator for scalar observations at sparse locations.
-
-  This operator predicts scalar observations that are conditioned on the
-  features of the nearest neighbor on the grid and displacement features derived
-  from the relative location of the query point and the neighbor.
-
-  The expected structure of the query processed by this operator is:
-  ```
-    operator_query = {
-        'longitude': cx.Field,
-        'latitude': cx.Field,
-        'scalar_name_1': cx.Coordinate,
-        'scalar_name_2': cx.Coordinate,
-        ...
-    }
-  ```
-
-  Args:
-    scalar_names: names of the scalar fields predicted by this operator.
-    grid: grid on which state features are computed.
-    features_module: module that computes state features from the prognostics.
-    input_shapes: shapes of the inputs.
-    layer_factory: factory for instantiating a NN that will compute predictions.
-    rngs: random number generator.
-  """
-
-  target_predictions: dict[str, cx.Coordinate]
-  grid: coordinates.LonLatGrid
-  grid_features: typing.Transform
-  tower: towers.ForwardTower
-  prediction_transform: typing.Transform = transforms.Identity()
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
-
-  @classmethod
-  def build_using_factories(
-      cls,
-      input_shapes: dict[str, cx.Field],
-      target_predictions: dict[str, cx.Coordinate],
-      *,
-      grid: coordinates.LonLatGrid,
-      grid_features: typing.Transform,
-      tower_factory: towers.ForwardTowerFactory,
-      prediction_transform: typing.Transform = transforms.Identity(),
-      mesh: parallelism.Mesh,
-      rngs: nnx.Rngs,
-  ):
-    # TODO(dkochkov): Add check that target_predictions are at most 1D.
-    grid_features_shapes = grid_features.output_shapes(input_shapes)
-    loc_feature_sizes = {
-        k: (
-            {d: s for d, s in v.named_shape.items() if d not in grid.dims}
-            if v.ndim > grid.ndim
-            else {None: 1}
-        )
-        for k, v in grid_features_shapes.items()
-    }
-    input_size = sum(
-        [v.popitem()[1] for v in loc_feature_sizes.values()], start=2
-    )
-    output_size = sum(
-        [x.shape[0] if x.shape else 1 for x in target_predictions.values()]
-    )
-    tower = tower_factory(input_size, output_size, rngs=rngs)
-    return cls(
-        target_predictions=target_predictions,
-        grid=grid,
-        grid_features=grid_features,
-        tower=tower,
-        prediction_transform=prediction_transform,
-        mesh=mesh,
-    )
-
-  def _lon_lat_neighbor_indices(
-      self,
-      longitudes: typing.Array,
-      latitudes: typing.Array,
-      lon: typing.Array,
-      lat: typing.Array,
-  ) -> tuple[typing.Array, typing.Array]:
-    """Returns grid indices corresponding to the point closest to (lon, lat)."""
-    longitudes, latitudes = jnp.deg2rad(longitudes), jnp.deg2rad(latitudes)
-    subtract_lons = lambda a, b: jnp.mod(a - b + jnp.pi, 2 * jnp.pi) - jnp.pi
-    subtract_lats = lambda a, b: a - b
-    lon_deltas = subtract_lons(longitudes, jnp.deg2rad(lon))
-    lat_deltas = subtract_lats(latitudes, jnp.deg2rad(lat))
-    return jnp.argmin(jnp.abs(lon_deltas)), jnp.argmin(jnp.abs(lat_deltas))
-
-  def observe(
-      self,
-      inputs: dict[str, cx.Field],
-      query: dict[str, cx.Field | cx.Coordinate],
-  ) -> dict[str, cx.Field]:
-    inputs = copy.copy(inputs)  # ensure that inputs are not modified.
-    query = copy.copy(query)  # ensure that query is not modified.
-    grid_features = self.grid_features(inputs)
-    lon_query, lat_query = query.pop('longitude'), query.pop('latitude')
-    sparse_coord = cx.get_coordinate(lon_query)
-    assert sparse_coord == cx.get_coordinate(lat_query)  # should be the same.
-    grid = self.grid
-    lon, lat = grid.fields['longitude'].data, grid.fields['latitude'].data
-    get_indices_fn = self._lon_lat_neighbor_indices
-    lon_idx, lat_idx = cx.cmap(get_indices_fn)(lon_query, lat_query, lon, lat)
-    delta_lon = lon_query - cx.field(lon[lon_idx.data], lon_query.coordinate)
-    delta_lat = lat_query - cx.field(lat[lat_idx.data], lat_query.coordinate)
-    displacement_inputs = {
-        'delta_lon': delta_lon,
-        'delta_lat': delta_lat,
-    }
-
-    def _select_features_at_lon_lat(array, lon_idx, lat_idx):
-      # if lon_idx/lat_idx are batched, move then upfront keeping features last.
-      return jnp.asarray(array)[lon_idx, lat_idx]
-
-    nearest_grid_features = {
-        k: cx.cmap(_select_features_at_lon_lat)(v.untag(grid), lon_idx, lat_idx)
-        for k, v in grid_features.items()
-    }
-    all_features = nearest_grid_features | displacement_inputs
-    target_predictions = {
-        k: cx.coords.compose(v, sparse_coord)
-        for k, v in self.target_predictions.items()
-    }
-    observe_sparse_transform = learned_transforms.ForwardTowerTransform(
-        targets=target_predictions,
-        tower=self.tower,
-        dims_to_align=(sparse_coord,),
-        out_transform=self.prediction_transform,
-        # feature_sharding_schema=self.feature_sharding_schema,  # need this?
-        # result_sharding_schema=self.result_sharding_schema,
-        mesh=self.mesh,
-    )
-    predictions = observe_sparse_transform(all_features)
-    obs = DataObservationOperator(predictions).observe(inputs, query)
-    # TODO(dkochkov): Consider not returning field entries in operators.
-    return obs | {'longitude': lon_query, 'latitude': lat_query}
 
 
 @dataclasses.dataclass

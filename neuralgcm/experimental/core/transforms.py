@@ -160,6 +160,19 @@ class Broadcast(TransformABC):
 
 
 @nnx_compat.dataclass
+class RavelDims(TransformABC):
+  """Ravels specified dimensions into another."""
+
+  dims_to_ravel: tuple[str | cx.Coordinate, ...]
+  out_dim: str | cx.Coordinate
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    untagged = cx.untag(inputs, *self.dims_to_ravel, allow_missing=True)
+    ravel_fn = cx.cmap(jnp.ravel, out_axes='leading')
+    return {k: ravel_fn(v).tag(self.out_dim) for k, v in untagged.items()}
+
+
+@nnx_compat.dataclass
 class Select(TransformABC):
   """Selects only fields whose keys match against regex.
 

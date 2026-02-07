@@ -50,22 +50,21 @@ class ModalNeuralDivCurlParameterization(nnx.Module):
       mesh: parallelism.Mesh,
       rngs: nnx.Rngs,
   ):
-    output_coords = {}
+    prediction_split_axes = {}
     uv_fields = set([u_key, v_key])
     div_curl_fields = set(['divergence', 'vorticity'])
     if len(div_curl_fields.intersection(volume_field_names)) != 2:
       raise ValueError('Volume fields must contain `divergence & vorticity`.')
 
-    grid = ylm_map.nodal_grid
     for name in (set(volume_field_names) | uv_fields) - div_curl_fields:
-      output_coords[name] = cx.coords.compose(levels, grid)
+      prediction_split_axes[name] = levels
     for name in set(surface_field_names):
-      output_coords[name] = grid
+      prediction_split_axes[name] = cx.Scalar()
 
     input_shapes = features_module.output_shapes(input_state_shapes)
     self.parameterization_mapping = mapping_factory(
         input_shapes=input_shapes,
-        targets=output_coords,
+        target_split_axes=prediction_split_axes,
         rngs=rngs,
     )
     self.mesh = mesh

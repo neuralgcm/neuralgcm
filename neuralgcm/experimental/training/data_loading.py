@@ -617,7 +617,7 @@ class DataLoader:
     )
     all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
     # Remove datasets from which we are not loading any variables.
-    all_data = {k: v for k, v in all_data.items() if v > 0}
+    all_data = {k: v for k, v in all_data.items() if v.data_vars}
 
     inputs_stencils = infer_stencils(input_data_specs)
     dynamic_stencils = infer_stencils(dynamic_input_specs)

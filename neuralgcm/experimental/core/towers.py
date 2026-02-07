@@ -90,12 +90,9 @@ class RecurrentTower(nnx.Module):
 
   Attributes:
     rnn_cell: The RNN cell to be applied.
-    inputs_in_dims: Dims or coordinates over which `rnn_cell` is applied to
-      inputs. All other axes are vectorized over.
-    state_dims: Dims or coordinates for RNN state. All other axes are vectorized
-      over.
-    out_dims: Dims or coordinates to attach to non-vectorized axes of output
-      produced by `rnn_cell`.
+    inputs_in_dims: Dims or coordinates in `inputs` processed by `rnn_cell`.
+    state_dims: Dims or coordinates in RNN state processed by `rnn_cell`.
+    out_dims: Dims or coordinates to attach to `rnn_cell`'s output.
     apply_remat: Whether to apply nnx.remat to the RNN cell.
   """
 
@@ -112,29 +109,31 @@ class RecurrentTower(nnx.Module):
   ) -> tuple[Any, cx.Field]:
     inputs_untagged = inputs.untag(*self.inputs_in_dims)
     carry_untagged = cx.untag(carry, *self.state_dims)
-    batch_axes = inputs_untagged.named_axes
+    vectorized_axes = cx.get_coordinate(inputs_untagged, missing_axes='skip')
 
     # Verify that all parts of carry have matching batch axes
     for leaf in jax.tree.leaves(carry_untagged, is_leaf=cx.is_field):
-      if leaf.named_axes != batch_axes:
+      if cx.get_coordinate(leaf, missing_axes='skip') != vectorized_axes:
         raise ValueError(
-            f'Vectorized dimensions on inputs {batch_axes} and carry leaf'
-            f' {leaf.named_axes} do not match'
+            f'Vectorized dimensions on inputs {vectorized_axes} and carry leaf'
+            f' {leaf.coordinate} do not match'
         )
 
     def apply_cell(cell, carry, inputs):
       return cell(carry, inputs)
 
-    cmap_apply_cell = cx.cmap(apply_cell, batch_axes, vmap=nnx.vmap)
+    cmap_apply_cell = cx.cmap(
+        apply_cell, out_axes=inputs_untagged.named_axes, vmap=nnx.vmap
+    )
     if self.apply_remat:
       cmap_apply_cell = nnx.remat(cmap_apply_cell)
 
     out_carry, output = cmap_apply_cell(
         self.rnn_cell, carry_untagged, inputs_untagged
     )
-    new_carry = cx.tag(out_carry, *self.state_dims)
+    out_carry = cx.tag(out_carry, *self.state_dims)
     output = output.tag(*self.out_dims)
-    return new_carry, output
+    return out_carry, output
 
   @classmethod
   def build_using_factories(

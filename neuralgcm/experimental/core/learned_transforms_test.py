@@ -73,15 +73,19 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     }
     input_shapes = pytree_utils.shape_structure(test_inputs)
     az, bz = cx.SizedAxis('a', 7), cx.SizedAxis('b', 3)
-    embedding_coords = {  # will create embeddings of multiple sizes for fun.
+    target_split_axes = {  # will create embeddings of multiple sizes for fun.
+        'a': az,
+        'b': bz,
+    }
+    embedding_coords = {
         'a': cx.coords.compose(az, self.grid),
         'b': cx.coords.compose(bz, self.grid),
     }
     embedding = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
-        targets=embedding_coords,
+        target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
-        dims_to_align=(self.grid,),
+        concat_dims=(self.levels,),
         mesh=self.mesh,
         rngs=nnx.Rngs(0),
     )
@@ -106,14 +110,15 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     }
     input_shapes = pytree_utils.shape_structure(test_inputs)
     z = cx.SizedAxis('embedding', 8)
+    target_split_axes = {'atm_embedding': z}
     embedding_coords = {
         'atm_embedding': cx.coords.compose(z, self.coord),
     }
     v_embedding = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
-        targets=embedding_coords,
+        target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
-        dims_to_align=(self.levels, self.grid),
+        concat_dims=('in_features',),
         mesh=self.mesh,
         rngs=nnx.Rngs(0),
     )
@@ -136,10 +141,13 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         'time': cx.field(jdt.to_datetime('2025-05-21T00')),
     }
     input_shapes = pytree_utils.shape_structure(test_inputs)
-    target_coords = {  # will create embeddings of multiple sizes for fun.
-        'du_dt': self.coord,
-        'dv_dt': self.coord,
-        'd_p_surface_dt': self.grid,
+    target_split_axes = {  # will create embeddings of multiple sizes for fun.
+        'du_dt': self.levels,
+        'dv_dt': self.levels,
+        'd_p_surface_dt': cx.Scalar(),
+    }
+    target_coords = {
+        k: cx.coords.compose(v, self.grid) for k, v in target_split_axes.items()
     }
     features = transforms.Merge({
         'radiation': feature_transforms.RadiationFeatures(self.grid),
@@ -148,10 +156,10 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     })
     parameterization = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
-        targets=target_coords,
+        target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
-        dims_to_align=(self.grid,),
-        in_transform=features,
+        concat_dims=(self.levels,),
+        inputs_transform=features,
         mesh=self.mesh,
         rngs=nnx.Rngs(0),
     )
@@ -171,8 +179,9 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     """Tests that WeightedLandSeaIceTowersTransform can be used."""
     grid = self.grid
     latent_coord = cx.SizedAxis('latent', 3)
+    target_split_axes = {'surface_embedding': latent_coord}
+    # channel axis is inserted at index 0, so latent is first.
     embedding_coord = cx.coords.compose(latent_coord, grid)
-    output_coords = {'surface_embedding': embedding_coord}
 
     # Create mock data with nans for sst + masks.
     lon, lat = grid.fields['longitude'], grid.fields['latitude']
@@ -192,55 +201,59 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     land_mask_transform = transforms.Select('land_sea_mask')
     sea_ice_mask_transform = transforms.Select('sea_ice_cover')
 
-    lat_features = feature_transforms.LatitudeFeatures(grid)
-    land_features = transforms.Merge({
-        'lats': lat_features,
-        'atm_t_and_mask': transforms.Select('2m_temp|sea_ice_cover'),
-    })
-    land_features = transforms.Sequential([land_features, mask_nans_transform])
-    sea_features = transforms.Merge({
-        'lats': lat_features,
-        'sst_and_mask': transforms.Select('sst|sea_ice_cover'),
-    })
-    sea_features = transforms.Sequential([sea_features, mask_nans_transform])
-    ice_features = transforms.Merge(
-        {'lats': lat_features, 'mask': transforms.Select('sea_ice_cover')}
+    insert_concat_axis = transforms.InsertAxis(
+        axis=cx.DummyAxis(None, 1), loc=grid
     )
-    ice_features = transforms.Sequential([ice_features, mask_nans_transform])
+    land_features = transforms.Sequential([
+        transforms.Select('2m_temp|sea_ice_cover'),
+        mask_nans_transform,
+        insert_concat_axis,
+    ])
+    sea_features = transforms.Sequential([
+        transforms.Select('sst|sea_ice_cover'),
+        mask_nans_transform,
+        insert_concat_axis,
+    ])
+    ice_features = transforms.Sequential([
+        transforms.Select('f1|sea_ice_cover'),
+        mask_nans_transform,
+        insert_concat_axis,
+    ])
 
     inputs = {
         'land_sea_mask': land_sea_mask.astype(np.float32),
         'sea_ice_cover': sea_ice_cover.astype(np.float32),
         'sst': sst.astype(np.float32),
         '2m_temp': atm_2m_temp,
+        'f1': cx.field(np.ones(grid.shape), grid),
     }
     input_shapes = pytree_utils.shape_structure(inputs)
     rngs = nnx.Rngs(0)
 
     ice_transform = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
-        targets=output_coords,
+        target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
-        dims_to_align=(grid,),
-        in_transform=ice_features,
+        concat_dims=(),
+        inputs_transform=ice_features,
         mesh=self.mesh,
         rngs=rngs,
     )
     land_transform = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
-        targets=output_coords,
+        target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
-        dims_to_align=(grid,),
-        in_transform=land_features,
+        concat_dims=(),
+        inputs_transform=land_features,
         mesh=self.mesh,
         rngs=rngs,
     )
     sea_transform = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
-        targets=output_coords,
+        target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
-        dims_to_align=(grid,),
-        in_transform=sea_features,
+        concat_dims=(),
+        inputs_transform=sea_features,
         mesh=self.mesh,
         rngs=rngs,
     )
@@ -268,16 +281,7 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SoilLevels.with_era5_levels()
     self.coord = cx.coords.compose(self.levels, self.grid)
-    self.rnn_state_size = 10
-    self.rnn_dim_axis = cx.SizedAxis('rnn_dim', self.rnn_state_size)
-    self.forward_tower_factory = functools.partial(
-        towers.ForwardTower.build_using_factories,
-        inputs_in_dims=('d',),
-        out_dims=('d',),
-        neural_net_factory=functools.partial(
-            standard_layers.Mlp.uniform, hidden_size=6, hidden_layers=2
-        ),
-    )
+    self.rnn_dim_axis = cx.SizedAxis('rnn_dim', 10)
     self.mesh = parallelism.Mesh()
 
   @parameterized.parameters(
@@ -300,28 +304,18 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
   )
   def test_recurrent_tower_transform_shapes(self, rnn_cell_factory, state_keys):
     """Tests that RecurrentTowerTransform produces correct shapes."""
-    state_size = self.rnn_state_size
     state_axis = self.rnn_dim_axis
     test_inputs = {
-        'precipitation': ones_field_for_coord(self.coord),
-        'evaporation': ones_field_for_coord(self.coord),
+        'u_wind': ones_field_for_coord(self.coord),
+        'v_wind': ones_field_for_coord(self.coord),
     }
     for key in state_keys:
-      test_inputs[key] = cx.field(
-          np.ones((state_size,) + self.grid.shape),
-          cx.coords.compose(state_axis, self.grid),
+      test_inputs[key] = ones_field_for_coord(
+          cx.coords.compose(state_axis, self.grid)
       )
 
     input_shapes = pytree_utils.shape_structure(test_inputs)
-    target_coords = {
-        'rnn_raw_output': cx.coords.compose(
-            cx.SizedAxis('rnn_dim', 10), self.grid
-        ),
-    }
-    internal_coords = {
-        key: cx.coords.compose(state_axis, self.grid) for key in state_keys
-    }
-    output_coords_with_state = target_coords | internal_coords
+    target_split_axes = {'rnn_raw_output': cx.SizedAxis('rnn_dim', 10)}
 
     tower_factory = functools.partial(
         towers.RecurrentTower.build_using_factories,
@@ -330,136 +324,33 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
         out_dims=('d',),
         rnn_cell_factory=rnn_cell_factory,
     )
-
     transform = (
         learned_transforms.RecurrentTowerTransform.build_using_factories(
             input_shapes=input_shapes,
-            targets=target_coords,
+            target_split_axes=target_split_axes,
             tower_factory=tower_factory,
-            dims_to_align=(self.grid,),
+            concat_dims=(self.levels,),
             state_keys=state_keys,
             mesh=self.mesh,
             rngs=nnx.Rngs(0),
         )
     )
 
-    with self.subTest('output_shapes'):
-      actual = pytree_utils.shape_structure(transform(test_inputs))
-      expected = field_utils.shape_struct_fields_from_coords(
-          output_coords_with_state
-      )
-      chex.assert_trees_all_equal(actual, expected)
-
-    with self.subTest('output_shapes_method'):
-      actual = transform.output_shapes(input_shapes)
-      expected = field_utils.shape_struct_fields_from_coords(
-          output_coords_with_state
-      )
-      chex.assert_trees_all_equal(actual, expected)
-
-  @parameterized.parameters(
-      dict(
-          rnn_cell_factory=standard_layers.LSTMCell,
-          state_keys=('lstm_c', 'lstm_h'),
-      ),
-      dict(
-          rnn_cell_factory=standard_layers.OptimizedLSTMCell,
-          state_keys=('lstm_c', 'lstm_h'),
-      ),
-      dict(
-          rnn_cell_factory=standard_layers.GRUCell,
-          state_keys=('gru_h',),
-      ),
-      dict(
-          rnn_cell_factory=standard_layers.SimpleCell,
-          state_keys=('simple_h',),
-      ),
-  )
-  def test_recurrent_tower_transform_with_out_transform(
-      self, rnn_cell_factory, state_keys
-  ):
-    """Tests RecurrentTowerTransform with a ForwardTowerTransform as out_transform."""
-    state_size = self.rnn_state_size
-    state_axis = self.rnn_dim_axis
-    test_inputs = {
-        'time': cx.field(jdt.to_datetime('2025-05-21T00')),
+    expected_targets_coords = {
+        k: cx.coords.compose(v, self.grid) for k, v in target_split_axes.items()
     }
-    for key in state_keys:
-      test_inputs[key] = cx.field(
-          np.ones((state_size,) + self.grid.shape),
-          cx.coords.compose(state_axis, self.grid),
-      )
-
-    features = transforms.Merge({
-        'radiation': feature_transforms.RadiationFeatures(self.grid),
-        'latitude': feature_transforms.LatitudeFeatures(self.grid),
-        'prognostics': transforms.Select(r'(?!time).*'),
-    })
-    input_shapes = pytree_utils.shape_structure(test_inputs)
-    # These are the shapes of outputs from RecurrentTower + state, which are
-    # inputs to ForwardTowerTransform.
-    target_coords = {
-        'rnn_raw_output': cx.coords.compose(
-            cx.SizedAxis('rnn_dim', 10), self.grid
-        ),
-    }
-    out_transform_input_coords = target_coords
-    out_transform_input_shapes = field_utils.shape_struct_fields_from_coords(
-        out_transform_input_coords
-    )
-    # These are the final targets in "physical space".
-    final_target_coords = {
-        'volumetric_soil_water': cx.coords.compose(self.levels, self.grid),
-        'snow_depth': self.grid,
-    }
-    out_transform = (
-        learned_transforms.ForwardTowerTransform.build_using_factories(
-            input_shapes=out_transform_input_shapes,
-            targets=final_target_coords,
-            tower_factory=self.forward_tower_factory,
-            dims_to_align=(self.grid,),
-            mesh=self.mesh,
-            rngs=nnx.Rngs(0),
-        )
-    )
-
-    tower_factory = functools.partial(
-        towers.RecurrentTower.build_using_factories,
-        inputs_in_dims=('d',),
-        state_dims=(state_axis,),
-        out_dims=('d',),
-        rnn_cell_factory=rnn_cell_factory,
-    )
-
-    transform = (
-        learned_transforms.RecurrentTowerTransform.build_using_factories(
-            input_shapes=input_shapes,
-            in_transform=features,
-            targets=target_coords,
-            tower_factory=tower_factory,
-            dims_to_align=(self.grid,),
-            out_transform=out_transform,
-            state_keys=state_keys,
-            mesh=self.mesh,
-            rngs=nnx.Rngs(0),
-        )
-    )
-
-    internal_coords = {
+    expected_state_coords = {
         key: cx.coords.compose(state_axis, self.grid) for key in state_keys
     }
+    expected_coords = expected_targets_coords | expected_state_coords
     with self.subTest('output_shapes'):
       actual = pytree_utils.shape_structure(transform(test_inputs))
-      expected = field_utils.shape_struct_fields_from_coords(
-          final_target_coords | internal_coords
-      )
+      expected = field_utils.shape_struct_fields_from_coords(expected_coords)
       chex.assert_trees_all_equal(actual, expected)
 
     with self.subTest('output_shapes_method'):
       actual = transform.output_shapes(input_shapes)
-      expected = field_utils.shape_struct_fields_from_coords(
-          final_target_coords | internal_coords
-      )
+      expected = field_utils.shape_struct_fields_from_coords(expected_coords)
       chex.assert_trees_all_equal(actual, expected)
 
 
@@ -483,6 +374,10 @@ class TransformerTowerTransformTest(parameterized.TestCase):
 
     # Define target coordinates for both a volume and a surface field.
     target_levels = coordinates.SigmaLevels.equidistant(5)
+    target_split_axes = {
+        'tendency_of_u': target_levels,
+        'tendency_of_surface_pressure': cx.Scalar(),
+    }
     target_coord = cx.coords.compose(target_levels, self.grid)
     target_coords = {
         'tendency_of_u': target_coord,
@@ -529,9 +424,9 @@ class TransformerTowerTransformTest(parameterized.TestCase):
     transformer_tower_transform = (
         learned_transforms.TransformerTowerTransform.build_using_factories(
             input_shapes=input_shapes,
-            targets=target_coords,
+            target_split_axes=target_split_axes,
             tower_factory=tower_factory,
-            input_dims_to_align=(self.grid,),
+            concat_dims=(self.levels,),
             mesh=self.mesh,
             rngs=rngs,
         )

@@ -110,10 +110,10 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     surface_observation_operator_transform = (
         learned_transforms.ForwardTowerTransform.build_using_factories(
             input_shapes=state_shapes,
-            targets={'evaporation': grid},
+            target_split_axes={'evaporation': cx.Scalar()},
             tower_factory=tower_factory,
-            dims_to_align=(grid,),
-            in_transform=transforms.ToNodal(ylm_map),
+            concat_dims=('sigma',),
+            inputs_transform=transforms.ToNodal(ylm_map),
             feature_sharding_schema=None,
             result_sharding_schema=None,
             mesh=mesh,

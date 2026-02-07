@@ -116,7 +116,7 @@ class DataObservationOperatorsTest(parameterized.TestCase):
       operator.observe(inputs={}, query=query)
 
 
-class LearnedTransformObservationOperatorTest(parameterized.TestCase):
+class TransformObservationOperatorTest(parameterized.TestCase):
   """Tests TransformObservationOperator with learned transform."""
 
   def setUp(self):
@@ -144,13 +144,13 @@ class LearnedTransformObservationOperatorTest(parameterized.TestCase):
     self.observation_transform = (
         learned_transforms.ForwardTowerTransform.build_using_factories(
             input_shapes=pytree_utils.shape_structure(self.inputs),
-            targets={
-                'turbulence_index': full_coord,
-                'evap_rate': lon_lat_grid,
+            target_split_axes={
+                'turbulence_index': sigma_levels,
+                'evap_rate': cx.Scalar(),
             },
             tower_factory=tower_factory,
-            dims_to_align=(lon_lat_grid,),
-            in_transform=feature_module,
+            concat_dims=(sigma_levels.dims[0],),
+            inputs_transform=feature_module,
             mesh=parallelism.Mesh(None),
             rngs=nnx.Rngs(0),
         )
@@ -166,55 +166,6 @@ class LearnedTransformObservationOperatorTest(parameterized.TestCase):
     self.assertSetEqual(set(actual.keys()), set(query.keys()))
     self.assertEqual(cx.get_coordinate(actual['evap_rate']), self.lon_lat_grid)
     self.assertEqual(cx.get_coordinate(actual['turbulence_index']), full_coord)
-
-
-class LearnedSparseScalarObservationFromNeighborsTest(parameterized.TestCase):
-  """Tests learned sparse scalar observation from neighbors implementation."""
-
-  def setUp(self):
-    super().setUp()
-    self.grid = coordinates.LonLatGrid.T21()
-    feature_module = feature_transforms.LatitudeFeatures(self.grid)
-    layer_factory = functools.partial(
-        standard_layers.MlpUniform, hidden_size=6, n_hidden_layers=2
-    )
-    tower_factory = functools.partial(
-        towers.ForwardTower.build_using_factories,
-        inputs_in_dims=('d',),
-        out_dims=('d',),
-        neural_net_factory=layer_factory,
-    )
-    prediction_targets = {'temperature': cx.Scalar(), 'wind_speed': cx.Scalar()}
-    self.operator = observation_operators.LearnedSparseScalarObservationFromNeighbors.build_using_factories(
-        target_predictions=prediction_targets,
-        grid=self.grid,
-        grid_features=feature_module,
-        tower_factory=tower_factory,
-        input_shapes={},
-        mesh=parallelism.Mesh(None),
-        rngs=nnx.Rngs(0),
-    )
-
-  def test_output_structure(self):
-    sparse_coord = cx.LabeledAxis('id', np.arange(7))
-    np.random.seed(0)
-    longitudes = cx.field(np.random.uniform(0, 360, 7), sparse_coord)
-    latitudes = cx.field(np.random.uniform(-90, 90, 7), sparse_coord)
-    full_query = {
-        'longitude': longitudes,
-        'latitude': latitudes,
-        'temperature': sparse_coord,
-        'wind_speed': sparse_coord,
-    }
-    actual = self.operator.observe({}, full_query)
-    self.assertSetEqual(
-        set(actual.keys()),
-        {'longitude', 'latitude', 'temperature', 'wind_speed'},
-    )
-    np.testing.assert_array_equal(actual['longitude'].data, longitudes.data)
-    np.testing.assert_array_equal(actual['latitude'].data, latitudes.data)
-    self.assertEqual(cx.get_coordinate(actual['temperature']), sparse_coord)
-    self.assertEqual(cx.get_coordinate(actual['wind_speed']), sparse_coord)
 
 
 class MultiObservationOperatorTest(parameterized.TestCase):

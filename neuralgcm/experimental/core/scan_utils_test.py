@@ -23,6 +23,7 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import scan_utils
@@ -234,6 +235,22 @@ class ScanSpecsUtilsTest(parameterized.TestCase):
     inputs_spec = {'x': coordinates.TimeDelta([delta])}
     actual_steps = scan_utils.nested_scan_steps(inputs_spec, dt, ref_t0=ref_t0)
     self.assertEqual(actual_steps, (2, 1))
+
+  def test_nested_scan_specs_preserves_wrappers(self):
+    dt = np.timedelta64(1, 'h')
+    x = cx.SizedAxis('x', 4)
+    data_dt = np.timedelta64(6, 'h')
+    timedelta = coordinates.TimeDelta(range_from_one(4) * data_dt)
+    with_td = lambda c: cx.coords.compose(timedelta, c)
+    inputs_spec = {
+        'a': {'u': data_specs.FieldInQuerySpec(with_td(x)), 'v': with_td(x)},
+    }
+    actual_scan_specs = scan_utils.nested_scan_specs(inputs_spec, dt)
+    expected_scan_specs = (
+        {},
+        {'a': {'u': data_specs.FieldInQuerySpec(with_td(x)), 'v': with_td(x)}},
+    )
+    self.assertEqual(actual_scan_specs, expected_scan_specs)
 
 
 class NestDataForScansUtilsTest(parameterized.TestCase):

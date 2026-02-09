@@ -20,26 +20,43 @@ from typing import Sequence, TypeAlias
 import coordax as cx
 import jax
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import pytree_utils
 import numpy as np
 
 
-def _extract_timedelta(
-    coordinate: cx.Coordinate,
-) -> coordinates.TimeDelta:
-  """Extracts TimeDelta axis from a coordinate or raises if none found."""
-  return cx.coords.extract(coordinate, coordinates.TimeDelta)
-
-
-# A pytree of `cx.Coordinate` that defines the inputs to a nested scan.
-InputsSpecLike: TypeAlias = (
-    dict[str, dict[str, cx.Coordinate]] | dict[str, cx.Coordinate]
+CoordOrFinalizedQuery: TypeAlias = data_specs.FinalizedQuerySpec
+# Concrete spec excludes `OptionalSpec` and `CoordSpec` types, leaving only
+# `cx.Coordinate` and concrete `FieldInQuerySpec`, aka FinalizedQuerySpec.
+ConcreteSpecs: TypeAlias = (
+    dict[str, dict[str, CoordOrFinalizedQuery]]
+    | dict[str, CoordOrFinalizedQuery]
 )
 # A pytree of `cx.Field` that provides data for a nested scan.
 InputsLike: TypeAlias = dict[str, dict[str, cx.Field]] | dict[str, cx.Field]
 
 
-def _drop_none_from_nested_dict(nested: InputsSpecLike) -> InputsSpecLike:
+def _get_coord(spec: CoordOrFinalizedQuery) -> cx.Coordinate:
+  """Unwraps FieldInQuerySpec if present."""
+  if isinstance(spec, data_specs.FieldInQuerySpec):
+    return spec.spec
+  return spec
+
+
+def _extract_timedelta(
+    spec: CoordOrFinalizedQuery,
+) -> coordinates.TimeDelta:
+  """Extracts TimeDelta axis from a spec or raises if none found."""
+  coordinate = _get_coord(spec)
+  return cx.coords.extract(coordinate, coordinates.TimeDelta)
+
+
+def _is_spec_leaf(x) -> bool:
+  """Returns True if x is a Coordinate or FieldInQuerySpec."""
+  return isinstance(x, (cx.Coordinate, data_specs.FieldInQuerySpec))
+
+
+def _drop_none_from_nested_dict(nested: ConcreteSpecs) -> ConcreteSpecs:
   """Filters out None values from a pytree."""
   flat, _ = pytree_utils.flatten_dict(nested)
   flat = {k: v for k, v in flat.items() if v is not None}
@@ -47,15 +64,14 @@ def _drop_none_from_nested_dict(nested: InputsSpecLike) -> InputsSpecLike:
 
 
 def _group_by_timedeltas(
-    inputs_spec: InputsSpecLike,
+    inputs_spec: ConcreteSpecs,
     dt: np.timedelta64 | None = None,
     ref_t0: np.timedelta64 | None = None,
-) -> Sequence[tuple[np.timedelta64, InputsSpecLike]]:
+) -> Sequence[tuple[np.timedelta64, ConcreteSpecs]]:
   """Returns input specs grouped by their dt steps in the increasing order."""
-  is_coord = lambda c: isinstance(c, cx.Coordinate)
-  map_coords = functools.partial(jax.tree.map, is_leaf=is_coord)
+  map_coords = functools.partial(jax.tree.map, is_leaf=_is_spec_leaf)
   td_axes = map_coords(_extract_timedelta, inputs_spec)
-  td_axes_flat = jax.tree.leaves(td_axes, is_leaf=is_coord)
+  td_axes_flat = jax.tree.leaves(td_axes, is_leaf=_is_spec_leaf)
   unique_timedelta_axes = set(td_axes_flat)
 
   def _get_step(timedelta_axis: coordinates.TimeDelta):
@@ -76,17 +92,20 @@ def _group_by_timedeltas(
     step_to_axis[dt] = None
   groups = []
   for step, axis in step_to_axis.items():
-    group = map_coords(lambda x: x if axis in x.axes else None, inputs_spec)  # pylint: disable=cell-var-from-loop
+    # pylint: disable=cell-var-from-loop
+    group = map_coords(
+        lambda x: x if axis in _get_coord(x).axes else None, inputs_spec
+    )
+    # pylint: enable=cell-var-from-loop
     group = _drop_none_from_nested_dict(group)
     groups.append((step, group))
   return sorted(tuple(groups), key=lambda x: x[0])
 
 
-def _shared_final_leadtime(inputs_spec: InputsSpecLike) -> np.timedelta64:
+def _shared_final_leadtime(inputs_spec: ConcreteSpecs) -> np.timedelta64:
   """Returns the shared end time for all timedeltas in `inputs_spec`."""
-  is_coord = lambda c: isinstance(c, cx.Coordinate)
-  coords = jax.tree.leaves(inputs_spec, is_leaf=is_coord)
-  final_deltas = [_extract_timedelta(c).deltas[-1] for c in coords]
+  leaves = jax.tree.leaves(inputs_spec, is_leaf=_is_spec_leaf)
+  final_deltas = [_extract_timedelta(c).deltas[-1] for c in leaves]
   final_deltas = set(final_deltas)
   if len(final_deltas) == 1:
     [final_delta] = list(final_deltas)
@@ -98,7 +117,7 @@ def _shared_final_leadtime(inputs_spec: InputsSpecLike) -> np.timedelta64:
 
 
 def _compute_steps_and_validate(
-    by_td: Sequence[tuple[np.timedelta64, InputsSpecLike]],
+    by_td: Sequence[tuple[np.timedelta64, ConcreteSpecs]],
     outer_delta: np.timedelta64,
     ref_t0: np.timedelta64 | None = None,
 ) -> tuple[int, ...]:
@@ -118,10 +137,10 @@ def _compute_steps_and_validate(
 
 
 def nested_scan_specs(
-    inputs_spec: InputsSpecLike,
+    inputs_spec: ConcreteSpecs,
     dt: np.timedelta64 | None = None,
     ref_t0: np.timedelta64 | None = None,
-) -> tuple[InputsSpecLike, ...]:
+) -> tuple[ConcreteSpecs, ...]:
   """Returns sequence of input spec for `inputs_spec` with nestable timedeltas.
 
   Partitions single inputs_spec with potentially varying TimeDelta axes into a
@@ -151,7 +170,7 @@ def nested_scan_specs(
 
 
 def nested_scan_steps(
-    inputs_spec: InputsSpecLike,
+    inputs_spec: ConcreteSpecs,
     dt: np.timedelta64 | None = None,
     ref_t0: np.timedelta64 | None = None,
 ) -> tuple[int, ...]:
@@ -208,15 +227,19 @@ def nest_data_for_scans(
 
 def ravel_data_from_nested_scans(
     outputs: InputsLike,
-    outputs_spec: InputsSpecLike,
+    outputs_spec: ConcreteSpecs,
 ) -> InputsLike:
   """Returns `inputs` raveled and labeled with timedeltas in `outputs_spec`."""
 
   def _retag(field: cx.Field, coord):
+    coord = _get_coord(coord)
     timedelta = cx.coords.extract(coord, coordinates.TimeDelta)
     result = cx.cmap(lambda x: x.ravel())(field).tag(timedelta)
     if result.coordinate != coord:
       raise ValueError(f'Coordinate mismatch: {result.coordinate} vs {coord}')
     return result
 
-  return jax.tree.map(_retag, outputs, outputs_spec, is_leaf=cx.is_field)
+  def _is_leaf(x):
+    return cx.is_field(x) or _is_spec_leaf(x)
+
+  return jax.tree.map(_retag, outputs, outputs_spec, is_leaf=_is_leaf)

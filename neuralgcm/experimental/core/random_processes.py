@@ -64,7 +64,7 @@ class RandomProcessModule(nnx.Module, abc.ABC):
   @abc.abstractmethod
   def state_values(
       self,
-      coords: cx.Coordinate | None = None,
+      coord: cx.Coordinate | None = None,
   ) -> cx.Field:
     """Returns the values of the current random state evaluated on `coords`."""
 
@@ -79,52 +79,54 @@ class UniformUncorrelated(RandomProcessModule):
 
   def __init__(
       self,
-      coords: cx.Coordinate,
       minval: float,
       maxval: float,
+      coord: cx.Coordinate,
       rngs: nnx.Rngs,
   ):
-    self.coords = coords
+    self.coord = coord
     self.minval = minval
     self.maxval = maxval
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
     self.rng_step = Randomness(cx.field(0))
-    self.core = Randomness(self._sample_core(k))
+    self.core = Randomness(k)
 
-  def _sample_core(self, rng: cx.Field) -> cx.Field:
+  def _sample_core(
+      self, rng: cx.Field, coord: cx.Coordinate | None
+  ) -> cx.Field:
     """Samples the core of the uniform random field."""
+    if coord is None:
+      coord = self.coord
     sample_fn = lambda rng: jax.random.uniform(
         rng,
         minval=self.minval,
         maxval=self.maxval,
-        shape=self.coords.shape,
+        shape=coord.shape,
     )
     out_axes = {c: i for i, c in enumerate(rng.axes)}
-    return cx.cmap(sample_fn, out_axes)(rng).tag(self.coords)
+    return cx.cmap(sample_fn, out_axes)(rng).tag(coord)
 
   def unconditional_sample(self, rng: cx.Field) -> None:
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
     self.state_rng.set_value(rng)
-    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
-    self.core.set_value(self._sample_core(k))
+    self.rng_step.set_value(
+        cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate)
+    )
+    self.core.set_value(k)
 
   def advance(self) -> None:
-    k = cx.cmap(_advance_prng_key)(self.state_rng.get_value(), self.rng_step.get_value())
+    k = cx.cmap(_advance_prng_key)(
+        self.state_rng.get_value(), self.rng_step.get_value()
+    )
     self.rng_step.set_value(self.rng_step.get_value() + 1)
-    self.core.set_value(self._sample_core(k))
+    self.core.set_value(k)
 
   def state_values(
       self,
-      coords: cx.Coordinate | None = None,
+      coord: cx.Coordinate | None = None,
   ) -> cx.Field:
-    if coords is None:
-      coords = self.coords
-    if coords != self.coords:
-      raise ValueError(
-          f'Interpolation is not supported yet: {coords=} {self.coords=}'
-      )
-    return self.core.get_value()
+    return self._sample_core(self.core.get_value(), coord)
 
 
 class NormalUncorrelated(RandomProcessModule):
@@ -132,49 +134,51 @@ class NormalUncorrelated(RandomProcessModule):
 
   def __init__(
       self,
-      coords: cx.Coordinate,
       mean: float,
       std: float,
+      coord: cx.Coordinate,
       rngs: nnx.Rngs,
   ):
-    self.coords = coords
+    self.coord = coord
     self.mean = mean
     self.std = std
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
     self.rng_step = Randomness(cx.field(0))
-    self.core = Randomness(self._sample_core(k))
+    self.core = Randomness(k)  # core of uncorrelated is just a key.
 
-  def _sample_core(self, rng: cx.Field) -> cx.Field:
+  def _sample_core(
+      self, rng: cx.Field, coord: cx.Coordinate | None
+  ) -> cx.Field:
     """Samples the core of the normal random field."""
+    if coord is None:
+      coord = self.coord
     sample_fn = lambda rng: self.mean + self.std * jax.random.normal(
-        rng, shape=self.coords.shape
+        rng, shape=coord.shape
     )
     out_axes = {c: i for i, c in enumerate(rng.axes)}
-    return cx.cmap(sample_fn, out_axes)(rng).tag(self.coords)
+    return cx.cmap(sample_fn, out_axes)(rng).tag(coord)
 
   def unconditional_sample(self, rng: cx.Field):
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
     self.state_rng.set_value(rng)
-    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
-    self.core.set_value(self._sample_core(k))
+    self.rng_step.set_value(
+        cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate)
+    )
+    self.core.set_value(k)
 
   def advance(self):
-    k = cx.cmap(_advance_prng_key)(self.state_rng.get_value(), self.rng_step.get_value())
+    k = cx.cmap(_advance_prng_key)(
+        self.state_rng.get_value(), self.rng_step.get_value()
+    )
     self.rng_step.set_value(self.rng_step.get_value() + 1)
-    self.core.set_value(self._sample_core(k))
+    self.core.set_value(k)
 
   def state_values(
       self,
-      coords: cx.Coordinate | None = None,
+      coord: cx.Coordinate | None = None,
   ) -> cx.Field:
-    if coords is None:
-      coords = self.coords
-    if coords != self.coords:
-      raise ValueError(
-          f'Interpolation is not supported yet: {coords=} {self.coords=}'
-      )
-    return self.core.get_value()
+    return self._sample_core(self.core.get_value(), coord)
 
 
 class GaussianRandomFieldCore(nnx.Module):
@@ -398,27 +402,33 @@ class GaussianRandomField(RandomProcessModule):
     """Returns a randomly initialized state for the autoregressive process."""
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
     self.state_rng.set_value(rng)
-    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
-    self.core.set_value(cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid))
+    self.rng_step.set_value(
+        cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate)
+    )
+    self.core.set_value(
+        cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid)
+    )
 
   def advance(self) -> None:
     """Updates the CoreRandomState of a random gaussian field."""
-    self.core.set_value(cx.cmap(self.grf.advance_core)(
-        self.core.get_value().untag(self.grf.core_grid),
-        self.state_rng.get_value(),
-        self.rng_step.get_value(),
-    ).tag(self.grf.core_grid))
+    self.core.set_value(
+        cx.cmap(self.grf.advance_core)(
+            self.core.get_value().untag(self.grf.core_grid),
+            self.state_rng.get_value(),
+            self.rng_step.get_value(),
+        ).tag(self.grf.core_grid)
+    )
     self.rng_step.set_value(self.rng_step.get_value() + 1)
 
   def state_values(
       self,
-      coords: cx.Coordinate | None = None,
+      coord: cx.Coordinate | None = None,
   ) -> cx.Field:
-    if coords is None:
-      coords = self.ylm_map.nodal_grid
-    if coords != self.ylm_map.nodal_grid:
+    if coord is None:
+      coord = self.ylm_map.nodal_grid
+    if coord != self.ylm_map.nodal_grid:
       raise ValueError(
-          f'Interpolation is not supported yet, requested {coords=} '
+          f'Interpolation is not supported yet, requested {coord=} '
           f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
     return self.ylm_map.to_nodal(self.core.get_value())
@@ -504,7 +514,9 @@ class VectorizedGaussianRandomField(RandomProcessModule):
   def unconditional_sample(self, rng: cx.Field) -> None:
     k, next_rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rng)
     self.state_rng.set_value(next_rng)
-    self.rng_step.set_value(cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate))
+    self.rng_step.set_value(
+        cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate)
+    )
     self.core.set_value(self._sample_core(k))
 
   def advance(self) -> None:
@@ -525,13 +537,13 @@ class VectorizedGaussianRandomField(RandomProcessModule):
 
   def state_values(
       self,
-      coords: cx.Coordinate | None = None,
+      coord: cx.Coordinate | None = None,
   ) -> cx.Field:
-    if coords is None:
-      coords = self.ylm_map.nodal_grid
-    if coords != self.ylm_map.nodal_grid:
+    if coord is None:
+      coord = self.ylm_map.nodal_grid
+    if coord != self.ylm_map.nodal_grid:
       raise ValueError(
-          f'Interpolation is not supported yet, requested {coords=} '
+          f'Interpolation is not supported yet, requested {coord=} '
           f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
     return self.ylm_map.to_nodal(self.core.get_value())
@@ -598,21 +610,25 @@ class VectorizedGaussianRandomField(RandomProcessModule):
       dt = sim_units.nondimensionalize_timedelta64(dt)
     times = list(
         int(t)
-        for t in np.linspace(
-            min_time_hrs ** (1 / power),
-            max_time_hrs ** (1 / power),
-            n_fields,
+        for t in (
+            np.linspace(
+                min_time_hrs ** (1 / power),
+                max_time_hrs ** (1 / power),
+                n_fields,
+            )
+            ** power
         )
-        ** power
     )
     lengths = list(
         int(l)
-        for l in np.linspace(
-            min_length_km ** (1 / power),
-            max_length_km ** (1 / power),
-            n_fields,
+        for l in (
+            np.linspace(
+                min_length_km ** (1 / power),
+                max_length_km ** (1 / power),
+                n_fields,
+            )
+            ** power
         )
-        ** power
     )
     correlation_times = [f'{t} hours' for t in times]
     correlation_lengths = [f'{l} km' for l in lengths]

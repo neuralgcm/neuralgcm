@@ -720,7 +720,7 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       maxval,
   ):
     rng = nnx.Rngs(0)
-    uniform = random_processes.UniformUncorrelated(coord, minval, maxval, rng)
+    uniform = random_processes.UniformUncorrelated(minval, maxval, coord, rng)
     with self.subTest('unconditional_sample_stats'):
       sample = uniform.state_values().data
       mean_std_err = (maxval - minval) / np.sqrt(12 * math.prod(coord.shape))
@@ -758,7 +758,7 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       std,
   ):
     rng = nnx.Rngs(0)
-    normal = random_processes.NormalUncorrelated(coord, mean, std, rng)
+    normal = random_processes.NormalUncorrelated(mean, std, coord, rng)
     with self.subTest('unconditional_sample_stats'):
       sample = normal.state_values().data
       mean_std_err = std / np.sqrt(math.prod(coord.shape))

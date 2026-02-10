@@ -35,9 +35,9 @@ class MockModel(api.Model):
   def __init__(self, grid: cx.Coordinate, rngs: nnx.Rngs):
     super().__init__()
     self.process = random_processes.UniformUncorrelated(
-        coords=grid,
         minval=0.0,
         maxval=1.0,
+        coord=grid,
         rngs=rngs,
     )
     self.linear = nnx.Linear(in_features=1, out_features=1, rngs=rngs)

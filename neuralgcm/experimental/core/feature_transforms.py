@@ -97,13 +97,13 @@ class RandomnessFeatures(transforms.TransformABC):
   """Returns values from a random process evaluated on a grid."""
 
   random_process: random_processes.RandomProcessModule
-  grid: cx.Coordinate
+  coord: cx.Coordinate
   feature_name: str = 'randomness'
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.
     return {
-        self.feature_name: self.random_process.state_values(self.grid),
+        self.feature_name: self.random_process.state_values(self.coord),
     }
 
 

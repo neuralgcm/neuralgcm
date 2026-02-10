@@ -69,7 +69,7 @@ class MockModel(api.Model):
       modulation = self.modulation_factor(time)[self.dynamic_modulation_key]
     noise = 0.0
     if self.random_increment is not None:
-      noise = self.random_increment.state_values(coords=self.x)
+      noise = self.random_increment.state_values(coord=self.x)
       self.random_increment.advance()
     next_population = population * modulation + self.steady_increment + noise
     self.prognostics.set_value({
@@ -104,7 +104,7 @@ def construct_mock_model() -> MockModel:
   random_increment = random_processes.NormalUncorrelated(
       mean=0.0,
       std=1.0,
-      coords=x,
+      coord=x,
       rngs=nnx.Rngs(0),
   )
   return MockModel(

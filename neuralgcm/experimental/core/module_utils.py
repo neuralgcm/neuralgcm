@@ -559,7 +559,12 @@ def vectorize_module_fn(
       )
 
     def _untag_coord_in_any_order(tree, c):
-      untag_f = lambda x: x.untag(*sorted(c.axes, key=x.coordinate.axes.index))
+      untag_f = lambda x: x.untag(
+          *sorted(  # only untag dimensions that are present in `x`.
+              [a for a in c.axes if a in x.coordinate.axes],
+              key=x.coordinate.axes.index,
+          )
+      )
       untag_arrays = lambda x: untag_f(x) if cx.is_field(x) else x
       return jax.tree.map(untag_arrays, tree, is_leaf=cx.is_field)
 

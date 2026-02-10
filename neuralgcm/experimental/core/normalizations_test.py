@@ -358,6 +358,31 @@ class StreamingNormalizerTest(parameterized.TestCase):
     # should not raise error
     _streaming_normalizer_apply(normalizer_allowing_missing, inputs)
 
+  def test_streaming_normalizer_skip_nans(self):
+    x = cx.SizedAxis('x', 5)
+    rng = np.random.RandomState(42)
+    inputs_data = rng.normal(size=(10, x.size))
+    # introduce NaNs
+    inputs_data[0, 0] = np.nan
+    inputs_data[2, 3] = np.nan
+    inputs_data[5, 1] = np.nan
+
+    inputs = {'u': cx.field(inputs_data, 'b', x)}
+
+    # Enable skip_nans
+    normalizer = normalizations.StreamingNormalizer(
+        {'u': x}, epsilon=0.0, skip_nans=True
+    )
+    _ = _streaming_normalizer_apply(normalizer, inputs)
+    means, vars_ = normalizer.stats(ddof=1)
+
+    # Calculate expected stats ignoring NaNs
+    expected_mean = np.nanmean(inputs_data, axis=0)
+    expected_var = np.nanvar(inputs_data, axis=0, ddof=1)
+
+    np.testing.assert_allclose(means['u'].data, expected_mean, rtol=1e-5)
+    np.testing.assert_allclose(vars_['u'].data, expected_var, rtol=1e-5)
+
 
 if __name__ == '__main__':
   config.update('jax_enable_x64', True)

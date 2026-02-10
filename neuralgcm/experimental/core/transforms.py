@@ -32,6 +32,7 @@ from typing import Callable, Literal, Sequence, TypeAlias
 
 import coordax as cx
 from flax import nnx
+import jax
 import jax.nn
 import jax.numpy as jnp
 import jax_datetime as jdt
@@ -859,6 +860,7 @@ class StreamingStatsNorm(TransformABC):
       update_stats: bool = False,
       epsilon: float = 1e-11,
       make_masks_transform: Transform | None = None,
+      skip_nans: bool = True,
       skip_unspecified: bool = False,
       allow_missing: bool = True,
   ):
@@ -871,6 +873,7 @@ class StreamingStatsNorm(TransformABC):
       epsilon: A small float added to variance to avoid dividing by zero.
       make_masks_transform: Optional transform that produces a mask indicating
         which entries should contribute to the statistics updates.
+      skip_nans: If True, ignores NaNs when updating the statistics.
       skip_unspecified: If True, input fields for which no normalization is
         specified (i.e., keys not in `norm_coords`) are passed through
         unchanged. If False, presence of such fields in `inputs` raises.
@@ -883,6 +886,7 @@ class StreamingStatsNorm(TransformABC):
         epsilon=epsilon,
         skip_unspecified=skip_unspecified,
         allow_missing=allow_missing,
+        skip_nans=skip_nans,
     )
     self.make_masks_transform = make_masks_transform
     self.update_stats = update_stats
@@ -914,6 +918,7 @@ class StreamingStatsNorm(TransformABC):
       make_masks_transform: Transform | None = None,
       epsilon: float = 1e-11,
       skip_unspecified: bool = False,
+      skip_nans: bool = False,
       allow_missing: bool = True,
   ):
     """Custom constructor based on inputs struct that should be normalized."""
@@ -940,6 +945,7 @@ class StreamingStatsNorm(TransformABC):
         epsilon=epsilon,
         make_masks_transform=make_masks_transform,
         skip_unspecified=skip_unspecified,
+        skip_nans=skip_nans,
         allow_missing=allow_missing,
     )
 
@@ -1429,3 +1435,54 @@ class PointNeighborsFromGrid(TransformABC):
         outputs[f'delta_latitude_{grid_idx}'] = patch_lat - lat_query
 
     return outputs
+
+
+def _sanitize_values(
+    values: typing.Pytree,
+    masks: typing.Pytree,
+) -> dict[str, cx.Field]:
+  """Masks values where mask is True, preserving structure."""
+  _clean = lambda x, m: jnp.where(m, jnp.zeros((), x.dtype), x)
+  return jax.tree.map(_clean, values, masks)
+
+
+@nnx_compat.dataclass
+class SanitizeNanGradTransform(TransformABC):
+  """Wraps a transform to provide NaN-safe gradients."""
+
+  transform: TransformABC
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    @nnx.custom_vjp
+    def _sanitized_transform(t, inputs):
+      return t(inputs)
+
+    def _sanitized_fwd(t, inputs):
+      # we convert any arrays to jax arrays in residual to avoid jax converting
+      # them to an internal type of numpy arrays that is not supported in `cx`.
+      t_def, t_state_before = nnx.split(t)
+      to_array = lambda x: jnp.asarray(x, dtype=x.dtype)
+      residuals = (jax.tree.map(to_array, inputs), t_def, t_state_before)
+      return _sanitized_transform(t, inputs), residuals
+
+    def _sanitized_bwd(res, g):
+      input_updates_g, out_g = g
+      inputs, t_def, t_state_before = res
+      (t_updates_g, _) = input_updates_g  # inputs are not stateful -> ignored.
+      is_nan = jax.tree.map(jnp.isnan, inputs)
+      safe_inputs = _sanitize_values(inputs, is_nan)  # Sanitize inputs.
+      grad_nans = jax.tree.map(jnp.isnan, out_g)  # Sanitize gradients.
+      safe_out_g = _sanitize_values(out_g, grad_nans)
+
+      def _apply_transform(s, x):
+        t = nnx.merge(t_def, s, copy=True)
+        out = t(x)
+        _, new_s = nnx.split(t)
+        return out, new_s
+
+      _, vjp_fn = jax.vjp(_apply_transform, t_state_before, safe_inputs)
+      state_g, inputs_g = vjp_fn((safe_out_g, t_updates_g))
+      return state_g, inputs_g
+
+    _sanitized_transform.defvjp(_sanitized_fwd, _sanitized_bwd)
+    return _sanitized_transform(self.transform, inputs)

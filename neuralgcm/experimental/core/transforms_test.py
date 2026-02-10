@@ -14,11 +14,15 @@
 
 """Tests that transforms produce outputs with expected structure."""
 
+from typing import Callable
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import coordax as cx
+from flax import nnx
 import jax
+import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import interpolators
@@ -1027,6 +1031,172 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
     self.assertEqual(output['f2'].dims, ('points',))
     self.assertIn('delta_longitude_0', output)
     self.assertIn('delta_latitude_0', output)
+
+
+#
+# Sanitize nans transform test with demo transforms.
+#
+
+
+class SimpleScale(transforms.TransformABC):
+  """Simple stateless transform that scales input."""
+
+  def __init__(self, scale):
+    self.scale = nnx.Param(scale)
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    s = self.scale.get_value()
+    return {k: v * s for k, v in inputs.items()}
+
+
+class IncrementStateAndAdd(transforms.TransformABC):
+  """Stateful transform that increments a counter and adds it to input."""
+
+  def __init__(self, init_value: float = 1.0):
+    self.a = nnx.Param(init_value)
+
+  def __call__(self, inputs):
+    to_add = self.a.get_value()
+    self.a.set_value(to_add + 1)
+    return {k: v + to_add for k, v in inputs.items()}
+
+
+class MultiplyStateAndAdd(transforms.TransformABC):
+  """Stateful transform that multiplies state and adds it to input."""
+
+  def __init__(self, init_value: float = 1.0, scale: float = 2.0):
+    self.a = nnx.Param(init_value)
+    self.scale = scale
+
+  def __call__(self, inputs):
+    val = self.a.get_value()
+    self.a.set_value(val * self.scale)
+    return {k: v + val for k, v in inputs.items()}
+
+
+def mean_squared_a_err(transform, inputs, targets):
+  """Computes MSE loss plus state change to track gradients through state."""
+  init_param_sum = sum(jax.tree.leaves(nnx.state(transform)))
+  prediction = transform(inputs)
+  post_param_sum = sum(jax.tree.leaves(nnx.state(transform)))
+  a_squared_errors = cx.cpmap(jnp.square)(prediction['a'] - targets['a'])
+  # Use nanmean to handle NaNs in forward pass output if any
+  return jnp.nanmean(a_squared_errors.data) + post_param_sum - init_param_sum
+
+
+class SanitizedNanGradTransformTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='stateless_simple',
+          transform_factory=lambda: transforms.Sequential([
+              SimpleScale(2.0),
+              transforms.ApplyFnToKeys(cx.cpmap(jnp.square), ['a'], True),
+          ]),
+          inputs={'a': cx.field(np.array([0.0, 1.0, 2.0]), 'x')},
+      ),
+      dict(
+          testcase_name='stateful_increment',
+          transform_factory=lambda: transforms.Sequential([
+              SimpleScale(2.0),
+              IncrementStateAndAdd(0.0),
+          ]),
+          inputs={'a': cx.field(np.array([0.0, 1.0, 2.0]), 'x')},
+      ),
+      dict(
+          testcase_name='stateful_multiply',
+          transform_factory=lambda: transforms.Sequential([
+              SimpleScale(2.0),
+              MultiplyStateAndAdd(1.0, 3.0),
+          ]),
+          inputs={'a': cx.field(np.array([0.0, 1.0, 2.0]), 'x')},
+      ),
+      dict(
+          testcase_name='stateful_multiply_chained',
+          transform_factory=lambda: transforms.Sequential([
+              SimpleScale(2.0),
+              MultiplyStateAndAdd(1.0, 3.0),
+              MultiplyStateAndAdd(1.0, 3.0),
+          ]),
+          inputs={'a': cx.field(np.array([0.0, 1.0, 2.0]), 'x')},
+      ),
+  )
+  def test_equivalence_no_nans(
+      self,
+      transform_factory: Callable[[], transforms.TransformABC],
+      inputs: dict[str, cx.Field],
+  ):
+    """Verifies sanitized matches original for clean inputs."""
+    # Compute targets using throwaway instance to avoid state mutation
+    targets = {'a': transform_factory()(inputs)['a'] + 0.5}
+
+    # Reference run
+    original = transform_factory()
+    out_orig, grads_orig = nnx.value_and_grad(mean_squared_a_err, argnums=0)(
+        original, inputs, targets
+    )
+
+    # Sanitized run
+    sanitized = transforms.SanitizeNanGradTransform(transform_factory())
+    out_san, grads_san = nnx.value_and_grad(mean_squared_a_err, argnums=0)(
+        sanitized, inputs, targets
+    )
+
+    np.testing.assert_allclose(out_san, out_orig, err_msg='output mismatch')
+    chex.assert_trees_all_close(grads_san['transform'], grads_orig)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='stateless_simple_nan',
+          transform_factory=lambda: transforms.Sequential([
+              SimpleScale(2.0),
+              transforms.ApplyFnToKeys(cx.cpmap(jnp.square), ['a'], True),
+          ]),
+          inputs={'a': cx.field(np.array([0.0, np.nan, 2.0]), 'x')},
+          inputs_filtered={'a': cx.field(np.array([0.0, 2.0]), 'x')},
+      ),
+      dict(
+          testcase_name='stateful_multiply_nan',
+          transform_factory=lambda: transforms.Sequential([
+              SimpleScale(2.0),
+              MultiplyStateAndAdd(1.0, 3.0),
+          ]),
+          inputs={'a': cx.field(np.array([np.nan, 1.0, 2.0]), 'x')},
+          inputs_filtered={'a': cx.field(np.array([1.0, 2.0]), 'x')},
+      ),
+  )
+  def test_gradients_with_nans(
+      self,
+      transform_factory: Callable[[], transforms.TransformABC],
+      inputs: dict[str, cx.Field],
+      inputs_filtered: dict[str, cx.Field],
+  ):
+    """Verifies gradients match reference run on valid data subset."""
+    targets_full = {'a': transform_factory()(inputs)['a'] + 0.5}  # with Nans.
+    targets_filtered = {'a': transform_factory()(inputs_filtered)['a'] + 0.5}
+
+    # Reference run using filtered data without nans.
+    original = transform_factory()
+    out_orig, grads_orig = nnx.value_and_grad(mean_squared_a_err, argnums=0)(
+        original, inputs_filtered, targets_filtered
+    )
+
+    # Sanitized Run (Full with NaNs), should match reference.
+    sanitized = transforms.SanitizeNanGradTransform(transform_factory())
+    out_san, grads_san = nnx.value_and_grad(mean_squared_a_err, argnums=0)(
+        sanitized, inputs, targets_full
+    )
+
+    # Check finite sanitized gradients.
+    grads_san_inner = grads_san['transform']
+    leaves_san = jax.tree.leaves(grads_san_inner)
+    self.assertTrue(
+        all(np.all(np.isfinite(l)) for l in leaves_san),
+        msg=f'Gradients contain NaNs: {leaves_san}',
+    )
+
+    np.testing.assert_allclose(out_san, out_orig, err_msg='output mismatch')
+    chex.assert_trees_all_close(grads_san_inner, grads_orig)
 
 
 if __name__ == '__main__':

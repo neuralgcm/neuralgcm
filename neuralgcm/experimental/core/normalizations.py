@@ -158,6 +158,7 @@ class StreamingNormalizer(nnx.Module):
   m2: dict[str, StreamingValue]
   epsilon: float
   skip_unspecified: bool
+  skip_nans: bool
   allow_missing: bool
 
   def __init__(
@@ -165,6 +166,7 @@ class StreamingNormalizer(nnx.Module):
       coords: dict[str, cx.Coordinate],
       epsilon: float = 1e-11,
       skip_unspecified: bool = False,
+      skip_nans: bool = False,
       allow_missing: bool = True,
   ):
     """Initializes StreamingNormalizer.
@@ -175,12 +177,14 @@ class StreamingNormalizer(nnx.Module):
       epsilon: A small float added to variance to avoid dividing by zero.
       skip_unspecified: If True, inputs with keys not in `coords` are passed
         through. If False, an error is raised for such keys.
+      skip_nans: If True, ignores NaNs when updating the statistics.
       allow_missing: If True, `inputs` can be missing keys that are in `coords`.
         If False, an error is raised if `inputs` is missing keys from `coords`.
     """
     self.coords = coords
     self.epsilon = epsilon
     self.skip_unspecified = skip_unspecified
+    self.skip_nans = skip_nans
     self.allow_missing = allow_missing
     self.counters = StreamingCounter({
         k: cx.field(jnp.zeros(c.shape, dtype=jnp.int32), c)
@@ -212,25 +216,36 @@ class StreamingNormalizer(nnx.Module):
       if cx.get_coordinate(x, missing_axes='skip') != stat_coord:
         raise ValueError(f'wrong coord on {k=}')
 
-      if mask is None:
+      w = None
+      if mask is not None:
+        mask_batch_dims = tuple(d for d in batch_dims if d in mask.dims)
+        w = cx.cmap(lambda m: m.astype(jnp.int32))(mask.untag(*mask_batch_dims))
+        # Broadcast w to x to count valid entries correctly.
+        ones = cx.cmap(lambda x: jnp.ones_like(x, dtype=jnp.int32))(x)
+        w = w * ones
+
+      if self.skip_nans:
+        is_not_nan = cx.cmap(lambda arr: (~jnp.isnan(arr)).astype(jnp.int32))(x)
+        if w is None:
+          w = is_not_nan
+        else:
+          w = w * is_not_nan
+
+      if w is None:
         batch_size = np.prod([f.named_shape[d] for d in batch_dims])
         count_inc = batch_size
         batch_mean = cx.cmap(jnp.mean)(x)
         # Note: we need population variance here (sum of squared deviations).
         batch_m2 = cx.cmap(lambda x: jnp.var(x) * x.size)(x)
       else:
-        mask_batch_dims = tuple(d for d in batch_dims if d in mask.dims)
-        w = cx.cmap(lambda m: m.astype(jnp.int32))(mask.untag(*mask_batch_dims))
-        # Broadcast w to x to count valid entries correctly.
-        ones = cx.cmap(lambda x: jnp.ones_like(x, dtype=jnp.int32))(x)
-        w = w * ones
         count_inc = cx.cmap(jnp.sum)(w)
 
         inv_count_inc = cx.cmap(lambda c: jnp.where(c > 0, 1.0 / c, 0.0))(
             count_inc
         )
-        batch_mean = cx.cmap(jnp.sum)(x * w) * inv_count_inc
-        delta_batch = x - batch_mean
+        safe_x = cx.cmap(lambda x, w: jnp.where(w > 0, x, 0.0))(x, w)
+        batch_mean = cx.cmap(jnp.sum)(safe_x) * inv_count_inc
+        delta_batch = safe_x - batch_mean
         batch_m2 = cx.cmap(jnp.sum)(delta_batch * delta_batch * w)
 
       delta = batch_mean - mean

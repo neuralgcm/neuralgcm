@@ -286,6 +286,22 @@ class InferStencilsTest(absltest.TestCase):
         xreader.TimeStencil(start='0h', stop='1h', step='1h', closed='both'),
     )
 
+  def test_dataset_with_size_1_stencil(self):
+    spec = {
+        'ds_a': {'var_a': self._make_spec([-6, -3, 0])},
+        'ds_targets': {'var_b': self._make_spec([6])},
+    }
+    stencils = data_loading.infer_stencils(spec)
+    self.assertEqual(
+        stencils['ds_a'],
+        xreader.TimeStencil(start='-6h', stop='0h', step='3h', closed='both'),
+    )
+    start = np.timedelta64(6, 'h')
+    stop = np.timedelta64(6, 'h')
+    step = np.timedelta64(0, 's')
+    expected_stencil = xreader.TimeStencil(start, stop, step, closed='both')
+    self.assertEqual(stencils['ds_targets'], expected_stencil)
+
   def test_consistent_variables_in_dataset(self):
     coord = self._make_spec([0, 6])
     spec = {'ds_a': {'var_a': coord, 'var_b': coord}}
@@ -323,7 +339,7 @@ class InferStencilsTest(absltest.TestCase):
 
   def test_empty_timedelta_raises_error(self):
     spec = {'ds_a': {'var_a': self._make_spec([])}}
-    with self.assertRaisesRegex(ValueError, 'TimeDelta must be of size >= 2'):
+    with self.assertRaisesRegex(ValueError, 'TimeDelta must be non-empty'):
       data_loading.infer_stencils(spec)
 
 

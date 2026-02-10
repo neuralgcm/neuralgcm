@@ -73,9 +73,20 @@ class Stencil(Generic[T]):
   def __post_init__(self):
     if self.closed not in {'left', 'right', 'both', 'neither'}:
       raise ValueError(f'invalid value for closed: {self.closed!r}')
-    if not self.stop > self.start:
+    if self.start == self.stop:
+      if self.step != self.stop - self.start:  # check step is zero.
+        raise ValueError(
+            'For single value stencil ``step`` must equal zero: '
+            f'{self.step=} vs {self.stop - self.start=}'
+        )
+      if self.closed != 'both':
+        raise ValueError(
+            'For single value stencil ``closed`` must be "both": '
+            f'{self.closed=}'
+        )
+    elif self.start > self.stop:
       raise ValueError(
-          f'stop must be greater than start: {self.stop} vs {self.start}'
+          f'start must not be greater than stop: {self.start} vs {self.stop}'
       )
 
   @property
@@ -91,11 +102,11 @@ class Stencil(Generic[T]):
   @property
   def points(self) -> np.ndarray:
     """Returns the points at which the stencil is defined."""
-    num = _divide_evenly(self.stop - self.start, self.step)
+    num = _divide_evenly(self.stop - self.start, self.step) if self.step else 0
     result = self.start + self.step * np.arange(num + 1)
-    if not self.includes_start:
+    if not self.includes_start and self.step:
       result = result[1:]
-    if not self.includes_stop:
+    if not self.includes_stop and self.step:
       result = result[:-1]
     return result
 
@@ -216,7 +227,8 @@ def build_sampling_slices(
     # Add 1 since the slice end should be past the desired stop point
     stops += 1
 
-  stride = _divide_evenly(stencil.step, source_step).item()
+  # Ensure that the stride is at least 1 to form valid slices.
+  stride = max(_divide_evenly(stencil.step, source_step).item(), 1)
 
   return [
       slice(start, stop, stride)

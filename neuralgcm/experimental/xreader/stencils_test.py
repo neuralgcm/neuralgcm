@@ -41,9 +41,26 @@ class StencilsTest(parameterized.TestCase):
     stencil = stencils.Stencil(0, 1, 0.5)
     self.assertEqual(stencil.closed, 'left')
 
-  def test_stencil_invalid_stop(self):
-    with self.assertRaisesRegex(ValueError, 'stop must be greater than start'):
-      stencils.Stencil(0, 0, 1)
+  def test_stencil_valid_single_value(self):
+    stencils.Stencil(0, 0, 0, closed='both')
+
+  def test_stencil_invalid_start_greater_than_stop(self):
+    with self.assertRaisesRegex(
+        ValueError, 'start must not be greater than stop'
+    ):
+      stencils.Stencil(0, -1, 1)
+
+  def test_stencil_invalid_single_value_closed(self):
+    with self.assertRaisesRegex(
+        ValueError, 'For single value stencil ``closed`` must be "both"'
+    ):
+      stencils.Stencil(0, 0, 0, closed='left')
+
+  def test_stencil_invalid_single_value_step(self):
+    with self.assertRaisesRegex(
+        ValueError, 'For single value stencil ``step`` must equal zero'
+    ):
+      stencils.Stencil(0, 0, 1, closed='both')
 
   def test_stencil_invalid_closed(self):
     with self.assertRaisesRegex(ValueError, 'invalid value for closed'):

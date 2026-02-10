@@ -435,9 +435,14 @@ def _stencil_from_timedelta(
 ) -> xreader.TimeStencil:
   """Converts a TimeDelta coordinate to a TimeStencil."""
   deltas = timedelta.deltas
-  if deltas.size < 2:
-    raise ValueError(
-        f'TimeDelta must be of size >= 2 to infer a TimeStencil, got {deltas=}'
+  if deltas.size == 0:
+    raise ValueError('TimeDelta must be non-empty to infer TimeStencil.')
+
+  if deltas.size == 1:
+    start = np.timedelta64(deltas.item())
+    no_delta = np.timedelta64(0, 's')
+    return xreader.TimeStencil(  # use both to ensure slices are well formed.
+        start, start, step=no_delta, closed='both'
     )
 
   start = deltas[0]

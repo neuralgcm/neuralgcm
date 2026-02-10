@@ -58,11 +58,10 @@ def ensure_unchanged_state_structure(
     )
 
   def _get_coord_struct(pytree: typing.Pytree) -> typing.Pytree:
-    is_coord = lambda x: isinstance(x, cx.Coordinate)
     to_coord = lambda c: c.coordinate if cx.is_field(c) else c
 
     def squeeze_excluded(c: cx.Coordinate) -> cx.Coordinate:
-      if not is_coord(c):
+      if not cx.is_coord(c):
         return c
       axes = [
           cx.DummyAxis(ax.dims[0], 1) if ax.dims[0] in excluded_dims else ax
@@ -73,7 +72,7 @@ def ensure_unchanged_state_structure(
     field_struct = pytree_utils.shape_structure(pytree)
     coord_struct = jax.tree.map(to_coord, field_struct, is_leaf=cx.is_field)
     coord_struct = jax.tree.map(
-        squeeze_excluded, coord_struct, is_leaf=is_coord
+        squeeze_excluded, coord_struct, is_leaf=cx.is_coord
     )
     return coord_struct
 

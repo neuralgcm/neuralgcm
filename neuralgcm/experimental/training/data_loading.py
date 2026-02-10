@@ -386,8 +386,7 @@ def sel_timedelta_coords(
     values: np.timedelta64 | slice,
 ) -> PyTree:
   """Returns `coords` with TimeDelta coordinate sliced to side of `ref`."""
-  if_coord = lambda c: isinstance(c, cx.Coordinate)
-  fields = jax.tree.map(cx.shape_struct_field, coords, is_leaf=if_coord)
+  fields = jax.tree.map(cx.shape_struct_field, coords, is_leaf=cx.is_coord)
   fn = functools.partial(sel_timedelta_fields, values=values)
   out = jax.eval_shape(fn, fields)
   return jax.tree.map(lambda f: f.coordinate, out, is_leaf=cx.is_field)
@@ -805,7 +804,6 @@ class DataLoader:
   ):
     """Returns shape struct of a time slice of input data."""
     batch_axis = self.make_batch_axis(batch_size_per_device)
-    is_coord = lambda c: isinstance(c, cx.Coordinate)
 
     def infer_data_slice_struct(c):
       axes = [ax for ax in c.axes if 'timedelta' not in ax.dims]
@@ -816,7 +814,7 @@ class DataLoader:
     return jax.tree.map(
         infer_data_slice_struct,
         input_data_specs,
-        is_leaf=is_coord,
+        is_leaf=cx.is_coord,
     )
 
   def _read_sharded_fields(

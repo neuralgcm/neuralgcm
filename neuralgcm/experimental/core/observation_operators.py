@@ -113,12 +113,11 @@ class DataObservationOperator(ObservationOperatorABC):
     """Returns observations for `query` matched against `self.fields`."""
     del inputs  # unused.
     observations = {}
-    is_coordinate = lambda x: isinstance(x, cx.Coordinate)
     valid_keys = list(self.fields.keys())
     for k, query_coord in query.items():
       if k not in valid_keys:
         raise ValueError(f'query contains {k=} not in {valid_keys}')
-      if not is_coordinate(query_coord):
+      if not cx.is_coord(query_coord):
         raise ValueError(
             'DataObservationOperator only supports coordinate queries, got'
             f' {query_coord}'

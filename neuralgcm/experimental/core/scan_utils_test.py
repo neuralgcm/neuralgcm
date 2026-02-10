@@ -349,10 +349,9 @@ class NestedScanExampleTest(parameterized.TestCase):
     scan_steps = scan_utils.nested_scan_steps(inputs_spec, dt)
     self.assertEqual(scan_steps, (6, 4, 2, 5))
     nested_scan_specs = scan_utils.nested_scan_specs(inputs_spec, dt)
-    is_coord = lambda c: isinstance(c, cx.Coordinate)
     # In training experiment queries do not contain timedeltas to begin with.
     nested_queries_specs = jax.tree.map(
-        _remove_timedelta, nested_scan_specs, is_leaf=is_coord
+        _remove_timedelta, nested_scan_specs, is_leaf=cx.is_coord
     )
     model = MockStepper()
     model_state_scan_axes = nnx.StateAxes(
@@ -443,7 +442,7 @@ class NestedScanExampleTest(parameterized.TestCase):
     nested_queries = jax.tree.map(
         _remove_timedelta,
         nested_out_specs,
-        is_leaf=lambda c: isinstance(c, cx.Coordinate),
+        is_leaf=cx.is_coord,
     )
     model = MockStepper()
     model_state_scan_axes = nnx.StateAxes(

@@ -631,7 +631,7 @@ def _inference_model_unflatten(
   dummy_simulation_state = jax.tree.map(
       cx.shape_struct_field,
       dummy_simulation_state_coords,
-      is_leaf=lambda x: isinstance(x, cx.Coordinate),
+      is_leaf=cx.is_coord,
   )
   return InferenceModel(
       model_graph_def=model_graph_def,

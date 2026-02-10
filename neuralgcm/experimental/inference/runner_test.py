@@ -54,17 +54,15 @@ class MockModel(api.Model):
   def inputs_spec(
       self,
   ) -> dict[str, dict[str, data_specs.CoordSpec]]:
-    is_coord = lambda x: isinstance(x, cx.Coordinate)
     make_spec = data_specs.CoordSpec.with_any_timedelta
-    return jax.tree.map(make_spec, self.input_specs, is_leaf=is_coord)
+    return jax.tree.map(make_spec, self.input_specs, is_leaf=cx.is_coord)
 
   @property
   def dynamic_inputs_spec(
       self,
   ) -> dict[str, dict[str, cx.Coordinate]]:
-    is_coord = lambda x: isinstance(x, cx.Coordinate)
     make_spec = data_specs.CoordSpec.with_any_timedelta
-    return jax.tree.map(make_spec, self.dynamic_input_specs, is_leaf=is_coord)
+    return jax.tree.map(make_spec, self.dynamic_input_specs, is_leaf=cx.is_coord)
 
   @property
   def timestep(self) -> np.timedelta64:

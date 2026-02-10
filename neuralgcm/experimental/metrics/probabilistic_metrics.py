@@ -96,6 +96,7 @@ class EnergySpread(base.PerVariableStatistic):
 
   ensemble_dim: str = 'ensemble'
   beta: float = 1.0
+  broadcast_target_nans: bool = False
 
   @property
   def unique_name(self) -> str:
@@ -120,7 +121,11 @@ class EnergySpread(base.PerVariableStatistic):
     x_prime = cx.cmap(jnp.flip)(x.untag(ens_dim)).tag(ens_dim)
     err = x - x_prime
     # The ensemble mean of |X - X'|^β and |X' - X|^β is just |X - X'|^β.
-    return cx.cmap(jnp.mean)(abs_beta(err, self.beta).untag(ens_dim))
+    spread = cx.cmap(jnp.mean)(abs_beta(err, self.beta).untag(ens_dim))
+    if self.broadcast_target_nans:
+      # Ensure spread is nan where targets are nan.
+      spread = spread + 0.0 * targets.broadcast_like(spread)
+    return spread
 
 
 @dataclasses.dataclass
@@ -159,7 +164,7 @@ class CRPS(base.PerVariableMetric):
   def statistics(self) -> dict[str, base.Statistic]:
     return {
         'skill': EnergySkill(ensemble_dim=self.ensemble_dim, beta=1.0),
-        'spread': EnergySpread(ensemble_dim=self.ensemble_dim, beta=1.0),
+        'spread': EnergySpread(self.ensemble_dim, 1.0, True),
     }
 
   def _values_from_mean_statistics_per_variable(

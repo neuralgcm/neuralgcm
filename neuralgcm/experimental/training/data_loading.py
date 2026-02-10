@@ -286,9 +286,10 @@ def _get_sample_origins(
   return np.concatenate(sample_origins)
 
 
-def select_targets(
+def filter_inputs_by_queries(
     inputs: typing.InputFields,
     queries_spec: data_specs.QueriesSpec | None,
+    include_field_in_query: bool = False,
 ) -> typing.InputFields:
   """Selects targets matching queries from inputs."""
   # TODO(dkochkov) This is a temporary simpler solution for the case where no
@@ -298,11 +299,14 @@ def select_targets(
     return inputs  # by default we assume that all fields are targets.
   if not isinstance(queries_spec, dict):
     raise ValueError('queries must be a dictionary.')
+  is_field_in_query = lambda x: isinstance(x, data_specs.FieldInQuerySpec)
   targets = {}
   for source, specs in queries_spec.items():
     if specs:
       targets[source] = {}
-    for var_name in specs:
+    for var_name, var_spec in specs.items():
+      if is_field_in_query(var_spec) and not include_field_in_query:
+        continue
       targets[source][var_name] = inputs[source][var_name]
   return targets
 
@@ -530,7 +534,7 @@ class HostDataBuffer:
       f = f.untag('timedelta')
       return f
 
-    to_set = select_targets(batch, self.data_slice_struct)
+    to_set = filter_inputs_by_queries(batch, self.data_slice_struct)
     self.current_batch = jax.tree.map(
         _optimize_field_for_slice, to_set, is_leaf=cx.is_field
     )

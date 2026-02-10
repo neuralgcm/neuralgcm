@@ -24,7 +24,7 @@ import logging
 import math
 import operator
 import os.path
-from typing import Any, NamedTuple, TypeAlias
+from typing import Any, NamedTuple, TypeAlias, overload
 
 import coordax as cx
 from etils import epath
@@ -165,8 +165,20 @@ def _is_coord(x: Any) -> bool:
   return isinstance(x, cx.Coordinate)
 
 
+@overload
 def _remove_timedelta(c: cx.Coordinate) -> cx.Coordinate:
+  ...
+
+
+@overload
+def _remove_timedelta(c: data_specs.FieldInQuerySpec[cx.Coordinate]) -> data_specs.FieldInQuerySpec[cx.Coordinate]:
+  ...
+
+
+def _remove_timedelta(c: cx.Coordinate | data_specs.FieldInQuerySpec[cx.Coordinate]) -> cx.Coordinate | data_specs.FieldInQuerySpec[cx.Coordinate]:
   """Removes TimeDelta axes from a coordinate."""
+  if isinstance(c, data_specs.FieldInQuerySpec):
+    return data_specs.FieldInQuerySpec(_remove_timedelta(c.spec))
   return cx.coords.compose(
       *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
   )
@@ -205,20 +217,24 @@ def _prepare_inputs_and_targets(
   """Prepares initial slice and targets for training/eval step."""
   if retrieve_fns is not None:
     init_slice = inputs
-    loaded_targets = None
+    rollout_data = None
   else:
     init_slice = data_loading.slice_leading_timedelta(inputs, 1)
     # Select targets starting from t > 0
-    targets_inputs = data_loading.sel_target_fields(inputs)
-    loaded_targets = data_loading.select_targets(targets_inputs, queries_spec)
+    rollout_inputs = data_loading.sel_target_fields(inputs)
+    # rollout inputs might contain fields that are only used for initialization,
+    # so we filter them out by using the queries spec.
+    rollout_data = data_loading.filter_inputs_by_queries(
+        rollout_inputs, queries_spec, True
+    )
     # We use already computed scan_steps and specs here since loaded targets
     # might contain a single timedelta value which is not sufficient to
     # resolve the number of steps.
-    loaded_targets = scan_utils.nest_data_for_scans(
-        loaded_targets, model_dt, ref_t0=np.timedelta64(0, 's')
+    rollout_data = scan_utils.nest_data_for_scans(
+        rollout_data, model_dt, ref_t0=np.timedelta64(0, 's')
     )
-    loaded_targets = _untag_positional(loaded_targets, batch_axis)
-  return init_slice, loaded_targets
+    rollout_data = _untag_positional(rollout_data, batch_axis)
+  return init_slice, rollout_data
 
 
 def _compute_aggregation(
@@ -273,9 +289,12 @@ def _compute_aggregation(
     targets_slice = cx.tag(loaded_targets_slice, batch_axis)
 
   query = data_specs.construct_query(targets_slice, query_spec)
+  targets_only_slice = data_loading.filter_inputs_by_queries(
+      targets_slice, query_spec
+  )
   prediction = process_fn(process_obs, _flatten_dict(observe_fn(model, query)))
   prediction = training_mesh.with_sharding_constraint(prediction, 'physics')
-  target = process_fn(process_obs, _flatten_dict(targets_slice))
+  target = process_fn(process_obs, _flatten_dict(targets_only_slice))
   target = training_mesh.with_sharding_constraint(target, 'physics')
 
   new_agg_states = []
@@ -324,7 +343,7 @@ def create_nested_evaluators(
     return f
 
   nested_prediction_specs = data_loading.sel_target_timedeltas(
-      nested_targets_specs
+      nested_targets_specs  # TODO(dkochkov): This might not be needed if we pass target fields.
   )
   context_fields = {}
   for nest_level, prediction_spec in enumerate(nested_prediction_specs):
@@ -482,6 +501,33 @@ def _merge_online_metrics(
       seconds_per_evaluation=total_eval_time,
       seconds_per_train_step=seconds_per_train_step,
   )
+
+
+def _construct_full_queries_spec(
+    inputs_spec: DataSpec,
+    queries_spec: data_specs.QueriesSpec,
+) -> data_specs.QueriesSpec:
+  """Constructs a queries with extra dimensions present in the inputs spec."""
+  if not isinstance(queries_spec, dict):
+    raise ValueError('queries must be a dictionary.')
+  is_field_in_query = lambda x: isinstance(x, data_specs.FieldInQuerySpec)
+  targets = {}
+  for source, specs in queries_spec.items():
+    if specs:
+      targets[source] = {}
+    for var_name, q_spec in specs.items():
+      input_coord = inputs_spec[source][var_name]
+      q_spec_coord = q_spec.spec if is_field_in_query(q_spec) else q_spec
+      if not cx.contains_dims(input_coord, q_spec_coord):
+        raise ValueError(
+            f'query entry {source}/{var_name} has inconsistent coordinates with'
+            f' {input_coord=}.'
+        )
+      if is_field_in_query(q_spec):
+        targets[source][var_name] = data_specs.FieldInQuerySpec(input_coord)
+      else:
+        targets[source][var_name] = input_coord
+  return targets
 
 
 PretrainOp = Callable[..., Any]
@@ -712,17 +758,18 @@ class RolloutTrainer:
   ) -> tuple[tuple[int, ...], tuple[DataSpec, ...]]:
     """Returns nested steps and specs from `flat_spec` with timedelta coords."""
     dt = self.model.timestep
-    nested_specs = scan_utils.nested_scan_specs(flat_spec, dt=dt)
-    steps = scan_utils.nested_scan_steps(flat_spec, dt=dt)
+    t0 = np.timedelta64(0, 's')
+    nested_specs = scan_utils.nested_scan_specs(flat_spec, dt=dt, ref_t0=t0)
+    steps = scan_utils.nested_scan_steps(flat_spec, dt=dt, ref_t0=t0)
     return steps, nested_specs
 
   def _setup_callbacks(
       self, stage: EvalSchema | TrainStage
   ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
     """Returns tuples of retrieve_fns and buffers for a given stage."""
-    data_spec = data_loading.select_targets(
-        stage.inputs_spec, stage.queries_spec
-    )  # TODO(dkochkov) ensure this retains FieldInQuery entries.
+    data_spec = data_loading.filter_inputs_by_queries(
+        stage.inputs_spec, stage.queries_spec, include_field_in_query=True
+    )
     nested_steps, nested_data_specs = self._get_nested_steps_and_specs(
         data_spec
     )
@@ -854,7 +901,7 @@ class RolloutTrainer:
 
     return training_data, train_step_fn, evaluation_fns
 
-  def run_pretraining(self, train_stage: TrainStage):
+  def run_pretraining(self, train_schedule: TrainSchedule):
     """Runs pretraining."""
     if self.pretraining is None:
       logging.info('Skipping pretraining (no pretraining config provided)')
@@ -864,7 +911,7 @@ class RolloutTrainer:
     for k, pretraining_step in self.pretraining.pretrain_fns.items():
       logging.info('Running pretraining step: %s', k)
       self.model = pretraining_step(
-          self.model, self.data_loader.all_data, train_stage.queries_spec
+          self.model, self.data_loader, train_schedule
       )
 
   def _make_initial_experiment_state(
@@ -895,7 +942,7 @@ class RolloutTrainer:
       queries_spec: data_specs.QueriesSpec,
   ) -> tuple[PyTree, PyTree]:
     """Returns shape structs for predictions and targets for aggregators."""
-    target_slice_struct = data_loading.select_targets(
+    target_slice_struct = data_loading.filter_inputs_by_queries(
         data_slice_struct, queries_spec
     )
     process_fn = lambda proc_module, target_slice: proc_module(target_slice)
@@ -903,10 +950,12 @@ class RolloutTrainer:
         process_fn, process_obs, _flatten_dict(target_slice_struct)
     )
     query_struct = data_specs.construct_query(data_slice_struct, queries_spec)
-    dummy_observe = lambda model, proc_module: proc_module(
-        _flatten_dict(model.observe(query_struct))
+    dummy_observe = lambda model, proc_module, q: proc_module(
+        _flatten_dict(model.observe(q))
     )
-    prediction_struct = nnx.eval_shape(dummy_observe, eb_model, process_obs)
+    prediction_struct = nnx.eval_shape(
+        dummy_observe, eb_model, process_obs, query_struct
+    )
     return prediction_struct, target_struct
 
   def _initialize_vectorized_model(
@@ -1007,7 +1056,7 @@ class RolloutTrainer:
       evaluator: evaluators.Evaluator,
       model: api.Model,
       process_obs: nnx.Module,
-      nested_specs: tuple[DataSpec, ...],
+      nested_specs: tuple[DataSpec, ...],  # rollout specs, right? in principle don't need input timedelta here.
       nested_queries_spec: tuple[data_specs.QueriesSpec, ...],
       batch_size_per_device: int | None,
   ) -> tuple[aggregation.AggregationState, ...]:
@@ -1016,7 +1065,7 @@ class RolloutTrainer:
     for input_spec, query_spec in zip(nested_specs, nested_queries_spec):
       time_slice_struct = self.data_loader.data_slice_struct(
           input_spec, batch_size_per_device
-      )
+      )  # these are cx.Fields wrapping shaped dtypes.
       prediction_struct, target_struct = self._predictions_and_targets_structs(
           model, process_obs, time_slice_struct, query_spec
       )
@@ -1170,7 +1219,6 @@ class RolloutTrainer:
         (experiment state, step, inputs, dynamic_data) tuple and returning
         the updated experiment state and loss.
     """
-    inputs_spec = train_stage.inputs_spec
     loss_evaluator = train_stage.loss
     batch_axis = self.data_loader.make_batch_axis(
         train_stage.batch_size_per_device
@@ -1179,14 +1227,22 @@ class RolloutTrainer:
     model_state_scan_axes = nnx.StateAxes(
         {typing.SimulationVariable: nnx.Carry, ...: None}
     )
-    targets_spec = data_loading.select_targets(
+
+    inputs_spec = train_stage.inputs_spec
+    rollout_spec = data_loading.sel_target_timedeltas(inputs_spec)
+    _, nested_rollout_specs = self._get_nested_steps_and_specs(rollout_spec)
+    targets_spec = data_loading.filter_inputs_by_queries(
         inputs_spec, train_stage.queries_spec
-    )  # TODO(dkochkov): I think this should filter FieldInQuerySpec.
-    nested_steps, nested_targets_specs = self._get_nested_steps_and_specs(
-        targets_spec
     )
-    nested_queries_spec = jax.tree.map(
-        _remove_timedelta, nested_targets_specs, is_leaf=_is_coord
+    _, nested_targets_spec = self._get_nested_steps_and_specs(targets_spec)
+    full_queries_spec = _construct_full_queries_spec(  # include timedelta now.
+        rollout_spec, train_stage.queries_spec
+    )
+    nested_steps, nested_timed_queries_specs = self._get_nested_steps_and_specs(
+        full_queries_spec
+    )
+    nested_queries_specs = jax.tree.map(
+        _remove_timedelta, nested_timed_queries_specs, is_leaf=_is_coord
     )
 
     # Setting up model components and helper functions.
@@ -1230,14 +1286,14 @@ class RolloutTrainer:
       nnx.update(eb_model, eb_model_state)
 
       nested_evaluators = create_nested_evaluators(
-          loss_evaluator, nested_targets_specs, self.model.timestep
+          loss_evaluator, nested_targets_spec, self.model.timestep
       )
       init_agg_states = self._create_initial_nested_agg_states(
           loss_evaluator,
           eb_model,
           process_obs,
-          nested_targets_specs,
-          nested_queries_spec,
+          nested_rollout_specs,
+          nested_queries_specs,
           train_stage.batch_size_per_device,
       )
 
@@ -1260,7 +1316,7 @@ class RolloutTrainer:
           out_axes=nnx.Carry,
           nest_level=0,
           nested_steps=nested_steps,
-          nested_queries_spec=nested_queries_spec,
+          nested_queries_spec=nested_queries_specs,
           retrieve_fns=retrieve_fns,
           nested_evaluators_groups=(nested_evaluators,),
           nested_targets=loaded_targets,
@@ -1329,14 +1385,21 @@ class RolloutTrainer:
     model_state_scan_axes = nnx.StateAxes(
         {typing.SimulationVariable: nnx.Carry, ...: None}
     )
-    targets_spec = data_loading.select_targets(
-        eval_schema.inputs_spec, eval_schema.queries_spec
-    )  # TODO(dkochkov): I think this should filter out FieldInQuerySpec.
-    nested_steps, nested_targets_specs = self._get_nested_steps_and_specs(
-        targets_spec
+    inputs_spec = eval_schema.inputs_spec
+    rollout_spec = data_loading.sel_target_timedeltas(inputs_spec)
+    _, nested_rollout_specs = self._get_nested_steps_and_specs(rollout_spec)
+    targets_spec = data_loading.filter_inputs_by_queries(
+        inputs_spec, eval_schema.queries_spec
     )
-    nested_queries_spec = jax.tree.map(
-        _remove_timedelta, nested_targets_specs, is_leaf=_is_coord
+    _, nested_targets_spec = self._get_nested_steps_and_specs(targets_spec)
+    full_queries_spec = _construct_full_queries_spec(  # include timedelta now.
+        rollout_spec, eval_schema.queries_spec
+    )
+    nested_steps, nested_timed_queries_specs = self._get_nested_steps_and_specs(
+        full_queries_spec
+    )
+    nested_queries_specs = jax.tree.map(
+        _remove_timedelta, nested_timed_queries_specs, is_leaf=_is_coord
     )
 
     # Setting up model components and helper functions.
@@ -1393,29 +1456,29 @@ class RolloutTrainer:
       if eval_schema.metrics_evaluator:
         nested_metrics = create_nested_evaluators(
             eval_schema.metrics_evaluator,
-            nested_targets_specs,
+            nested_targets_spec,
             self.model.timestep,
         )
         init_metrics_agg_states = self._create_initial_nested_agg_states(
             eval_schema.metrics_evaluator,
             eb_model,
             process_obs,
-            nested_targets_specs,
-            nested_queries_spec,
+            nested_rollout_specs,
+            nested_queries_specs,
             eval_schema.batch_size_per_device,
         )
         evaluators_seq.append(nested_metrics)
         agg_states_seq.append(init_metrics_agg_states)
       if eval_schema.loss_evaluator:
         nested_losses = create_nested_evaluators(
-            eval_schema.loss_evaluator, nested_targets_specs, self.model.timestep
+            eval_schema.loss_evaluator, nested_targets_spec, self.model.timestep
         )
         init_loss_agg_states = self._create_initial_nested_agg_states(
             eval_schema.loss_evaluator,
             eb_model,
             process_obs,
-            nested_targets_specs,
-            nested_queries_spec,
+            nested_rollout_specs,
+            nested_queries_specs,
             eval_schema.batch_size_per_device,
         )
         evaluators_seq.append(nested_losses)
@@ -1441,7 +1504,7 @@ class RolloutTrainer:
           out_axes=nnx.Carry,
           nest_level=0,
           nested_steps=nested_steps,
-          nested_queries_spec=nested_queries_spec,
+          nested_queries_spec=nested_queries_specs,
           retrieve_fns=retrieve_fns,
           nested_evaluators_groups=evaluators_seq,
           nested_targets=loaded_targets,
@@ -1722,7 +1785,7 @@ class RolloutTrainer:
     else:
       logging.info('Starting training with new weights')
       # TODO(dkochkov): Consider making pretraining independent from training.
-      self.run_pretraining(self.train_schedule.stages[0])
+      self.run_pretraining(self.train_schedule)
       split_state = model_checkpointing.split_model_state_for_saving(self.model)
       return self._initialize_for_fresh_start(
           split_state.params, split_state.non_params

@@ -56,6 +56,22 @@ class ProbabilisticMetricsTest(parameterized.TestCase):
           1.0,
       )
 
+  def test_energy_spread_broadcast_target_nans_behavior(self):
+    e, d = cx.SizedAxis('ensemble', 2), cx.SizedAxis('d', 4)
+    predictions = {'x': cx.field(np.ones(e.shape + d.shape), e, d)}
+    targets = {'x': cx.field(np.array([np.nan, 1.0, 2.0, 3.0]), d)}
+
+    with self.subTest('no_broadcast_target'):
+      spread = probabilistic_metrics.EnergySpread(broadcast_target_nans=False)
+      spread_results = spread.compute(predictions, targets)
+      self.assertEqual(spread_results['x'].data[0], 0.0)  # no nans.
+
+    with self.subTest('broadcast_target'):
+      spread = probabilistic_metrics.EnergySpread(broadcast_target_nans=True)
+      spread_results = spread.compute(predictions, targets)
+      self.assertTrue(np.isnan(spread_results['x'].data[0]))  # broadcasted.
+      self.assertEqual(spread_results['x'].data[1], 0.0)
+
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

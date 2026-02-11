@@ -199,13 +199,60 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
         sim_units=self.sim_units,
         model_orography=self.model_orography,
         observation_operator=self.observation_operator,
-        in_out_fluxes_query=self.energy_query,
+        energy_fluxes_query=self.energy_query,
     )
     imbalance = energy_residuals(
         self.tendencies, prognostics=self.prognostics
     )['imbalance']
     self.assertEqual(imbalance.shape, self.lon_lat_grid.shape)
     self.assertEqual(imbalance.dtype, jnp.float32)
+
+  def test_extract_column_energy_budget_shape_and_dtype(self):
+    extract_energy = atmos_diagnostics.ExtractColumnEnergyBudget(
+        ylm_map=self.ylm_map,
+        levels=self.sigma_levels,
+        sim_units=self.sim_units,
+        model_orography=self.model_orography,
+        observation_operator=self.observation_operator,
+        energy_fluxes_query=self.energy_query,
+        dt=3600.0,
+    )
+    budget = extract_energy(self.prognostics)['column_energy_budget']
+    self.assertEqual(budget.shape, self.lon_lat_grid.shape)
+
+
+class DryAirMassDiagnosticsTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.sim_units = units.DEFAULT_UNITS
+    self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    self.lon_lat_grid = coordinates.LonLatGrid.T21()
+    self.sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
+    self.mesh = parallelism.Mesh()
+    self.ylm_map = spherical_harmonics.FixedYlmMapping(
+        lon_lat_grid=self.lon_lat_grid,
+        ylm_grid=self.ylm_grid,
+        partition_schema_key=None,
+        mesh=self.mesh,
+    )
+    full_modal = cx.coords.compose(self.sigma_levels, self.ylm_grid)
+    ones_like = lambda c: cx.field(jnp.ones(c.shape), c)
+    self.prognostics = {
+        'log_surface_pressure': ones_like(self.ylm_grid),
+        'specific_humidity': ones_like(full_modal),
+        'specific_cloud_ice_water_content': ones_like(full_modal),
+        'specific_cloud_liquid_water_content': ones_like(full_modal),
+    }
+
+  def test_predict_dry_air_mass_shape_and_dtype(self):
+    predict_dry_air_mass = atmos_diagnostics.ExtractColumnDryAirMass(
+        ylm_map=self.ylm_map,
+        levels=self.sigma_levels,
+        sim_units=self.sim_units,
+    )
+    mass = predict_dry_air_mass(self.prognostics)['column_dry_air_mass']
+    self.assertEqual(mass.shape, self.lon_lat_grid.shape)
 
 
 if __name__ == '__main__':

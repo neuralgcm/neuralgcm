@@ -252,6 +252,48 @@ class ExtractPrecipitationAndEvaporationWithConstraints(
 
 
 @nnx_compat.dataclass
+class ExtractColumnDryAirMass(nnx.Module):
+  """Extracts column dry air mass from prognostics."""
+
+  ylm_map: spherical_harmonics.FixedYlmMapping
+  levels: coordinates.SigmaLevels | coordinates.HybridLevels
+  sim_units: units.SimUnits
+  moisture_species: tuple[str, ...] = (
+      'specific_humidity',
+      'specific_cloud_ice_water_content',
+      'specific_cloud_liquid_water_content',
+  )
+
+  def __call__(
+      self, prognostics: dict[str, cx.Field], *args, **kwargs
+  ) -> dict[str, cx.Field]:
+    """Computes column dry air mass."""
+    del args, kwargs  # Unused.
+    to_nodal = self.ylm_map.to_nodal
+    p_surface_field = cx.cmap(jnp.exp)(
+        to_nodal(prognostics['log_surface_pressure'])
+    )
+    g = self.sim_units.gravity_acceleration
+
+    missing_keys = [k for k in self.moisture_species if k not in prognostics]
+    if missing_keys:
+      raise KeyError(
+          f'Moisture species {missing_keys} not found in prognostics.'
+      )
+    q_fields = [to_nodal(prognostics[k]) for k in self.moisture_species]
+    if q_fields:
+      q_total = sum(q_fields)
+    else:
+      q_total = 0.0
+    assert isinstance(q_total, (cx.Field, float, int))
+
+    column_dry_air_mass = (1 / g) * self.levels.integrate_over_pressure(
+        1.0 - q_total, p_surface_field, self.sim_units
+    )
+    return {'column_dry_air_mass': column_dry_air_mass}
+
+
+@nnx_compat.dataclass
 class ExtractEnergyResiduals(nnx.Module):
   """Computes column energy imbalance based on moist enthalpy formulation.
 
@@ -269,12 +311,10 @@ class ExtractEnergyResiduals(nnx.Module):
   The module returns the imbalance: (RT - FS) - dE/dt|_NN
   where RT and FS are TOA and surface fluxes obtained from
   observation_operator.
-
   If use_evaporation_for_latent_heat is True, FS uses latent heat flux
   derived from mean_evaporation_rate (by multiplying by Lv which is inaccurate
   in ice covered regions), otherwise it uses surface_latent_heat_flux
   from net_energy_terms.
-
   If use_liquid_ice_moist_static_energy is True, qi is included in the
   column energy integral and we need to predict also snowfall to close budget,
   otherwise it is excluded.
@@ -285,7 +325,7 @@ class ExtractEnergyResiduals(nnx.Module):
   sim_units: units.SimUnits
   model_orography: orographies.ModalOrography
   observation_operator: observation_operators.ObservationOperatorABC
-  in_out_fluxes_query: dict[str, cx.Coordinate]
+  energy_fluxes_query: dict[str, cx.Coordinate]
   prognostics_arg_key: str | int = 'prognostics'
   use_evaporation_for_latent_heat: bool = False
   use_liquid_ice_moist_static_energy: bool = False
@@ -305,11 +345,11 @@ class ExtractEnergyResiduals(nnx.Module):
     if self.use_liquid_ice_moist_static_energy:
       required_keys.append('snowfall')
     missing_keys = [
-        k for k in required_keys if k not in self.in_out_fluxes_query
+        k for k in required_keys if k not in self.energy_fluxes_query
     ]
     if missing_keys:
       raise ValueError(
-          f'Missing energy terms in in_out_fluxes_query: {missing_keys}'
+          f'Missing energy terms in energy_fluxes_query: {missing_keys}'
       )
 
   def _compute_ke_and_tendency(
@@ -424,8 +464,9 @@ class ExtractEnergyResiduals(nnx.Module):
     )
 
     net_energy_terms = self.observation_operator.observe(
-        prognostics, query=self.in_out_fluxes_query
+        prognostics, query=self.energy_fluxes_query
     )
+
     # Assuming observation_operator returns RT and FS fluxes in J/m^2
     # accumulated over an hour time and need to be converted to W/m^2.
     # RT is TOA flux into atm, and FS is surface flux from atm.
@@ -437,22 +478,188 @@ class ExtractEnergyResiduals(nnx.Module):
     fs = sum(net_energy_terms[k] for k in self.fs_keys) * sec_in_hour_inv
 
     if self.use_evaporation_for_latent_heat:
+      # mean_evaporation_rate is mass rate per second, in SI: (kg/m^2/s).
+      # Multiplying by Lv gives nondim equivalent of W/m^2.
       fs += (
           net_energy_terms['mean_evaporation_rate']
-          * sec_in_hour_inv
           * self.sim_units.Lv
       )
     else:
       fs += net_energy_terms['surface_latent_heat_flux'] * sec_in_hour_inv
     if self.use_liquid_ice_moist_static_energy:
+      # snowfall is in m of water equivalent (accumulated), so we multiply by
+      # density and Lf to get J/m^2 and then divide by time to get W/m^2.
       fs += (
           net_energy_terms['snowfall']
-          * sec_in_hour_inv
-          * self.sim_units.Lf
           * self.sim_units.water_density
+          * self.sim_units.Lf
+          * sec_in_hour_inv
       )
 
     # Energy imbalance: difference between required tendency (rt - fs) and
     # tendency from NN (e_tendency_nn).
     imbalance = (rt - fs) - e_tendency_nn
     return {'imbalance': imbalance}
+
+
+@nnx_compat.dataclass
+class ExtractColumnEnergyBudget(nnx.Module):
+  """Computes column energy and adds TOA and surface fluxes.
+
+  This module calculates column energy based on
+  E_col = phi_s*p_s/g + p_s/g * integral(Cp*T + Lv*q - Lf*qi + k)dsigma
+  and adds TOA and surface fluxes (RT - FS) obtained from
+  observation_operator to compute budget = E_col + RT - FS, representing
+  the column energy based on fluxes.
+  The result is integrated horizontally to obtain a global energy budget:
+  E = horizontal_integral(E_col + RT - FS).
+  If use_evaporation_for_latent_heat is True, FS uses latent heat flux
+  derived from mean_evaporation_rate (by multiplying by Lv which is inaccurate
+  in ice covered regions), otherwise it uses surface_latent_heat_flux
+  from net_energy_terms.
+  If use_liquid_ice_moist_static_energy is True, qi is included in the
+  column energy integral and we need to predict also snowfall to close budget,
+  otherwise it is excluded.
+  """
+
+  ylm_map: spherical_harmonics.FixedYlmMapping
+  levels: coordinates.SigmaLevels | coordinates.HybridLevels
+  sim_units: units.SimUnits
+  model_orography: orographies.ModalOrography
+  observation_operator: observation_operators.ObservationOperatorABC | None = (
+      None
+  )
+  energy_fluxes_query: dict[str, cx.Coordinate] | None = None
+  dt: float | None = None
+  use_evaporation_for_latent_heat: bool = False
+  use_liquid_ice_moist_static_energy: bool = False
+  prognostics_arg_key: str | int | None = None
+
+  def __post_init__(self):
+    if self.energy_fluxes_query is not None:
+      self.rt_keys = ['top_net_thermal_radiation', 'top_net_solar_radiation']
+      self.fs_keys = [
+          'surface_sensible_heat_flux',
+          'surface_net_solar_radiation',
+          'surface_net_thermal_radiation',
+      ]
+      if self.use_evaporation_for_latent_heat:
+        required_keys = self.rt_keys + self.fs_keys + ['mean_evaporation_rate']
+      else:
+        required_keys = (
+            self.rt_keys + self.fs_keys + ['surface_latent_heat_flux']
+        )
+
+      if self.use_liquid_ice_moist_static_energy:
+        required_keys.append('snowfall')
+      missing_keys = [
+          k for k in required_keys if k not in self.energy_fluxes_query
+      ]
+      if missing_keys:
+        raise ValueError(
+            f'Missing energy terms in energy_fluxes_query: {missing_keys}'
+        )
+
+  def _compute_column_energy(
+      self, prognostics: dict[str, cx.Field]
+  ) -> cx.Field:
+    to_nodal = self.ylm_map.to_nodal
+    p_surface_field = cx.cmap(jnp.exp)(
+        to_nodal(prognostics['log_surface_pressure'])
+    )
+    cp = self.sim_units.Cp
+    lv = self.sim_units.Lv
+    g = self.sim_units.gravity_acceleration
+    lf = self.sim_units.Lf
+
+    t_nodal_field = to_nodal(prognostics['temperature'])
+    q_nodal_field = to_nodal(prognostics['specific_humidity'])
+
+    if self.use_liquid_ice_moist_static_energy:
+      qi_nodal_field = to_nodal(
+          prognostics['specific_cloud_ice_water_content']
+      )
+    else:
+      qi_nodal_field = 0.0
+
+    velocity_from_div_curl = transforms.VelocityFromModalDivCurl(self.ylm_map)
+    winds = velocity_from_div_curl({
+        'vorticity': prognostics['vorticity'],
+        'divergence': prognostics['divergence'],
+    })
+    u_nodal = winds['u_component_of_wind']
+    v_nodal = winds['v_component_of_wind']
+    k_nodal_field = 0.5 * (u_nodal**2 + v_nodal**2)
+
+    phi_s = self.model_orography.nodal_orography * g
+
+    integrand = (
+        cp * t_nodal_field
+        + lv * q_nodal_field
+        - lf * qi_nodal_field
+        + k_nodal_field
+    )
+    vert_integrated_energy = self.levels.integrate_over_pressure(
+        integrand, p_surface_field, self.sim_units
+    )
+    column_energy = (1 / g) * (p_surface_field * phi_s + vert_integrated_energy)
+    return column_energy
+
+  def __call__(
+      self,
+      inputs: dict[str, cx.Field],
+      *args,
+      **kwargs,
+  ) -> dict[str, cx.Field]:
+    """Computes total energy budget."""
+    if self.prognostics_arg_key is None:
+      prognostics = inputs
+    elif isinstance(self.prognostics_arg_key, int):
+      prognostics = args[self.prognostics_arg_key]
+    else:
+      prognostics = kwargs[self.prognostics_arg_key]
+
+    if not isinstance(prognostics, dict):
+      raise ValueError(
+          f'Prognostics must be a dictionary, got {type(prognostics)=} instead.'
+      )
+
+    column_energy = self._compute_column_energy(prognostics)
+    results = {'column_energy': column_energy}
+
+    if self.observation_operator is not None:
+      if self.energy_fluxes_query is None:
+        raise ValueError(
+            'energy_fluxes_query must be provided if observation_operator is'
+            ' provided.'
+        )
+      net_energy_terms = self.observation_operator.observe(
+          prognostics, query=self.energy_fluxes_query
+      )
+
+      # Assuming observation_operator returns RT and FS fluxes in J/m^2
+      # accumulated over an hour time.
+      rt = sum(net_energy_terms[k] for k in self.rt_keys)
+      fs = sum(net_energy_terms[k] for k in self.fs_keys)
+
+      if self.use_evaporation_for_latent_heat:
+        # mean_evaporation_rate is a rate (kg/m^2/s), so we multiply by Lv and
+        # dt to get J/m^2.
+        fs += (
+            net_energy_terms['mean_evaporation_rate']
+            * self.sim_units.Lv
+            * self.dt
+        )
+      else:
+        fs += net_energy_terms['surface_latent_heat_flux']
+      if self.use_liquid_ice_moist_static_energy:
+        # snowfall is in m of water equivalent (accumulated), so we multiply by
+        # density and Lf to get J/m^2.
+        fs += (
+            net_energy_terms['snowfall']
+            * self.sim_units.water_density
+            * self.sim_units.Lf
+        )
+      column_budget = column_energy + rt - fs
+      results['column_energy_budget'] = column_budget
+    return results

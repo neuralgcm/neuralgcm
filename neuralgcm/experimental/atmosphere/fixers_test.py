@@ -19,11 +19,13 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import coordax as cx
+from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.atmosphere import fixers
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import parallelism
+from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
 
@@ -55,6 +57,9 @@ class EnergyFixersTest(parameterized.TestCase):
         'log_surface_pressure': ones_like(self.ylm_grid),
     }
     self.tendencies = {k: 0.1 * v for k, v in self.prognostics.items()}
+    self.model_orography = orographies.ModalOrography(
+        ylm_map=self.ylm_map, rngs=nnx.Rngs(0)
+    )
 
   def test_temperature_energy_adjustment_shape_and_dtype(self):
     temp_adjustment = fixers.TemperatureAdjustmentForEnergyBalance(
@@ -73,6 +78,43 @@ class EnergyFixersTest(parameterized.TestCase):
     )
     chex.assert_trees_all_equal_shapes_and_dtypes(
         adjusted_tendencies, self.tendencies
+    )
+
+  def test_global_energy_fixer_shape_and_dtype(self):
+    energy_fixer = fixers.GlobalEnergyFixer(
+        ylm_map=self.ylm_map,
+        levels=self.sigma_levels,
+        sim_units=self.sim_units,
+        model_orography=self.model_orography,
+    )
+    global_energy_prediction = {
+        'column_energy_budget': cx.field(
+            jnp.ones(self.lon_lat_grid.shape), self.lon_lat_grid
+        )
+    }
+    adjusted_prognostics = energy_fixer(
+        global_energy_prediction, self.prognostics
+    )
+    chex.assert_trees_all_equal_shapes_and_dtypes(
+        adjusted_prognostics, self.prognostics
+    )
+
+  def test_global_dry_air_mass_fixer_shape_and_dtype(self):
+    dry_air_mass_fixer = fixers.GlobalDryAirMassFixer(
+        ylm_map=self.ylm_map,
+        levels=self.sigma_levels,
+        sim_units=self.sim_units,
+    )
+    dry_air_mass_t0 = {
+        'column_dry_air_mass': cx.field(
+            jnp.ones(self.lon_lat_grid.shape), self.lon_lat_grid
+        )
+    }
+    adjusted_prognostics = dry_air_mass_fixer(
+        dry_air_mass_t0, self.prognostics
+    )
+    chex.assert_trees_all_equal_shapes_and_dtypes(
+        adjusted_prognostics, self.prognostics
     )
 
 

@@ -35,6 +35,9 @@ class SpatialFilter(nnx.Module, abc.ABC):
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     """Returns filtered ``inputs``."""
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 class ModalSpatialFilter(SpatialFilter):
   """Base class for filters."""

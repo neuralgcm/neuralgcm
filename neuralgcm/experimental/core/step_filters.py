@@ -31,6 +31,9 @@ class StepFilter(nnx.Module, abc.ABC):
   ) -> dict[str, cx.Field]:
     """Returns filtered ``inputs``."""
 
+  def __init_subclass__(cls, **kwargs):
+    super().__init_subclass__(pytree=False, **kwargs)
+
 
 class NoFilter(StepFilter):
   """Filter that does nothing."""

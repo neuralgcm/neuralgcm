@@ -188,6 +188,11 @@ class Evaluator(Generic[M]):
         for k, metric in self.metrics.items()
     }
 
+  @classmethod
+  def empty(cls) -> Evaluator:
+    """Returns an empty evaluator."""
+    return cls(metrics={}, aggregators=aggregation.Aggregator([]))
+
 
 jax.tree_util.register_dataclass(
     Evaluator,

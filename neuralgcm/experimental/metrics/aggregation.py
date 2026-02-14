@@ -199,7 +199,7 @@ class Aggregator:
   # TODO(dkochkov): Add support for masking and nan handling.
 
   dims_to_reduce: Sequence[cx.Coordinate | str]
-  weight_by: Sequence[weighting.Weighting]
+  weight_by: Sequence[weighting.Weighting] = tuple()
   scale_by: Sequence[scaling.ScaleFactor] | None = None
   bin_by: Sequence[binning.Binning] | None = None
   skip_missing: bool = True

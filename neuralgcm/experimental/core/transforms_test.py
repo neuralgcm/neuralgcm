@@ -1199,6 +1199,50 @@ class SanitizedNanGradTransformTest(parameterized.TestCase):
     chex.assert_trees_all_close(grads_san_inner, grads_orig)
 
 
+class NestedTransformTest(parameterized.TestCase):
+
+  def test_single_transform(self):
+    """Tests backward compatibility with single transform."""
+    transform = transforms.NestedTransform(transforms.Identity())
+    inputs = {'a': {'x': cx.field(1.0)}, 'b': {'y': cx.field(2.0)}}
+    actual = transform(inputs)
+    chex.assert_trees_all_close(actual, inputs)
+
+  def test_dict_transform_specific_keys(self):
+    """Tests using a dictionary of transforms."""
+    scale_2 = transforms.Scale(cx.field(2.0))
+    scale_3 = transforms.Scale(cx.field(3.0))
+    transform = transforms.NestedTransform({'a': scale_2, 'b': scale_3})
+    inputs = {
+        'a': {'val': cx.field(np.array([1.0]), 'x')},
+        'b': {'val': cx.field(np.array([1.0]), 'x')},
+    }
+    actual = transform(inputs)
+    expected = {
+        'a': {'val': cx.field(np.array([2.0]), 'x')},
+        'b': {'val': cx.field(np.array([3.0]), 'x')},
+    }
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_dict_transform_with_ellipsis(self):
+    """Tests using Ellipsis as default transform."""
+    scale_2 = transforms.Scale(cx.field(2.0))
+    scale_10 = transforms.Scale(cx.field(10.0))
+    transform = transforms.NestedTransform({'a': scale_2, ...: scale_10})
+    inputs = {
+        'a': {'val': cx.field(np.array([1.0]), 'x')},
+        'b': {'val': cx.field(np.array([1.0]), 'x')},
+        'c': {'val': cx.field(np.array([1.0]), 'x')},
+    }
+    actual = transform(inputs)
+    expected = {
+        'a': {'val': cx.field(np.array([2.0]), 'x')},
+        'b': {'val': cx.field(np.array([10.0]), 'x')},
+        'c': {'val': cx.field(np.array([10.0]), 'x')},
+    }
+    chex.assert_trees_all_close(actual, expected)
+
+
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')
   absltest.main()

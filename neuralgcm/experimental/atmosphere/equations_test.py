@@ -33,7 +33,7 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
   def test_temperature_linearization_roundtrip_with_grid(self):
     """Tests linearization and delinearization with LonLatGrid."""
     levels = coordinates.SigmaLevels.equidistant(5)
-    ref_temps = 280.0 + np.arange(levels.shape[0])
+    ref_temp_field = cx.field(280.0 + np.arange(levels.shape[0]), levels)
     grid = coordinates.LonLatGrid.T21()
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     rng = np.random.RandomState(42)
@@ -46,7 +46,7 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
     }
 
     linearize = equations.get_temperature_linearization_transform(
-        ref_temperatures=ref_temps, levels=levels
+        ref_temperatures=ref_temp_field
     )
     actual_linearized = linearize(inputs)
 
@@ -61,14 +61,14 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
           if k != 'temperature_variation'
       }
       chex.assert_trees_all_equal(actual_others, expected_others)
-      expected_variation = temperature - cx.field(ref_temps, levels)
+      expected_variation = temperature - ref_temp_field
       cx_testing.assert_fields_allclose(
           actual_linearized['temperature_variation'], expected_variation
       )
 
     with self.subTest('roundtrip'):
       delinearize = equations.get_temperature_delinearization_transform(
-          ref_temperatures=ref_temps, levels=levels
+          ref_temperatures=ref_temp_field
       )
       actual_roundtrip = delinearize(actual_linearized)
       expected = jax.tree.map(jnp.asarray, inputs)
@@ -77,7 +77,7 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
   def test_temperature_linearization_roundtrip_with_ylm_grid(self):
     """Tests linearization and delinearization with SphericalHarmonicGrid."""
     levels = coordinates.SigmaLevels.equidistant(5)
-    ref_temps = 280.0 + np.arange(levels.shape[0])
+    ref_temp_field = cx.field(280.0 + np.arange(levels.shape[0]), levels)
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     grid = coordinates.LonLatGrid.T21()
     rng = np.random.RandomState(42)
@@ -92,7 +92,7 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
     }
 
     linearize = equations.get_temperature_linearization_transform(
-        ref_temperatures=ref_temps, levels=levels
+        ref_temperatures=ref_temp_field
     )
     actual_linearized = linearize(inputs)
 
@@ -110,7 +110,7 @@ class AtmosphereEquationsAndHelpersTests(parameterized.TestCase):
 
     with self.subTest('roundtrip'):
       delinearize = equations.get_temperature_delinearization_transform(
-          ref_temperatures=ref_temps, levels=levels
+          ref_temperatures=ref_temp_field
       )
       actual_roundtrip = delinearize(actual_linearized)
       expected = jax.tree.map(jnp.asarray, inputs)

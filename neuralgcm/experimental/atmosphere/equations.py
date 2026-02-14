@@ -14,6 +14,7 @@
 
 """Modules parameterizing PDEs describing atmospheric processes."""
 
+import functools
 from typing import Callable, Sequence
 
 import coordax as cx
@@ -24,6 +25,7 @@ from dinosaur import primitive_equations
 from dinosaur import sigma_coordinates
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import time_integrators
@@ -33,26 +35,80 @@ from neuralgcm.experimental.core import units
 import numpy as np
 
 
+# Averaged temperature per pressure level from arco-ERA5 data over the period of
+# ('1990-01-01', '1998-01-01') subsampled every 6*35 hours and weighted by area.
+REF_PRESSURE = [
+    100,
+    500,
+    3000,
+    7000,
+    10000,
+    12500,
+    15000,
+    17500,
+    20000,
+    25000,
+    45000,
+    65000,
+    80000,
+    90000,
+    100000,
+]
+REF_TEMPERATURE = [
+    260.7,
+    240.36,
+    217.34,
+    207.15,
+    204.92,
+    207.68,
+    211.41,
+    215.04,
+    218.43,
+    225.5,
+    253.27,
+    270.29,
+    278.98,
+    282.98,
+    288.24
+]
+
+
+def get_reference_temperature(
+    model_levels: (
+        coordinates.SigmaLevels
+        | coordinates.HybridLevels
+        | coordinates.PressureLevels
+    ),
+) -> cx.Field:
+  """Returns reference temperature for the given model levels."""
+  p_surf_ref = 101325.0
+  if isinstance(model_levels, coordinates.SigmaLevels):
+    get_ticks_fn = lambda c: c.fields['sigma'] * p_surf_ref
+  elif isinstance(model_levels, coordinates.HybridLevels):
+    get_ticks_fn = functools.partial(
+        coordinates.HybridLevels.pressure_centers, surface_pressure=p_surf_ref
+    )
+  elif isinstance(model_levels, coordinates.PressureLevels):
+    get_ticks_fn = lambda c: c.fields['pressure'] * 100  # Convert to Pa.
+  else:
+    raise ValueError(
+        f'levels should be Sigma, Pressure or Hybrid, got {type(model_levels)=}'
+    )
+  return field_utils.reconstruct_1d_field_from_ref_values(
+      model_levels,
+      REF_PRESSURE,
+      REF_TEMPERATURE,
+      interpolation_space='linear',
+      get_tick_fn=get_ticks_fn,
+  )
+
+
 def get_temperature_linearization_transform(
-    ref_temperatures: Sequence[float] | cx.Field,
-    levels: coordinates.SigmaLevels | coordinates.HybridLevels |None,
+    ref_temperatures: cx.Field,
     abs_temperature_key: str = 'temperature',
     del_temperature_key: str = 'temperature_variation',
 ) -> typing.Transform:
   """Constructs transform for linearizing temperature around `ref_temperature`."""
-  if isinstance(ref_temperatures, cx.Field):
-    if levels is not None and cx.get_coordinate(ref_temperatures) != levels:
-      raise ValueError(
-          f'ref_temperatures coordinate {cx.get_coordinate(ref_temperatures)}'
-          f' does not match levels coordinate {levels}.'
-      )
-    ref_temp_field = ref_temperatures
-  else:  # Sequence[float]
-    if levels is None:
-      raise ValueError(
-          '`levels` must be provided for sequence `ref_temperatures`'
-      )
-    ref_temp_field = cx.field(np.array(ref_temperatures), levels)
 
   def linearize_fn(abs_temp: cx.Field) -> cx.Field:
     ylm_dims = ('longitude_wavenumber', 'total_wavenumber')
@@ -60,9 +116,9 @@ def get_temperature_linearization_transform(
       ylm_grid = cx.coords.extract(
           abs_temp.coordinate, coordinates.SphericalHarmonicGrid
       )
-      del_temp = ylm_grid.add_constant(abs_temp, -ref_temp_field)
+      del_temp = ylm_grid.add_constant(abs_temp, -ref_temperatures)
     else:
-      del_temp = abs_temp - ref_temp_field
+      del_temp = abs_temp - ref_temperatures
     return del_temp
 
   return transforms.Sequential([
@@ -76,25 +132,11 @@ def get_temperature_linearization_transform(
 
 
 def get_temperature_delinearization_transform(
-    ref_temperatures: Sequence[float] | cx.Field,
-    levels: coordinates.SigmaLevels | coordinates.HybridLevels | None,
+    ref_temperatures: cx.Field,
     abs_temperature_key: str = 'temperature',
     del_temperature_key: str = 'temperature_variation',
 ) -> typing.Transform:
   """Constructs transform for reversing temperature linearization."""
-  if isinstance(ref_temperatures, cx.Field):
-    if levels is not None and cx.get_coordinate(ref_temperatures) != levels:
-      raise ValueError(
-          f'ref_temperatures coordinate {cx.get_coordinate(ref_temperatures)}'
-          f' does not match levels coordinate {levels}.'
-      )
-    ref_temp_field = ref_temperatures
-  else:  # Sequence[float]
-    if levels is None:
-      raise ValueError(
-          '`levels` must be provided for sequence `ref_temperatures`'
-      )
-    ref_temp_field = cx.field(np.array(ref_temperatures), levels)
 
   def delinearize_fn(del_temp: cx.Field) -> cx.Field:
     """Applies delinearization to `del_temp` field."""
@@ -103,9 +145,9 @@ def get_temperature_delinearization_transform(
       ylm_grid = cx.coords.extract(
           del_temp.coordinate, coordinates.SphericalHarmonicGrid
       )
-      abs_temp = ylm_grid.add_constant(del_temp, ref_temp_field)
+      abs_temp = ylm_grid.add_constant(del_temp, ref_temperatures)
     else:
-      abs_temp = del_temp + ref_temp_field
+      abs_temp = del_temp + ref_temperatures
     return abs_temp
 
   return transforms.Sequential([
@@ -152,7 +194,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
       ylm_map: spherical_harmonics.FixedYlmMapping,
       levels: coordinates.SigmaLevels | coordinates.HybridLevels,
       sim_units: units.SimUnits,
-      reference_temperatures: Sequence[float],
+      reference_temperatures: Sequence[float] | cx.Field,
       tracer_names: Sequence[str],
       orography_module: orographies.ModalOrography,
       vertical_advection: Callable[..., typing.Array] | None = None,
@@ -163,19 +205,30 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
           'specific_cloud_liquid_water_content',
       ),
   ):
+    if cx.is_field(reference_temperatures):
+      if not cx.contains_dims(reference_temperatures, levels):
+        raise ValueError(
+            f'reference_temperatures provided on levels different from {levels}'
+        )
+      assert isinstance(reference_temperatures, cx.Field)  # make pytype happy.
+      t_ref_tuple = tuple(float(t) for t in reference_temperatures.data)
+    else:
+      t_ref_tuple = tuple(reference_temperatures)
+      reference_temperatures = cx.field(np.array(t_ref_tuple), levels)
+
     self.ylm_map = ylm_map
     self.levels = levels
     self.orography_module = orography_module
     self.sim_units = sim_units
     self.orography = orography_module
-    self.reference_temperatures = reference_temperatures
+    self.t_ref_tuple = t_ref_tuple
     self.tracer_names = tracer_names
     self.include_vertical_advection = include_vertical_advection
     self.linearize_transform = get_temperature_linearization_transform(
-        ref_temperatures=reference_temperatures, levels=levels
+        ref_temperatures=reference_temperatures
     )
     self.delinearize_transform = get_temperature_delinearization_transform(
-        ref_temperatures=reference_temperatures, levels=levels
+        ref_temperatures=reference_temperatures
     )
     self.linear_to_absolute_rename = transforms.Rename(
         rename_dict={'temperature_variation': 'temperature'}
@@ -222,7 +275,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     return self.equation_cls(
         coords=self.dinosaur_coords,
         physics_specs=self.sim_units,
-        reference_temperature=np.asarray(self.reference_temperatures),
+        reference_temperature=np.asarray(self.t_ref_tuple),
         orography=self.orography_module.modal_orography.data,
         vertical_advection=self.vertical_advection,
         include_vertical_advection=self.include_vertical_advection,
@@ -326,7 +379,7 @@ class HeldSuarezForcing(time_integrators.ExplicitODE):
       ylm_map: spherical_harmonics.FixedYlmMapping,
       levels: coordinates.SigmaLevels | coordinates.HybridLevels,
       sim_units: units.SimUnits,
-      reference_temperatures: Sequence[float],
+      reference_temperatures: Sequence[float] | cx.Field,
       p0: typing.Quantity = 1e5 * typing.units.pascal,
       sigma_b: float = 0.7,
       kf: typing.Quantity = 1 / (1 * typing.units.day),
@@ -337,10 +390,21 @@ class HeldSuarezForcing(time_integrators.ExplicitODE):
       d_ty: typing.Quantity = 60 * typing.units.kelvin,
       d_thz: typing.Quantity = 10 * typing.units.kelvin,
   ):
+    if cx.is_field(reference_temperatures):
+      if not cx.contains_dims(reference_temperatures, levels):
+        raise ValueError(
+            f'reference_temperatures provided on levels different from {levels}'
+        )
+      assert isinstance(reference_temperatures, cx.Field)  # make pytype happy.
+      t_ref_tuple = tuple(float(t) for t in reference_temperatures.data)
+    else:
+      t_ref_tuple = tuple(reference_temperatures)
+      reference_temperatures = cx.field(np.array(t_ref_tuple), levels)
+
     self.ylm_map = ylm_map
     self.levels = levels
     self.sim_units = sim_units
-    self.reference_temperatures = reference_temperatures
+    self.t_ref_tuple = t_ref_tuple
     self.p0 = p0
     self.sigma_b = sigma_b
     self.kf = kf
@@ -359,7 +423,7 @@ class HeldSuarezForcing(time_integrators.ExplicitODE):
     else:
       raise ValueError(f'Unsupported vertical coordinate system: {levels}')
     self.linearize_transform = get_temperature_linearization_transform(
-        ref_temperatures=reference_temperatures, levels=levels
+        ref_temperatures=reference_temperatures
     )
     self.linear_to_absolute_rename = transforms.Rename(
         rename_dict={'temperature_variation': 'temperature'}
@@ -379,7 +443,7 @@ class HeldSuarezForcing(time_integrators.ExplicitODE):
     return self.forcing_cls(
         coords=dinosaur_coords,
         physics_specs=self.sim_units,
-        reference_temperature=np.asarray(self.reference_temperatures),
+        reference_temperature=np.asarray(self.t_ref_tuple),
         p0=self.p0,
         sigma_b=self.sigma_b,
         kf=self.kf,

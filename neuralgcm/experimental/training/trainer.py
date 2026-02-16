@@ -15,7 +15,6 @@
 """Trainer logic for rollout experiment."""
 
 import abc
-import collections
 from collections.abc import Callable, Sequence
 import dataclasses
 import functools
@@ -48,6 +47,7 @@ from neuralgcm.experimental.metrics import base as metrics_base
 from neuralgcm.experimental.metrics import evaluators
 from neuralgcm.experimental.training import checkpointing
 from neuralgcm.experimental.training import data_loading
+from neuralgcm.experimental.training import model_calibrators
 from neuralgcm.experimental.training import train_utils
 import numpy as np
 import optax
@@ -59,6 +59,10 @@ from orbax.checkpoint import checkpoint_managers as ocp_managers
 
 Params: TypeAlias = typing.Pytree
 PyTree: TypeAlias = typing.Pytree
+
+EvaluatorLike: TypeAlias = (
+    evaluators.Evaluator | evaluators.FlattenedEvaluator | evaluators.NestedEvaluators
+)
 
 DataSpec: TypeAlias = dict[str, dict[str, cx.Coordinate]]
 NestedAggStates: TypeAlias = tuple[aggregation.AggregationState | None, ...]
@@ -110,18 +114,6 @@ def create_training_mesh(
   return parallelism.Mesh(
       spmd_mesh=spmd_mesh, field_partitions=field_partitions
   )
-
-
-def _flatten_dict(
-    nested: dict[str, dict[str, cx.Field]],
-    sep='/',
-) -> dict[str, cx.Field]:
-  """Flattens a nested dictionary of fields into a single level."""
-  result = {}
-  for k, v in nested.items():
-    for inner_k, f in v.items():
-      result[sep.join([k, inner_k])] = f
-  return result
 
 
 def _run_evaluator(evaluator, prediction, target):
@@ -292,9 +284,9 @@ def _compute_aggregation(
   targets_only_slice = data_loading.filter_inputs_by_queries(
       targets_slice, query_spec
   )
-  prediction = process_fn(process_obs, _flatten_dict(observe_fn(model, query)))
+  prediction = process_fn(process_obs, observe_fn(model, query))
   prediction = training_mesh.with_sharding_constraint(prediction, 'physics')
-  target = process_fn(process_obs, _flatten_dict(targets_only_slice))
+  target = process_fn(process_obs, targets_only_slice)
   target = training_mesh.with_sharding_constraint(target, 'physics')
 
   new_agg_states = []
@@ -311,10 +303,10 @@ def _compute_aggregation(
 
 
 def create_nested_evaluators(
-    evaluator: evaluators.Evaluator,
+    evaluator: EvaluatorLike,
     nested_targets_specs: tuple[DataSpec, ...],
     dt: np.timedelta64,
-) -> tuple[evaluators.Evaluator, ...]:
+) -> tuple[EvaluatorLike, ...]:
   """Creates a tuple of evaluators with temporal context for nested scans.
 
   To support calculation of "timedelta"-dependent scaling or weighting,
@@ -530,12 +522,7 @@ def _construct_full_queries_spec(
   return targets
 
 
-PretrainOp = Callable[..., Any]
 
-
-@dataclasses.dataclass
-class PretrainingOps:
-  pretrain_fns: collections.OrderedDict[str, PretrainOp]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -545,7 +532,7 @@ class TrainStage:
   inputs_spec: DataSpec
   dynamic_inputs_spec: DataSpec
   queries_spec: data_specs.QueriesSpec
-  loss: evaluators.Evaluator[metrics_base.Loss]
+  loss: EvaluatorLike
   time_sample_offset: np.timedelta64
   train_time_slice: tuple[str, str] | list[tuple[str, str]] | None
   eval_time_slice: tuple[str, str] | list[tuple[str, str]] | None
@@ -568,13 +555,13 @@ class EvalSchema:
   inputs_spec: DataSpec
   dynamic_inputs_spec: DataSpec
   queries_spec: data_specs.QueriesSpec
-  metrics_evaluator: evaluators.Evaluator[metrics_base.Metric] | None
+  metrics_evaluator: EvaluatorLike | None
   batch_size_per_device: int
   num_batches: int
   time_sample_offset: np.timedelta64
   train_time_slice: tuple[str, str] | list[tuple[str, str]] | None
   eval_time_slice: tuple[str, str] | list[tuple[str, str]] | None
-  loss_evaluator: evaluators.Evaluator[metrics_base.Loss] | None = None
+  loss_evaluator: EvaluatorLike | None = None
   name: str | None = None
 
 
@@ -637,10 +624,10 @@ class RolloutTrainer:
   experiment_dir: str
   model: api.Model
   data_loader: data_loading.DataLoader
-  loss: evaluators.Evaluator[metrics_base.Loss]
-  eval_metrics: evaluators.Evaluator[metrics_base.Metric]
+  loss: EvaluatorLike
+  eval_metrics: EvaluatorLike
   process_observations: nnx.Module
-  pretraining: PretrainingOps | None
+  calibration_modules: Sequence[model_calibrators.ModelCalibrator] | None
   train_schedule: TrainSchedule
   eval_schedule: EvalSchedule
   optimization_config: OptimizationConfig
@@ -669,6 +656,7 @@ class RolloutTrainer:
     )
 
     # Validating compatibility of the data loader with the model.
+    assert isinstance(self.model, api.Model)
     for stage in self.train_schedule.stages:
       try:
         data_specs.validate_inputs(stage.inputs_spec, self.model.inputs_spec)
@@ -901,18 +889,7 @@ class RolloutTrainer:
 
     return training_data, train_step_fn, evaluation_fns
 
-  def run_pretraining(self, train_schedule: TrainSchedule):
-    """Runs pretraining."""
-    if self.pretraining is None:
-      logging.info('Skipping pretraining (no pretraining config provided)')
-      return
 
-    assert hasattr(self.pretraining, 'pretrain_fns')
-    for k, pretraining_step in self.pretraining.pretrain_fns.items():
-      logging.info('Running pretraining step: %s', k)
-      self.model = pretraining_step(
-          self.model, self.data_loader, train_schedule
-      )
 
   def _make_initial_experiment_state(
       self, init_params, non_params
@@ -946,13 +923,9 @@ class RolloutTrainer:
         data_slice_struct, queries_spec
     )
     process_fn = lambda proc_module, target_slice: proc_module(target_slice)
-    target_struct = nnx.eval_shape(
-        process_fn, process_obs, _flatten_dict(target_slice_struct)
-    )
+    target_struct = nnx.eval_shape(process_fn, process_obs, target_slice_struct)
     query_struct = data_specs.construct_query(data_slice_struct, queries_spec)
-    dummy_observe = lambda model, proc_module, q: proc_module(
-        _flatten_dict(model.observe(q))
-    )
+    dummy_observe = lambda model, proc_module, q: proc_module(model.observe(q))
     prediction_struct = nnx.eval_shape(
         dummy_observe, eb_model, process_obs, query_struct
     )
@@ -1053,7 +1026,7 @@ class RolloutTrainer:
 
   def _create_initial_nested_agg_states(
       self,
-      evaluator: evaluators.Evaluator,
+      evaluator: EvaluatorLike,
       model: api.Model,
       process_obs: nnx.Module,
       nested_specs: tuple[DataSpec, ...],  # rollout specs, right? in principle don't need input timedelta here.
@@ -1085,7 +1058,7 @@ class RolloutTrainer:
       nested_steps: tuple[int, ...],
       nested_queries_spec: tuple[data_specs.QueriesSpec, ...],
       retrieve_fns: tuple[Callable[[int], PyTree], ...] | None,
-      nested_evaluators_groups: tuple[tuple[evaluators.Evaluator, ...], ...],
+      nested_evaluators_groups: tuple[tuple[EvaluatorLike, ...], ...],
       nested_targets: tuple[PyTree, ...] | None,
       observe_fn: Callable[..., PyTree],
       process_fn: Callable[..., PyTree],
@@ -1784,8 +1757,11 @@ class RolloutTrainer:
 
     else:
       logging.info('Starting training with new weights')
-      # TODO(dkochkov): Consider making pretraining independent from training.
-      self.run_pretraining(self.train_schedule)
+      if self.calibration_modules:
+        for calibrator in self.calibration_modules:
+          self.model = calibrator(
+              self.model, self.data_loader, self.train_schedule
+          )
       split_state = model_checkpointing.split_model_state_for_saving(self.model)
       return self._initialize_for_fresh_start(
           split_state.params, split_state.non_params
@@ -1935,39 +1911,67 @@ class RolloutTrainer:
       metric_values = eval_schema.metrics_evaluator.evaluate_metrics(
           {}, {}, total_metrics_agg
       )
-      for metric_key, metric_dict in metric_values.items():
-        for scalar_name, v in metric_dict.items():
-          key = '.'.join(prefix + [metric_key, scalar_name])
-          values_to_record[key] = float(v.data)
+
+      def _flatten_metric_values(values, prefix_list):
+        for k, v in values.items():
+          if isinstance(v, dict):
+            _flatten_metric_values(v, prefix_list + [k])
+          else:
+            key = '.'.join(prefix_list) + '/' + str(k)
+            values_to_record[key] = float(v.data)
+
+      _flatten_metric_values(metric_values, prefix)
 
     # Recording loss.
     if eval_schema.loss_evaluator is not None:
+      loss_evaluator = eval_schema.loss_evaluator
       loss_val = float(
-          eval_schema.loss_evaluator.evaluate_total({}, {}, total_loss_agg).data
+          loss_evaluator.evaluate_total({}, {}, total_loss_agg).data
       )
       key = '.'.join(prefix + ['total'])
       values_to_record[key] = loss_val
-      for term_key, term_metric in eval_schema.loss_evaluator.metrics.items():
-        # Recording relative value of loss terms.
-        assert isinstance(term_metric, metrics_base.Loss)
-        if eval_schema.loss_evaluator.term_weights is not None:
-          w = eval_schema.loss_evaluator.term_weights.get(term_key, 1.0)
-        else:
-          w = 1.0
-        term_metric_values = total_loss_agg[term_key].metric_values(term_metric)
-        relative_value_key = '.'.join(prefix + ['relative', term_key])
-        loss_term_value = w * float(term_metric.total(term_metric_values).data)
-        if loss_val != 0:
-          values_to_record[relative_value_key] = loss_term_value / loss_val
-        else:
-          values_to_record[relative_value_key] = 0.0
 
-        # Recording debug terms for each loss term.
-        mean_stats = total_loss_agg[term_key].mean_statistics()
-        debug_terms = term_metric.debug_terms(mean_stats, term_metric_values)
-        for debug_term_name, v in debug_terms.items():
-          key = '.'.join(prefix + [term_key, debug_term_name])
-          values_to_record[key] = float(v.data)
+      def _log_loss_terms(evaluator, agg_state, current_prefix):
+        if isinstance(evaluator, evaluators.NestedEvaluators):
+          # Recursively log terms for each sub-evaluator.
+          # Note: agg_state is dict[str, agg_state]
+          # Iterate through available results in agg_state.
+          for k, sub_agg in agg_state.items():
+            sub_eval = evaluator.evaluators.get(k, evaluator.default_evaluator)
+            if sub_eval:
+              _log_loss_terms(sub_eval, sub_agg, current_prefix + [k])
+          return
+
+        if isinstance(evaluator, evaluators.FlattenedEvaluator):
+          evaluator = evaluator.evaluator
+
+        # Base Evaluator case
+        for term_key, term_metric in evaluator.metrics.items():
+          assert isinstance(term_metric, metrics_base.Loss)
+          if evaluator.term_weights is not None:
+            w = evaluator.term_weights.get(term_key, 1.0)
+          else:
+            w = 1.0
+          term_metric_values = agg_state[term_key].metric_values(term_metric)
+          relative_value_key = (
+              '.'.join(current_prefix + ['relative']) + f'/{term_key}'
+          )
+          loss_term_value = w * float(
+              term_metric.total(term_metric_values).data
+          )
+          if loss_val != 0:
+            values_to_record[relative_value_key] = loss_term_value / loss_val
+          else:
+            values_to_record[relative_value_key] = 0.0
+
+          # Recording debug terms for each loss term.
+          mean_stats = agg_state[term_key].mean_statistics()
+          debug_terms = term_metric.debug_terms(mean_stats, term_metric_values)
+          for debug_term_name, v in debug_terms.items():
+            key = '.'.join(current_prefix + [term_key]) + f'/{debug_term_name}'
+            values_to_record[key] = float(v.data)
+
+      _log_loss_terms(loss_evaluator, total_loss_agg, prefix)
 
     return values_to_record
 

@@ -202,6 +202,8 @@ class TrainerTest(parameterized.TestCase):
     eval_metrics, loss = self._create_evaluators(
         dims_to_reduce=('ensemble', 'batch', 'k')
     )
+    eval_metrics = evaluators.FlattenedEvaluator(eval_metrics)
+    loss = evaluators.FlattenedEvaluator(loss)
     dt_slow = model.timestep * 4
 
     optimizer = optax.adam(1e-3)
@@ -265,7 +267,7 @@ class TrainerTest(parameterized.TestCase):
         loss=loss,
         eval_metrics=eval_metrics,
         process_observations=process_obs,
-        pretraining=None,
+        calibration_modules=None,
         train_schedule=train_schedule,
         eval_schedule=eval_schedule,
         optimization_config=opt_config,
@@ -287,6 +289,13 @@ class TrainerTest(parameterized.TestCase):
     data_loader = self._create_data_loader(all_data)
     eval_metrics, loss = self._create_evaluators(
         dims_to_reduce=('ensemble', 'batch', 'k', 'j')
+    )
+    # Using nested evaluators for nested inputs.
+    eval_metrics = evaluators.NestedEvaluators(
+        evaluators={'slow': eval_metrics, 'fast': eval_metrics}
+    )
+    loss = evaluators.NestedEvaluators(
+        evaluators={'slow': loss, 'fast': loss}
     )
 
     optimizer = optax.adam(1e-3)
@@ -370,7 +379,7 @@ class TrainerTest(parameterized.TestCase):
         loss=loss,
         eval_metrics=eval_metrics,
         process_observations=process_obs,
-        pretraining=None,
+        calibration_modules=None,
         train_schedule=train_schedule,
         eval_schedule=eval_schedule,
         optimization_config=opt_config,

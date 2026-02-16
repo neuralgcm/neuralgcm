@@ -28,7 +28,7 @@ import abc
 import dataclasses
 import itertools
 import re
-from typing import Callable, Literal, Sequence, TypeAlias
+from typing import Any, Callable, Literal, Sequence, TypeAlias
 
 import coordax as cx
 from flax import nnx
@@ -598,7 +598,7 @@ class ClipWavenumbers(TransformABC):
           result[k] = v
         else:
           raise ValueError(
-              f'No matching grid found for {k=} in {self.wavenumbers_for_grid=}'
+              f'No matching grid for {k=}, {v=} in {self.wavenumbers_for_grid=}'
           )
     return result
 
@@ -1468,7 +1468,7 @@ class SanitizeNanGradTransform(TransformABC):
     def _sanitized_bwd(res, g):
       input_updates_g, out_g = g
       inputs, t_def, t_state_before = res
-      (t_updates_g, _) = input_updates_g  # inputs are not stateful -> ignored.
+      t_updates_g, _ = input_updates_g  # inputs are not stateful -> ignored.
       is_nan = jax.tree.map(jnp.isnan, inputs)
       safe_inputs = _sanitize_values(inputs, is_nan)  # Sanitize inputs.
       grad_nans = jax.tree.map(jnp.isnan, out_g)  # Sanitize gradients.
@@ -1486,3 +1486,44 @@ class SanitizeNanGradTransform(TransformABC):
 
     _sanitized_transform.defvjp(_sanitized_fwd, _sanitized_bwd)
     return _sanitized_transform(self.transform, inputs)
+
+
+class NestedTransform(nnx.Module, pytree=False):
+  """Wrapper that applies transforms to values of a nested dict[dict[Field]].
+
+  This module simplifies application of transforms to nested fields by assigning
+  a transform to each outer key in the nested dict. If provided with a single
+  transform, it will be applied to all keys. An ellipsis can be used to specify
+  a default transform for all keys that do not have an explicitly assigned
+  transform.
+
+  If no transform is assigned to a key and no default transform is provided, a
+  `ValueError` is raised upon attempting to transform that key.
+  """
+
+  def __init__(
+      self,
+      transform: typing.Transform | dict[str | type(...), typing.Transform],
+  ):
+    if isinstance(transform, dict):
+      transforms_map = transform.copy()
+      self.default_transform = transforms_map.pop(..., None)
+      self.transforms = transforms_map
+    else:
+      self.default_transform = transform
+      self.transforms = {}
+
+  def __call__(self, inputs: dict[str, Any]) -> dict[str, Any]:
+    outputs = {}
+    for k, v in inputs.items():
+      if k in self.transforms:
+        outputs[k] = self.transforms[k](v)
+      elif self.default_transform is not None:
+        outputs[k] = self.default_transform(v)
+      else:
+        raise ValueError(f'No default or key-specific transform for {k=}.')
+    return outputs
+
+  def output_shapes(self, input_shapes: dict[str, Any]) -> dict[str, Any]:
+    call_dispatch = lambda nested_transform, inputs: nested_transform(inputs)
+    return nnx.eval_shape(call_dispatch, self, input_shapes)

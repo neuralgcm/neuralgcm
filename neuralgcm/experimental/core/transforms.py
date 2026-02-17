@@ -48,6 +48,8 @@ from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
+from neuralgcm.experimental.metrics import weighting
+
 import numpy as np
 
 
@@ -1253,6 +1255,44 @@ class ScaleToMatchCoarseFields(TransformABC):
       hres_outputs[key] = conserved_hres_field
     return hres_outputs
 
+
+@nnx_compat.dataclass
+class DimensionalMean(TransformABC):
+  """Transform that averages over `dims_to_average`.
+
+  If 'latitude' is in `dims_to_average`, area weighting is used for averaging,
+  otherwise unweighted average is performed.
+  """
+
+  dims_to_average: tuple[str, ...] = ('longitude', 'latitude')
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    results = {}
+    grid_area_weighting = weighting.GridAreaWeighting()
+
+    def _weighted_average(array, weights):
+      return jnp.sum(array * weights) / jnp.sum(weights)
+
+    for k, field in inputs.items():
+      has_dims = all(d in field.dims for d in self.dims_to_average)
+      if not has_dims:
+        raise ValueError(
+            f'Field {k} is missing one or more dimensions from '
+            f'{self.dims_to_average}.'
+        )
+      if 'latitude' in self.dims_to_average:
+        weights = grid_area_weighting.weights(field)
+        field_to_avg = field.untag(*self.dims_to_average)
+        weights_for_avg = weights.untag(*self.dims_to_average)
+        mapped_average_fn = cx.cmap(_weighted_average)
+        result = mapped_average_fn(field_to_avg, weights_for_avg)
+      else:
+        field_to_avg = field.untag(*self.dims_to_average)
+        mapped_average_fn = cx.cmap(jnp.mean)
+        result = mapped_average_fn(field_to_avg)
+
+      results[k] = result
+    return results
 
 @nnx_compat.dataclass
 class VelocityFromModalDivCurl(TransformABC):

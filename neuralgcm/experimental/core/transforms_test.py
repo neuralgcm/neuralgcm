@@ -139,9 +139,7 @@ class TransformsTest(parameterized.TestCase):
     x, y = cx.SizedAxis('x', 4), cx.SizedAxis('y', 5)
     xy = cx.coords.compose(x, y)
     # Mean of (0+1+2+3)/4 + (0+1+2+3+4)/5 = 1.5 + 2.0 = 3.5
-    inputs = {
-        'a': cx.field(np.arange(4)[:, None] + np.arange(5)[None, :], xy)
-    }
+    inputs = {'a': cx.field(np.arange(4)[:, None] + np.arange(5)[None, :], xy)}
 
     with self.subTest('standard_mean'):
       transform = transforms.MeanOverAxes(dims=('x', 'y'))
@@ -317,7 +315,7 @@ class TransformsTest(parameterized.TestCase):
           wavenumbers_for_grid={ylm_grid_21: 3, ylm_grid_31: 5},
           skip_missing=False,
       )
-      with self.assertRaisesRegex(ValueError, 'No matching grid found'):
+      with self.assertRaisesRegex(ValueError, 'No matching grid for'):
         clip_transform(inputs)
 
   def test_to_modal(self):
@@ -1197,6 +1195,63 @@ class SanitizedNanGradTransformTest(parameterized.TestCase):
 
     np.testing.assert_allclose(out_san, out_orig, err_msg='output mismatch')
     chex.assert_trees_all_close(grads_san_inner, grads_orig)
+
+
+class NestedTransformTest(parameterized.TestCase):
+
+  def test_single_transform(self):
+    """Tests backward compatibility with single transform."""
+    transform = transforms.NestedTransform(transforms.Identity())
+    inputs = {'a': {'x': cx.field(1.0)}, 'b': {'y': cx.field(2.0)}}
+    actual = transform(inputs)
+    chex.assert_trees_all_close(actual, inputs)
+
+  def test_dict_transform_specific_keys(self):
+    """Tests using a dictionary of transforms."""
+    scale_2 = transforms.Scale(cx.field(2.0))
+    scale_3 = transforms.Scale(cx.field(3.0))
+    transform = transforms.NestedTransform({'a': scale_2, 'b': scale_3})
+    inputs = {
+        'a': {'val': cx.field(np.array([1.0]), 'x')},
+        'b': {'val': cx.field(np.array([1.0]), 'x')},
+    }
+    actual = transform(inputs)
+    expected = {
+        'a': {'val': cx.field(np.array([2.0]), 'x')},
+        'b': {'val': cx.field(np.array([3.0]), 'x')},
+    }
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_dict_transform_with_ellipsis(self):
+    """Tests using Ellipsis as default transform."""
+    scale_2 = transforms.Scale(cx.field(2.0))
+    scale_10 = transforms.Scale(cx.field(10.0))
+    transform = transforms.NestedTransform({'a': scale_2, ...: scale_10})
+    inputs = {
+        'a': {'val': cx.field(np.array([1.0]), 'x')},
+        'b': {'val': cx.field(np.array([1.0]), 'x')},
+        'c': {'val': cx.field(np.array([1.0]), 'x')},
+    }
+    actual = transform(inputs)
+    expected = {
+        'a': {'val': cx.field(np.array([2.0]), 'x')},
+        'b': {'val': cx.field(np.array([10.0]), 'x')},
+        'c': {'val': cx.field(np.array([10.0]), 'x')},
+    }
+    chex.assert_trees_all_close(actual, expected)
+
+  def test_dict_transform_missing_key_raises(self):
+    """Tests ValueError is raised if a key is missing and no default is set."""
+    scale_2 = transforms.Scale(cx.field(2.0))
+    transform = transforms.NestedTransform({'a': scale_2})
+    inputs = {
+        'a': {'val': cx.field(np.array([1.0]), 'x')},
+        'missing_key': {'val': cx.field(np.array([1.0]), 'x')},
+    }
+    with self.assertRaisesRegex(
+        ValueError, "No default or key-specific transform for k='missing_key'"
+    ):
+      transform(inputs)
 
 
 if __name__ == '__main__':

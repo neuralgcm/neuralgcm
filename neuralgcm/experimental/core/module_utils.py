@@ -20,7 +20,7 @@ import dataclasses
 import functools
 import itertools
 import operator
-from typing import Any, Callable, Iterable, NamedTuple, Sequence, overload
+from typing import Any, Callable, Iterable, Literal, NamedTuple, Sequence, TypeVar, overload
 
 import chex
 import coordax as cx
@@ -30,6 +30,8 @@ from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
+
+T = TypeVar('T')
 
 
 def ensure_unchanged_state_structure(
@@ -422,9 +424,11 @@ def nest_state_in_axes(
         f'nesting state_in_axes requires same keys, got {state_filters}'
     )
   [state_filters] = list(state_filters)
+  # pylint: disable=undefined-variable
   axes_by_filter = {
       f: tuple(s[f] for s in state_axes_to_nest) for f in state_filters
   }
+  # pylint: enable=undefined-variable
   nested_axes_by_filter = {
       f: field_utils.nest_in_axes(*trees) for f, trees in axes_by_filter.items()
   }
@@ -652,10 +656,30 @@ def with_callback(
   return cls(module, callback_specs)
 
 
-def retrieve_subclass_modules(module, subclass):
+@overload
+def retrieve_subclass_modules(
+    module, subclass: type[T], return_paths: Literal[False] = ...
+) -> list[T]:
+  ...
+
+
+@overload
+def retrieve_subclass_modules(
+    module, subclass: type[T], return_paths: Literal[True]
+) -> tuple[list[T], list[tuple[Any, ...]]]:
+  ...
+
+
+def retrieve_subclass_modules(
+    module, subclass, return_paths: bool = False
+):
   """Returns list of all unique `subclass` instances on `module`."""
   subclass_modules = []
-  for _, x in module.iter_modules():
+  subclass_paths = []
+  for path, x in nnx.iter_modules(module):
     if isinstance(x, subclass):
       subclass_modules.append(x)
+      subclass_paths.append(path)
+  if return_paths:
+    return subclass_modules, subclass_paths
   return subclass_modules

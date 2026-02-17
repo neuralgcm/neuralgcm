@@ -188,6 +188,11 @@ class Evaluator(Generic[M]):
         for k, metric in self.metrics.items()
     }
 
+  @classmethod
+  def empty(cls) -> Evaluator:
+    """Returns an empty evaluator."""
+    return cls(metrics={}, aggregators=aggregation.Aggregator([]))
+
 
 jax.tree_util.register_dataclass(
     Evaluator,
@@ -302,12 +307,17 @@ class NestedEvaluators:
 
   evaluators: dict[Any, Evaluator]
   evaluator_weights: dict[str, float] | None = None
+  default_evaluator: Evaluator | None = None
   is_loss_evaluator: bool = dataclasses.field(init=False)
-  default_evaluator: Evaluator | None = dataclasses.field(init=False)
 
   def __post_init__(self):
     self.evaluators = dict(self.evaluators)  # make mutable copy
-    self.default_evaluator = self.evaluators.pop(..., None)
+    if ... in self.evaluators and self.default_evaluator is not None:
+      raise ValueError(
+          f'{self.evaluators[...]=} and {self.default_evaluator=} cannot be set'
+          ' at the same time.'
+      )
+    self.default_evaluator = self.evaluators.pop(..., self.default_evaluator)
     all_evals = list(self.evaluators.values())
     if self.default_evaluator:
       all_evals.append(self.default_evaluator)
@@ -390,12 +400,16 @@ class NestedEvaluators:
     new_evaluators = {
         k: ev.with_context(context) for k, ev in self.evaluators.items()
     }
-    if self.default_evaluator:
-      new_evaluators[...] = self.default_evaluator.with_context(context)
+    new_default_evaluator = (
+        self.default_evaluator.with_context(context)
+        if self.default_evaluator
+        else None
+    )
     return dataclasses.replace(
         self,
         evaluators=new_evaluators,
         evaluator_weights=self.evaluator_weights,
+        default_evaluator=new_default_evaluator,
     )
 
   def zeros_aggregation_states(
@@ -427,7 +441,7 @@ jax.tree_util.register_dataclass(
 )
 jax.tree_util.register_dataclass(
     NestedEvaluators,
-    data_fields=['evaluators'],
+    data_fields=['evaluators', 'default_evaluator'],
     meta_fields=['evaluator_weights'],
     drop_fields=['is_loss_evaluator'],
 )

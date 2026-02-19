@@ -343,7 +343,7 @@ class NestedEvaluators:
     """Evaluates metrics for each dataset, returning nested aggregation states."""
     result = {}
     all_keys = set(predictions.keys()) & set(targets.keys())
-    for key in all_keys:
+    for key in sorted(all_keys):
       evaluator = self.evaluators.get(key, self.default_evaluator)
       if evaluator is None:
         raise ValueError(
@@ -365,7 +365,7 @@ class NestedEvaluators:
     if agg_states is None:
       agg_states = self.evaluate(predictions, targets)
     metrics_results = {}
-    for key, states in agg_states.items():
+    for key, states in sorted(agg_states.items()):
       evaluator = self.evaluators.get(key, self.default_evaluator)
       metrics_results[key] = evaluator.evaluate_metrics(  # pytype: disable=attribute-error
           predictions.get(key, {}), targets.get(key, {}), states
@@ -420,7 +420,7 @@ class NestedEvaluators:
     """Returns zero aggregation states for each dataset."""
     result = {}
     all_keys = set(predictions.keys()) & set(targets.keys())
-    for key in all_keys:
+    for key in sorted(all_keys):
       evaluator = self.evaluators.get(key, self.default_evaluator)
       if evaluator is None:
         raise ValueError(

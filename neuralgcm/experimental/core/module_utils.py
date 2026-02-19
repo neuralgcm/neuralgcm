@@ -422,9 +422,11 @@ def nest_state_in_axes(
         f'nesting state_in_axes requires same keys, got {state_filters}'
     )
   [state_filters] = list(state_filters)
+  # pylint: disable=undefined-variable
   axes_by_filter = {
       f: tuple(s[f] for s in state_axes_to_nest) for f in state_filters
   }
+  # pylint: enable=undefined-variable
   nested_axes_by_filter = {
       f: field_utils.nest_in_axes(*trees) for f, trees in axes_by_filter.items()
   }
@@ -655,7 +657,7 @@ def with_callback(
 def retrieve_subclass_modules(module, subclass):
   """Returns list of all unique `subclass` instances on `module`."""
   subclass_modules = []
-  for _, x in module.iter_modules():
+  for _, x in nnx.iter_modules(module):
     if isinstance(x, subclass):
       subclass_modules.append(x)
   return subclass_modules

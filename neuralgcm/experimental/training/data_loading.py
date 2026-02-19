@@ -372,13 +372,38 @@ def sel_timedelta_fields(
   return jax.tree.map(_slice_field, inputs, is_leaf=cx.is_field)
 
 
+def _drop_empty_fields(node: PyTree) -> PyTree:
+  """Recursively removes empty arrays and dictionaries from a PyTree."""
+
+  if isinstance(node, dict):
+    filtered_dict = {}
+    for k, v in node.items():
+      # Drop array-like objects with an empty dimension
+      if hasattr(v, 'shape') and 0 in v.shape:
+        continue
+
+      # Recurse deeper
+      processed_v = _drop_empty_fields(v)
+
+      # If the result is an empty dictionary, drop it
+      if isinstance(processed_v, dict) and not processed_v:
+        continue
+
+      filtered_dict[k] = processed_v
+    return filtered_dict
+
+  return node
+
+
 def sel_init_fields(inputs: PyTree) -> PyTree:
   """Returns a slice of inputs with timedelta values <= 0."""
-  return sel_timedelta_fields(inputs, slice(None, np.timedelta64(0, 's')))
+  sel_fields = sel_timedelta_fields(inputs, slice(None, np.timedelta64(0, 's')))
+  return _drop_empty_fields(sel_fields)
 
 
 def sel_target_fields(inputs: PyTree) -> PyTree:
-  return sel_timedelta_fields(inputs, slice(np.timedelta64(1, 's'), None))
+  sel_fields = sel_timedelta_fields(inputs, slice(np.timedelta64(1, 's'), None))
+  return _drop_empty_fields(sel_fields)
 
 
 def sel_timedelta_coords(

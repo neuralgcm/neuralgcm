@@ -540,5 +540,35 @@ class DataLoaderTest(absltest.TestCase):
         np.testing.assert_allclose(retrieved['slow']['x'].data, expected_x)
 
 
+class TestTimedeltaSelectors(absltest.TestCase):
+
+  def _make_field(self, hours):
+    deltas = np.array(hours, dtype='timedelta64[h]')
+    td_axis = coordinates.TimeDelta(deltas)
+    # Create data matching the length of the time axis
+    data = jnp.arange(len(hours))
+    return cx.field(data, td_axis)
+
+  def test_sel_init_and_target_drop_empty_fields(self):
+
+    source_1 = {
+        'x': self._make_field([-1, 0],),
+        'y': self._make_field([-1, 0, 1]),
+    }
+
+    source_2 = {'z': self._make_field([1, 2, 3])}
+
+    batch = {'source_1': source_1, 'source_2': source_2}
+
+    with self.subTest('sel_drops_empty_sources'):
+      init = data_loading.sel_init_fields(batch)
+      self.assertEqual(list(init.keys()), ['source_1'])
+
+    with self.subTest('sel_drops_empty_fields'):
+      target = data_loading.sel_target_fields(batch)
+      self.assertEqual(list(target.keys()), ['source_1', 'source_2'])
+      self.assertEqual(list(target['source_1'].keys()), ['y'])
+
+
 if __name__ == '__main__':
   absltest.main()

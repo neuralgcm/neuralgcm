@@ -522,6 +522,11 @@ def slice_leading_timedelta(inputs: PyTree, length: int) -> PyTree:
   return jax.tree.map(_slice_field, inputs, is_leaf=cx.is_field)
 
 
+def to_xarray(inputs: PyTree) -> PyTree:
+  """Converts a PyTree of coordax.Fields to an xarray Dataset."""
+  return jax.tree.map(lambda x: x.to_xarray(), inputs, is_leaf=cx.is_field)
+
+
 class HostDataBuffer:
   """Helper class to buffer data on host and stream slices to devices."""
 

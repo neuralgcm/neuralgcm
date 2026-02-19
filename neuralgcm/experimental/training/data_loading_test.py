@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Hashable
+
 from absl.testing import absltest
 import coordax as cx
 import jax
@@ -569,6 +571,32 @@ class TestTimedeltaSelectors(absltest.TestCase):
       self.assertEqual(list(target.keys()), ['source_1', 'source_2'])
       self.assertEqual(list(target['source_1'].keys()), ['y'])
 
+
+class TestToXarray(absltest.TestCase):
+
+  def _make_field(self, hours):
+    deltas = np.array(hours, dtype='timedelta64[h]')
+    td_axis = coordinates.TimeDelta(deltas)
+    # Create data matching the length of the time axis
+    data = jnp.arange(len(hours))
+    return cx.field(data, td_axis)
+
+  def test_to_xarray(self):
+    source_1 = {'x': self._make_field([-1, 0])}
+    source_2 = {'y': self._make_field([-1, 0, 1])}
+    tree = {'source_1': source_1, 'source_2': source_2}
+    da_tree = data_loading.to_xarray(tree)
+    leaves = jax.tree.leaves(da_tree)
+
+    with self.subTest('leaves_are_dataarrays'):
+      self.assertTrue(
+          all(isinstance(leaf, xarray.DataArray) for leaf in leaves))
+
+    with self.subTest('timedelta_converts_to_hashable'):
+      orig_leaf_td = source_1['x'].coord_fields['timedelta'].data[0]
+      new_leaf_td = leaves[0].coords['timedelta'].values[0]
+      self.assertNotIsInstance(orig_leaf_td, Hashable)
+      self.assertIsInstance(new_leaf_td, Hashable)
 
 if __name__ == '__main__':
   absltest.main()

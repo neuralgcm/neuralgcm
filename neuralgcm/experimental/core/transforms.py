@@ -271,8 +271,8 @@ class MeanOverAxes(TransformABC):
         else:
           dim_names.add(d)
 
-      if not cx.fields.contains_dims(v, self.dims):
-        raise ValueError(f'Dims {self.dims} not found in {v.axes=} for key={k}')
+      if not all(cx.fields.contains_dims(v, d) for d in self.dims):
+        raise ValueError(f'Dims {self.dims} not found in {v=} for key={k}')
 
       try:
         grid = cx.coords.extract(v.coordinate, coordinates.LonLatGrid)

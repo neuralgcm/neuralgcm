@@ -190,12 +190,13 @@ class CoordFeatures(transforms.TransformABC):
         k: cx.field(v[...], self.coords[k]) for k, v in self.features.items()
     }
 
-  def update_features_from_data(
+  def update_from_xarray(
       self,
       dataset: xarray.Dataset,
-      sim_units: units.SimUnits,
+      **kwargs,
   ):
     """Updates `self.features` with data from dataset."""
+    sim_units = kwargs['sim_units']
     for key, feature in self.features.items():
       if key in dataset:
         da = dataset[key]

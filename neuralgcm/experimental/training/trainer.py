@@ -15,7 +15,6 @@
 """Trainer logic for rollout experiment."""
 
 import abc
-import collections
 from collections.abc import Callable, Sequence
 import dataclasses
 import functools
@@ -49,6 +48,7 @@ from neuralgcm.experimental.metrics import base as metrics_base
 from neuralgcm.experimental.metrics import evaluators
 from neuralgcm.experimental.training import checkpointing
 from neuralgcm.experimental.training import data_loading
+from neuralgcm.experimental.training import model_calibrators
 from neuralgcm.experimental.training import train_utils
 import numpy as np
 import optax
@@ -548,12 +548,7 @@ def _construct_full_queries_spec(
   return targets
 
 
-PretrainOp = Callable[..., Any]
 
-
-@dataclasses.dataclass
-class PretrainingOps:
-  pretrain_fns: collections.OrderedDict[str, PretrainOp]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -662,7 +657,7 @@ class RolloutTrainer:
   loss: EvaluatorLike
   eval_metrics: EvaluatorLike
   process_observations: nnx.Module
-  pretraining: PretrainingOps | None
+  calibration_modules: Sequence[model_calibrators.ModelCalibrator] | None
   train_schedule: TrainSchedule
   eval_schedule: EvalSchedule
   optimization_config: OptimizationConfig
@@ -691,6 +686,7 @@ class RolloutTrainer:
     )
 
     # Validating compatibility of the data loader with the model.
+    assert isinstance(self.model, api.Model)
     for stage in self.train_schedule.stages:
       try:
         data_specs.validate_inputs(stage.inputs_spec, self.model.inputs_spec)
@@ -929,18 +925,7 @@ class RolloutTrainer:
 
     return training_data, train_step_fn, evaluation_fns
 
-  def run_pretraining(self, train_schedule: TrainSchedule):
-    """Runs pretraining."""
-    if self.pretraining is None:
-      logging.info('Skipping pretraining (no pretraining config provided)')
-      return
 
-    assert hasattr(self.pretraining, 'pretrain_fns')
-    for k, pretraining_step in self.pretraining.pretrain_fns.items():
-      logging.info('Running pretraining step: %s', k)
-      self.model = pretraining_step(
-          self.model, self.data_loader, train_schedule
-      )
 
   def _make_initial_experiment_state(
       self, init_params, non_params
@@ -1816,8 +1801,11 @@ class RolloutTrainer:
 
     else:
       logging.info('Starting training with new weights')
-      # TODO(dkochkov): Consider making pretraining independent from training.
-      self.run_pretraining(self.train_schedule)
+      if self.calibration_modules:
+        for calibrator in self.calibration_modules:
+          self.model = calibrator(
+              self.model, self.data_loader, self.train_schedule
+          )
       split_state = model_checkpointing.split_model_state_for_saving(self.model)
       return self._initialize_for_fresh_start(
           split_state.params, split_state.non_params

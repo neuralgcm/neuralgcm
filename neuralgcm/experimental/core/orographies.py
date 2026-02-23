@@ -21,7 +21,6 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
-from neuralgcm.experimental.core import units
 from neuralgcm.experimental.core import xarray_utils
 import xarray
 
@@ -58,14 +57,16 @@ class ModalOrography(nnx.Module):
         modal_orography_2d.at[mask.data].set(self.orography[...]), ylm_grid
     )
 
-  def update_orography_from_data(
+  def update_from_xarray(
       self,
       dataset: xarray.Dataset,
-      data_ylm_map: spherical_harmonics.FixedYlmMapping,
-      sim_units: units.SimUnits,
-      spatial_filter=None,
+      **kwargs,
   ):
     """Updates ``self.orography`` with filtered orography from dataset."""
+    data_ylm_map = kwargs['data_ylm_map']
+    sim_units = kwargs['sim_units']
+    spatial_filter = kwargs.get('spatial_filter', None)
+
     # TODO(dkochkov) use units attr on dataset with default to `meter` here.
     if spatial_filter is None:
       spatial_filter = lambda x: x
@@ -141,13 +142,15 @@ class Orography(nnx.Module):
   def nodal_orography(self) -> cx.Field:
     return cx.field(self.orography[...], self.grid)
 
-  def update_orography_from_data(
+  def update_from_xarray(
       self,
       dataset: xarray.Dataset,
-      sim_units: units.SimUnits,
-      spatial_filter=None,
+      **kwargs,
   ):
     """Updates ``self.orography`` with filtered orography from dataset."""
+    sim_units = kwargs['sim_units']
+    spatial_filter = kwargs.get('spatial_filter', None)
+
     # TODO(dkochkov) use units attr on dataset with default to `meter` here.
     if spatial_filter is None:
       spatial_filter = lambda x: x

@@ -21,6 +21,7 @@ import functools
 from typing import Any, Iterable, Literal, Self, Sequence, TYPE_CHECKING, cast
 
 import coordax as cx
+import coordax.experimental
 from dinosaur import coordinate_systems as dinosaur_coordinates
 from dinosaur import fourier
 from dinosaur import hybrid_coordinates
@@ -105,6 +106,23 @@ class TimeDelta(cx.Coordinate):
   @property
   def fields(self):
     return {'timedelta': cx.field(self.deltas, self)}
+
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: Literal['nearest'] | None = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    return coordax.experimental.map_indexers_using_ticks(
+        self, indexers, ticks_are_sorted=True, method=method
+    )
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    key = self.dims[0] if self.dims[0] in indexers else self
+    indexer = indexers[key]
+    if isinstance(indexer, int):
+      return cx.Scalar()
+
+    return TimeDelta(self.deltas[indexer])
 
   def to_xarray(self) -> dict[str, xarray.Variable]:
     variables = super().to_xarray()
@@ -194,7 +212,6 @@ def _mesh_to_dinosaur_spmd_mesh(
   return None
 
 
-# TODO(dkochkov) Consider leaving out spherical_harmonics_impl from repr.
 @jax.tree_util.register_static
 @dataclasses.dataclass(frozen=True)
 class LonLatGrid(cx.Coordinate):
@@ -241,6 +258,61 @@ class LonLatGrid(cx.Coordinate):
   def cos_lat(self) -> cx.Field:
     padded_lats = np.pad(self._ylm_grid.latitudes, (0, self.lon_lat_padding[1]))
     return cx.field(np.cos(padded_lats), cx.SelectedAxis(self, axis=1))
+
+  def _remap_indexers_to_labeled_axes(
+      self, indexers: dict[str | cx.Coordinate, Any]
+  ) -> tuple[
+      dict[str | cx.Coordinate, Any], tuple[cx.LabeledAxis, cx.LabeledAxis]
+  ]:
+    """Remaps indexers to labeled axes."""
+    longitudes_axis = cx.LabeledAxis('longitude', self.fields['longitude'].data)
+    latitudes_axis = cx.LabeledAxis('latitude', self.fields['latitude'].data)
+    idx_remap = {self.axes[0]: longitudes_axis, self.axes[1]: latitudes_axis}
+    axes = (longitudes_axis, latitudes_axis)
+    return {idx_remap.get(k, k): v for k, v in indexers.items()}, axes
+
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: coordax.experimental.SelMethod = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    # When slicing by longitude/latitude, we convert respective axes to
+    # LabeledAxis, since sliced LonLatGrid is not necessarily a LonLatGrid.
+
+    # We remap self.axes to LabeledAxes to reuse 1d indexing logic. To ensure
+    # that downstream isel works correctly on LabledAxes and indexer validation
+    # passes we use to axis name notation for mapped indexers.
+    indexers, (lon_ax, lat_ax) = self._remap_indexers_to_labeled_axes(indexers)
+    mapped, consumed = {}, set()
+    if 'longitude' in indexers or lon_ax in indexers:
+      key = 'longitude' if 'longitude' in indexers else lon_ax
+      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
+          lon_ax,
+          indexers,
+          ticks_are_sorted=True,
+          method=method,
+      )
+      mapped.update({'longitude': sub_mapped[key]})
+      consumed.update(sub_consumed)
+
+    if 'latitude' in indexers or lat_ax in indexers:
+      key = 'latitude' if 'latitude' in indexers else lat_ax
+      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
+          lat_ax,
+          indexers,
+          ticks_are_sorted=True,
+          method=method,
+      )
+      mapped.update({'latitude': sub_mapped[key]})
+      consumed.update(sub_consumed)
+    # Remap LabeledAxes back to self.axes.
+    consumed_remap = {l_ax: ax for l_ax, ax in zip((lon_ax, lat_ax), self.axes)}
+    consumed = {consumed_remap.get(ax, ax) for ax in consumed}
+    return mapped, consumed
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    indexers, axes = self._remap_indexers_to_labeled_axes(indexers)
+    return cx.coords.compose(*axes).isel(indexers)
 
   def integrate(
       self,
@@ -588,6 +660,62 @@ class SphericalHarmonicGrid(cx.Coordinate):
     mask_field = cx.field(mask, self)
     return axes_fields | {'mask': mask_field}
 
+  def _remap_indexers_to_labeled_axes(
+      self, indexers: dict[str | cx.Coordinate, Any]
+  ) -> tuple[
+      dict[str | cx.Coordinate, Any], tuple[cx.LabeledAxis, cx.LabeledAxis]
+  ]:
+    """Remaps indexers to labeled axes."""
+    ms_ax = cx.LabeledAxis(
+        'longitude_wavenumber', self.fields['longitude_wavenumber'].data
+    )
+    ls_ax = cx.LabeledAxis(
+        'total_wavenumber', self.fields['total_wavenumber'].data
+    )
+    idx_remap = {self.axes[0]: ms_ax, self.axes[1]: ls_ax}
+    axes = (ms_ax, ls_ax)
+    return {idx_remap.get(k, k): v for k, v in indexers.items()}, axes
+
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: Literal['nearest'] | None = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    mapped, consumed = {}, set()
+    # We remap self.axes to LabeledAxes to reuse 1d indexing logic. To ensure
+    # that downstream isel works correctly on LabledAxes and indexer validation
+    # passes we use to axis name notation for mapped indexers.
+    indexers, (ms_ax, ls_ax) = self._remap_indexers_to_labeled_axes(indexers)
+    if 'longitude_wavenumber' in indexers or ms_ax in indexers:
+      key = ms_ax if ms_ax in indexers else 'longitude_wavenumber'
+      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
+          ms_ax,
+          indexers,
+          ticks_are_sorted=True,
+          method=method,
+      )
+      mapped.update({'longitude_wavenumber': sub_mapped[key]})
+      consumed.update(sub_consumed)
+
+    if 'total_wavenumber' in indexers or ls_ax in indexers:
+      key = ls_ax if ls_ax in indexers else 'total_wavenumber'
+      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
+          ls_ax,
+          indexers,
+          ticks_are_sorted=True,
+          method=method,
+      )
+      mapped.update({'total_wavenumber': sub_mapped[key]})
+      consumed.update(sub_consumed)
+    # Remap consumed ms, ls axes back to self to ensure keys are accounted for.
+    consumed_remap = {l_ax: ax for l_ax, ax in zip((ms_ax, ls_ax), self.axes)}
+    consumed = {consumed_remap.get(ax, ax) for ax in consumed}
+    return mapped, consumed
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    indexers, (ms_ax, ls_ax) = self._remap_indexers_to_labeled_axes(indexers)
+    return cx.coords.compose(ms_ax, ls_ax).isel(indexers)
+
   def add_constant(
       self,
       x: cx.Field,
@@ -934,6 +1062,31 @@ class SigmaLevels(cx.Coordinate):
   def sigma_boundaries(self) -> SigmaBoundaries:
     return SigmaBoundaries(boundaries=self.boundaries)
 
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: Literal['nearest'] | None = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    sigma_labeled = cx.LabeledAxis(self.dims[0], self.sigma_levels.centers)
+    if self in indexers:
+      indexers[sigma_labeled] = indexers.pop(self)
+    if self.dims[0] in indexers or sigma_labeled in indexers:
+      key = sigma_labeled if sigma_labeled in indexers else self.dims[0]
+      i_indexers, consumed = sigma_labeled.map_indexers(indexers, method)
+      i_indexers = {self.dims[0]: i_indexers[key]}
+    else:
+      i_indexers = {}
+      consumed = set()
+    remap_consumed = {sigma_labeled: self}
+    consumed = {remap_consumed.get(k, k) for k in consumed}
+    return i_indexers, consumed
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    sigma_labeled = cx.LabeledAxis(self.dims[0], self.sigma_levels.centers)
+    if self in indexers:
+      indexers[sigma_labeled] = indexers.pop(self)
+    return sigma_labeled.isel(indexers)
+
   def integrate(self, x: cx.Field) -> cx.Field:
     """Integrates `x` over the sigma levels."""
     sigma_integrate = functools.partial(
@@ -1063,6 +1216,25 @@ class SigmaBoundaries(SigmaLevels):
         'sigma': cx.field(centers, SigmaLevels(boundaries)),
     }
 
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: Literal['nearest'] | None = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    sigma_labeled = cx.LabeledAxis(self.dims[0], self.boundaries)
+    if self in indexers:
+      indexers[sigma_labeled] = indexers.pop(self)
+    i_indexers, consumed = sigma_labeled.map_indexers(indexers, method)
+    remap_consumed = {sigma_labeled: self}
+    consumed = {remap_consumed.get(k, k) for k in consumed}
+    return i_indexers, consumed
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    sigma_labeled = cx.LabeledAxis(self.dims[0], self.boundaries)
+    if self in indexers:
+      indexers[sigma_labeled] = indexers.pop(self)
+    return sigma_labeled.isel(indexers)
+
   def __eq__(self, other):
     return (
         isinstance(other, SigmaBoundaries)
@@ -1124,6 +1296,26 @@ class PressureLevels(cx.Coordinate):
   @property
   def fields(self):
     return {'pressure': cx.field(self.centers, self)}
+
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: Literal['nearest'] | None = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    return coordax.experimental.map_indexers_using_ticks(
+        self,
+        indexers,
+        ticks_are_sorted=True,
+        method=method,
+    )
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    key = self.dims[0] if self.dims[0] in indexers else self
+    indexer = indexers[key]
+    if isinstance(indexer, int):
+      return cx.Scalar()
+
+    return PressureLevels(self.centers[indexer])
 
   def asdict(self) -> dict[str, Any]:
     return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}
@@ -1269,6 +1461,12 @@ class HybridLevels(cx.Coordinate):
         'a': cx.field(a, self),
         'b': cx.field(b, self),
     }
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    hybrid_labeled = cx.LabeledAxis(self.dims[0], self.fields['hybrid'].data)
+    if self in indexers:
+      indexers[hybrid_labeled] = indexers.pop(self)
+    return hybrid_labeled.isel(indexers)
 
   def asdict(self) -> dict[str, Any]:
     return {
@@ -1488,6 +1686,25 @@ class LayerLevels(cx.Coordinate):
   def fields(self):
     return {self.name: cx.field(np.arange(self.n_layers), self)}
 
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: Literal['nearest'] | None = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    labeled_layers = cx.LabeledAxis(self.name, np.arange(self.n_layers))
+    if self in indexers:
+      indexers[labeled_layers] = indexers.pop(self)
+    i_indexers, consumed = labeled_layers.map_indexers(indexers, method)
+    remap_consumed = {labeled_layers: self}
+    consumed = {remap_consumed.get(k, k) for k in consumed}
+    return i_indexers, consumed
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    labeled_layers = cx.LabeledAxis(self.name, np.arange(self.n_layers))
+    if self in indexers:
+      indexers[labeled_layers] = indexers.pop(self)
+    return labeled_layers.isel(indexers)
+
   @classmethod
   def from_xarray(
       cls, dims: tuple[str, ...], coords: xarray.Coordinates
@@ -1552,6 +1769,26 @@ class SoilLevels(cx.Coordinate):
   @property
   def fields(self):
     return {'soil_levels': cx.field(self.centers, self)}
+
+  def map_indexers(
+      self,
+      indexers: dict[str | cx.Coordinate, Any],
+      method: Literal['nearest'] | None = None,
+  ) -> tuple[dict[str, Any], set[str]]:
+    return coordax.experimental.map_indexers_using_ticks(
+        self,
+        indexers,
+        ticks_are_sorted=True,
+        method=method,
+    )
+
+  def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
+    key = self.dims[0] if self.dims[0] in indexers else self
+    indexer = indexers[key]
+    if isinstance(indexer, int):
+      return cx.Scalar()
+
+    return SoilLevels(self.centers[indexer])
 
   def asdict(self) -> dict[str, Any]:
     return {k: v.tolist() for k, v in dataclasses.asdict(self).items()}

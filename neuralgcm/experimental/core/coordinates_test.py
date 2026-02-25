@@ -223,11 +223,9 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     sp_data = rng.uniform(
         size=[s for i, s in enumerate(shape) if i != pos_sigma_axis]
     )
-    sp_coords = cx.coords.compose(*[
-        c
-        for c in coords.axes
-        if not isinstance(c, coordinates.SigmaLevels)
-    ])
+    sp_coords = cx.coords.compose(
+        *[c for c in coords.axes if not isinstance(c, coordinates.SigmaLevels)]
+    )
     field = cx.field(data, coords)
     sp_field = cx.field(sp_data, sp_coords)
     integrated_field = sigma_coord.integrate_over_pressure(field, sp_field)
@@ -260,7 +258,8 @@ class CoordinatesMethodsTest(parameterized.TestCase):
         hybrid_axis if hybrid_axis >= 0 else hybrid_axis + len(shape)
     )
     coords = cx.coords.compose(*[
-        hybrid_coord if i == pos_hybrid_axis
+        hybrid_coord
+        if i == pos_hybrid_axis
         else cx.SizedAxis(f'ax{i}', shape[i])
         for i in range(len(shape))
     ])
@@ -269,7 +268,8 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     sp_shape.pop(pos_hybrid_axis)
     sp_data = np.ones(sp_shape, dtype=np.float32)
     sp_coords = cx.coords.compose(*[
-        c for c in coords.coordinates
+        c
+        for c in coords.coordinates
         if not isinstance(c, coordinates.HybridLevels)
     ])
     field = cx.field(data, coords)
@@ -453,6 +453,168 @@ class CoordinatesMethodsTest(parameterized.TestCase):
         ValueError, 'Introduction of new axes via add_constant is not supported'
     ):
       ylm_grid.add_constant(x, c)
+
+
+class CoordinatesSelectionTest(parameterized.TestCase):
+  """Tests selection on coordinate objects."""
+
+  def test_timedelta_selection(self):
+    deltas = np.array([1, 2, 3], dtype='timedelta64[s]')
+    time_coord = coordinates.TimeDelta(deltas)
+    with self.subTest('select_by_value'):
+      sel = time_coord.sel(timedelta=np.timedelta64(2, 's'))
+      self.assertEqual(sel, cx.Scalar())
+    with self.subTest('select_by_slice'):
+      sel = time_coord.sel(
+          {time_coord: slice(np.timedelta64(1, 's'), np.timedelta64(2, 's'))}
+      )
+      expected = coordinates.TimeDelta(np.array([1, 2], dtype='timedelta64[s]'))
+      self.assertEqual(sel, expected)
+    with self.subTest('select_by_axis'):
+      axis = coordinates.TimeDelta(np.array([1, 2], dtype='timedelta64[s]'))
+      sel = time_coord.sel({time_coord: axis})
+      self.assertEqual(sel, axis)
+
+  def test_sigma_levels_selection(self):
+    boundaries = [0.0, 0.5, 1.0]
+    sigma_coord = coordinates.SigmaLevels(boundaries)
+    with self.subTest('select_by_index'):
+      sel = sigma_coord.isel(sigma=0)
+      self.assertIsInstance(sel, cx.Scalar)
+    with self.subTest('select_by_slice'):
+      sliced = sigma_coord.isel(sigma=slice(0, 1))
+      self.assertIsInstance(sliced, cx.LabeledAxis)
+      self.assertEqual(sliced.shape, (1,))
+      self.assertEqual(sliced.ticks[0], 0.25)
+    sigma = coordinates.SigmaLevels.equidistant(8)
+    with self.subTest('select_by_value_slice'):
+      sel = sigma.sel({sigma: slice(0.2, 0.5)})
+      sigma_values = sigma.fields['sigma'].data
+      sigma_values = sigma_values[(0.2 <= sigma_values) & (sigma_values <= 0.5)]
+      expected = cx.LabeledAxis('sigma', sigma_values)
+      self.assertEqual(sel, expected)
+    with self.subTest('select_by_labled_axis'):
+      sigma_values = sigma.fields['sigma'].data
+      axis = cx.LabeledAxis('sigma', sigma_values[::2])
+      sel = sigma.sel({sigma: axis})
+      self.assertEqual(sel, axis)
+
+  def test_pressure_levels_selection(self):
+    centers = [100.0, 200.0, 300.0]
+    p_coord = coordinates.PressureLevels(centers)
+    with self.subTest('exact_match'):
+      sel = p_coord.sel(pressure=200.0)
+      self.assertEqual(sel, cx.Scalar())
+    with self.subTest('nearest_neighbor'):
+      sel = p_coord.sel(pressure=205.0, method='nearest')
+      self.assertEqual(sel, cx.Scalar())
+    with self.subTest('by_labeled_axis'):
+      request_pressure = coordinates.PressureLevels([100.0, 300.0])
+      sel = p_coord.sel(pressure=request_pressure)
+      self.assertEqual(sel, request_pressure)
+    with self.subTest('select_by_value_slice'):
+      sel = p_coord.sel({p_coord: slice(200, 800)})
+      pressure_values = p_coord.fields['pressure'].data
+      pressure_values = pressure_values[
+          (200 <= pressure_values) & (pressure_values <= 800)
+      ]
+      expected = coordinates.PressureLevels(pressure_values)
+      self.assertEqual(sel, expected)
+    with self.subTest('select_by_labled_axis'):
+      p_start = coordinates.PressureLevels.with_era5_levels()
+      p_target = coordinates.PressureLevels.with_13_era5_levels()
+      sel = p_start.sel({p_start: p_target})
+      self.assertEqual(sel, p_target)
+
+  def test_lon_lat_grid_selection(self):
+    grid = coordinates.LonLatGrid.T21()  # 64x32
+    with self.subTest('slice_longitude'):
+      sliced = grid.isel(longitude=slice(0, 10))
+      self.assertIsInstance(sliced, cx.CartesianProduct)
+      self.assertEqual(sliced.shape, (10, 32))
+    with self.subTest('index_latitude'):
+      indexed = grid.isel(latitude=5)
+      self.assertIsInstance(indexed, cx.LabeledAxis)
+      self.assertEqual(indexed.dims, ('longitude',))
+      self.assertEqual(indexed.shape, (64,))
+    with self.subTest('select_point'):
+      lons, lats = grid.fields['longitude'].data, grid.fields['latitude'].data
+      point = grid.sel(longitude=lons[5], latitude=lats[10])
+      self.assertEqual(point, cx.Scalar())
+    with self.subTest('select_range'):
+      region = grid.sel(longitude=slice(0, 20))
+      self.assertEqual(region.shape, (4, 32))
+      np.testing.assert_array_less(region.fields['longitude'].data, 20)
+    with self.subTest('using_grid_axis_as_key'):
+      axis = cx.SelectedAxis(grid, axis=0)
+      region = grid.isel({axis: slice(0, 20)})
+      self.assertEqual(region.shape, (20, 32))
+    with self.subTest('using_labled_axis_as_value'):
+      axis = cx.LabeledAxis('longitude', grid.fields['longitude'].data[::2])
+      region = grid.sel({grid.axes[0]: axis})
+      self.assertEqual(region.shape, axis.shape + grid.shape[1:])
+
+  def test_spherical_harmonic_grid_selection(self):
+    grid = coordinates.SphericalHarmonicGrid.T21()
+    with self.subTest('slice_wavenumbers'):
+      sliced = grid.isel(longitude_wavenumber=slice(0, 5))
+      self.assertIsInstance(sliced, cx.CartesianProduct)
+      self.assertEqual(sliced.shape, (5, grid.shape[1]))
+    with self.subTest('index_total_wavenumber'):
+      sliced = grid.isel(total_wavenumber=10)
+      self.assertIsInstance(sliced, cx.LabeledAxis)
+      self.assertEqual(sliced.shape, (grid.shape[0],))
+    with self.subTest('using_grid_axis_as_key'):
+      axis = cx.SelectedAxis(grid, axis=1)
+      region = grid.isel({axis: slice(0, 5)})
+      self.assertEqual(region.shape, (grid.shape[0], 5))
+    with self.subTest('using_labled_axis_as_value'):
+      axis = cx.LabeledAxis(
+          'total_wavenumber', grid.fields['total_wavenumber'].data[:5]
+      )
+      region = grid.sel({grid.axes[1]: axis})
+      self.assertEqual(region.shape, grid.shape[0:1] + axis.shape)
+
+  def test_sigma_boundaries_selection(self):
+    boundaries = np.array([0.0, 0.5, 1.0])
+    sigma_b = coordinates.SigmaBoundaries(boundaries)
+    with self.subTest('select_by_index'):
+      sel = sigma_b.isel(sigma_boundaries=0)
+      self.assertEqual(sel, cx.Scalar())
+    with self.subTest('select_by_value'):
+      sel = sigma_b.sel(sigma_boundaries=0.5)
+      self.assertEqual(sel, cx.Scalar())
+
+  def test_hybrid_levels_selection(self):
+    a = [0.0, 0.1, 0.2]
+    b = [1.0, 0.9, 0.8]
+    hybrid = coordinates.HybridLevels(a, b)
+    with self.subTest('select_by_index'):
+      sel = hybrid.isel(hybrid=0)
+      self.assertEqual(sel, cx.Scalar())
+
+  def test_layer_levels_selection(self):
+    layers = coordinates.LayerLevels(n_layers=5)
+    with self.subTest('select_by_index'):
+      sel = layers.isel(layer_index=2)
+      self.assertEqual(sel, cx.Scalar())
+    with self.subTest('select_by_value'):
+      sel = layers.sel(layer_index=3)
+      self.assertEqual(sel, cx.Scalar())
+
+  def test_soil_levels_selection(self):
+    centers = [0.1, 0.5, 1.5]
+    soil = coordinates.SoilLevels(centers)
+    with self.subTest('select_by_index'):
+      sel = soil.isel(soil_levels=1)
+      self.assertEqual(sel, cx.Scalar())
+    with self.subTest('select_by_value'):
+      sel = soil.sel(soil_levels=1.5)
+      self.assertEqual(sel, cx.Scalar())
+    with self.subTest('select_by_axis'):
+      axis = coordinates.SoilLevels([0.1, 1.5])
+      sel = soil.sel(soil_levels=axis)
+      self.assertEqual(sel, axis)
 
 
 if __name__ == '__main__':

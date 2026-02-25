@@ -47,7 +47,7 @@ tests = [
     "pytest",
 ]
 experimental = [
-    "coordax>=0.2.5",
+    "coordax>=0.2.6",
     "einops",
     "etils",
     # TODO(shoyer): use pypi version when there is a newer release than 0.3.0

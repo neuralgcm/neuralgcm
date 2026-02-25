@@ -51,33 +51,60 @@ class TransformsTest(parameterized.TestCase):
     }
     chex.assert_trees_all_close(actual, expected)
 
+  def test_isel(self):
+    x = cx.SizedAxis('x', 4)
+    y = cx.SizedAxis('y', 3)
+    inputs = {
+        'field_a': cx.field(np.arange(4), x),
+        'field_b': cx.field(np.arange(12).reshape((4, 3)), x, y),
+    }
+
+    with self.subTest('valid_indexers'):
+      isel_transform = transforms.Isel(indexers={'x': 1})
+      actual = isel_transform(inputs)
+      expected = {
+          'field_a': cx.field(1),
+          'field_b': cx.field(np.array([3, 4, 5]), y),
+      }
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('unused_indexers'):
+      isel_transform = transforms.Isel(indexers={'z': 1})
+      with self.assertRaisesRegex(
+          ValueError, 'Dimensions .* not found in inputs'
+      ):
+        isel_transform(inputs)
+
   def test_sel(self):
     x = cx.LabeledAxis('x', np.array([0.1, 0.5, 1.0, 1.5]))
-    inputs = {'field_a': cx.field(np.arange(4, dtype=np.float32) * 10, x)}
+    y = cx.SizedAxis('y', 3)
+    inputs = {
+        'field_a': cx.field(np.arange(4) * 10, x),
+        'field_b': cx.field(np.arange(12).reshape((4, 3)), x, y),
+    }
 
     with self.subTest('exact_match_no_method'):
-      sel_transform = transforms.Sel(sel_arg={'x': 0.5})
+      sel_transform = transforms.Sel(indexers={'x': 0.5})
       actual = sel_transform(inputs)
-      expected = {'field_a': cx.field(10.0)}
+      expected = {
+          'field_a': cx.field(10),
+          'field_b': cx.field(np.array([3, 4, 5]), y),
+      }
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('nearest_match'):
-      sel_transform = transforms.Sel(sel_arg={'x': 0.55}, method='nearest')
+      sel_transform = transforms.Sel(indexers={'x': 0.55}, method='nearest')
       actual = sel_transform(inputs)
-      expected = {'field_a': cx.field(10.0)}
+      expected = {
+          'field_a': cx.field(10.0),
+          'field_b': cx.field(np.array([3.0, 4.0, 5.0]), y),
+      }
       chex.assert_trees_all_close(actual, expected)
 
-    with self.subTest('no_match_no_method_raises'):
-      sel_transform = transforms.Sel(sel_arg={'x': 0.55})
-      with self.assertRaisesRegex(ValueError, 'No match found'):
-        sel_transform(inputs)
-
-    with self.subTest('nearest_with_array_selection_raises'):
-      sel_transform = transforms.Sel(
-          sel_arg={'x': np.array([0.1, 0.5])}, method='nearest'
-      )
+    with self.subTest('unused_indexers_raises'):
+      sel_transform = transforms.Sel(indexers={'z': 0.55})
       with self.assertRaisesRegex(
-          AssertionError, 'selection must be a single value'
+          ValueError, 'Dimensions .* not found in inputs'
       ):
         sel_transform(inputs)
 

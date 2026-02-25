@@ -48,7 +48,6 @@ from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
-import numpy as np
 
 
 Transform: TypeAlias = typing.Transform
@@ -237,22 +236,26 @@ class Merge(TransformABC):
 
 
 @nnx_compat.dataclass
-class Islice(TransformABC):
-  """Slices all fields along `dim` at index `idx`."""
+class Isel(TransformABC):
+  """Slices all fields using indexers."""
 
-  dim: str | cx.Coordinate
-  idx: int
-
-  def __post_init__(self):
-    if isinstance(self.dim, cx.Coordinate):
-      assert isinstance(self.dim, cx.Coordinate)
-      if self.dim.ndim != 1:  # pytype: disable=attribute-error
-        raise ValueError('Islice only supports 1d slice.')
+  indexers: dict[str | cx.Coordinate, Any]
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    """Returns `inputs` where all fields are sliced along `dim` at `idx`."""
-    slice_fn = lambda x: x[self.idx]
-    return {k: cx.cmap(slice_fn)(v.untag(self.dim)) for k, v in inputs.items()}
+    """Returns `inputs` where all fields are sliced using indexers."""
+    outputs = {}
+    used_indexers = set()
+    for k, field in inputs.items():
+      valid_indexers = {}
+      for dim, idx in self.indexers.items():
+        if cx.contains_dims(field, dim):
+          valid_indexers[dim] = idx
+          used_indexers.add(dim)
+      outputs[k] = field.isel(valid_indexers)
+    unused_indexers = set(self.indexers) - used_indexers
+    if unused_indexers:
+      raise ValueError(f'Dimensions {unused_indexers} not found in inputs.')
+    return outputs
 
 
 @nnx_compat.dataclass
@@ -297,50 +300,26 @@ class MeanOverAxes(TransformABC):
 
 @nnx_compat.dataclass
 class Sel(TransformABC):
-  """Selects a slice and an index along a specified dimensions."""
+  """Selects values using label indexers."""
 
-  sel_arg: dict[str, slice | float | int | np.ndarray | None]
+  indexers: dict[str | cx.Coordinate, Any]
   method: Literal['nearest'] | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     """Applies sel operation to all Fields in inputs."""
-    if len(self.sel_arg) != 1:
-      raise ValueError('Sel only supports 1d slice.')
-    # TODO(dkochkov): use .sel method of Field once added.
-    dim, selection = tuple(*self.sel_arg.items())
-    slices = {}
+    outputs = {}
+    used_indexers = set()
     for k, field in inputs.items():
-      if dim in field.dims and selection is not None:
-        if isinstance(selection, slice):
-          raise NotImplementedError('Sel with slice is not supported yet')
-        if self.method is None:
-          matches = field.coord_fields[dim].data == selection
-          indices = np.argwhere(matches).astype(int).ravel()
-        elif self.method == 'nearest':
-          assert (
-              np.size(selection) == 1
-          ), 'With method="nearest", selection must be a single value.'
-          indices = np.array(
-              [np.argmin(np.abs(field.coord_fields[dim].data - selection))]
-          )
-        else:
-          raise ValueError(f'Unsupported method: {self.method}')
-        f = field.untag(dim)
-        # pylint: disable=cell-var-from-loop
-        if indices.size > 1:
-          raise ValueError('Currently only single value slices are supported.')
-        elif indices.size == 0:
-          raise ValueError(
-              f'No match found for {selection} in dim {dim} with'
-              f' method={self.method}'
-          )
-        elif indices.size == 1:
-          slices[k] = cx.cmap(lambda x: x[indices.squeeze()])(f)
-          assert not slices[k].positional_shape  # should never happen.
-        # pylint: enable=cell-var-from-loop
-      else:
-        slices[k] = field
-    return slices
+      valid_indexers = {}
+      for dim, idx in self.indexers.items():
+        if cx.contains_dims(field, dim):
+          valid_indexers[dim] = idx
+          used_indexers.add(dim)
+      outputs[k] = field.sel(valid_indexers, method=self.method)
+    unused_indexers = set(self.indexers) - used_indexers
+    if unused_indexers:
+      raise ValueError(f'Dimensions {unused_indexers} not found in inputs.')
+    return outputs
 
 
 @nnx_compat.dataclass

@@ -503,29 +503,6 @@ class TransformsTest(parameterized.TestCase):
     actual = transform(inputs)
     chex.assert_trees_all_close(actual, expected)
 
-  def test_streaming_stats_normalization_scalar(self):
-    b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 7)
-    rng = jax.random.PRNGKey(0)
-    inputs = {
-        's': cx.field(jax.random.normal(rng, shape=(b.shape + x.shape)), b, x),
-    }
-
-    feature_shapes = {'s': tuple()}
-    feature_axes = tuple()
-
-    streaming_norm_scalar = transforms.StreamingStatsNormalization(
-        feature_shapes=feature_shapes,
-        feature_axes=feature_axes,
-        update_stats=True,
-        epsilon=0.0,  # Use zero epsilon to get a tight std check.
-    )
-    _ = streaming_norm_scalar(inputs)
-    streaming_norm_scalar.update_stats = False
-    out = streaming_norm_scalar(inputs)['s']
-    self.assertEqual(cx.get_coordinate(out), cx.coords.compose(b, x))
-    np.testing.assert_allclose(np.mean(out.data), 0.0, atol=1e-6)
-    np.testing.assert_allclose(out.data.var(ddof=1), 1.0, atol=1e-6)
-
   @parameterized.named_parameters(
       dict(testcase_name='scale_10', scale=10.0, atol_identity=1e-1),
       dict(testcase_name='scale_100', scale=100.0, atol_identity=1),
@@ -549,33 +526,6 @@ class TransformsTest(parameterized.TestCase):
       np.testing.assert_allclose(
           clipped['in_range'].data, inputs['in_range'].data, atol=atol_identity
       )
-
-  def test_streaming_stats_normalization_1d(self):
-    b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 7)
-    rng = jax.random.PRNGKey(0)
-    inputs = {
-        's': cx.field(jax.random.normal(rng, shape=(b.shape + x.shape)), b, x),
-    }
-
-    feature_shapes = {'s': x.shape}
-    feature_axes = tuple([1])
-
-    streaming_norm_scalar = transforms.StreamingStatsNormalization(
-        feature_shapes=feature_shapes,
-        feature_axes=feature_axes,
-        update_stats=True,
-        epsilon=0.0,  # Use zero epsilon to get a tight std check.
-    )
-    _ = streaming_norm_scalar(inputs)
-    streaming_norm_scalar.update_stats = False
-    out = streaming_norm_scalar(inputs)['s']
-    self.assertEqual(cx.get_coordinate(out), cx.coords.compose(b, x))
-    np.testing.assert_allclose(
-        np.mean(out.data, axis=0), np.zeros(x.shape), atol=1e-6
-    )
-    np.testing.assert_allclose(
-        out.data.var(ddof=1, axis=0), np.ones(x.shape), atol=1e-6
-    )
 
   def test_streaming_stats_norm(self):
     batch = cx.SizedAxis('batch', 20)

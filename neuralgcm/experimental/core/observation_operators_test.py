@@ -22,7 +22,6 @@ import coordax as cx
 from flax import nnx
 from jax import config  # pylint: disable=g-importing-member
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import feature_transforms
 from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import parallelism
@@ -62,6 +61,20 @@ class DataObservationOperatorsTest(parameterized.TestCase):
     expected = {'a': expected_field}
     chex.assert_trees_all_equal(actual, expected)
 
+  def test_composite_custom_coords_subset(self):
+    grid = coordinates.LonLatGrid.T21()
+    pressure = coordinates.PressureLevels.with_era5_levels()
+    coord = cx.coords.compose(pressure, grid)
+    fields = {'a': cx.field(np.ones(coord.shape), coord)}
+    operator = observation_operators.DataObservationOperator(fields)
+    query_pressure = coordinates.PressureLevels.with_13_era5_levels()
+    query_coord = cx.coords.compose(query_pressure, grid)
+    query = {'a': query_coord}
+    actual = operator.observe(inputs={}, query=query)
+    expected_field = cx.field(np.ones(query_coord.shape), query_coord)
+    expected = {'a': expected_field}
+    chex.assert_trees_all_equal(actual, expected)
+
   def test_invalid_subset_along_coord(self):
     pressure_coord = cx.LabeledAxis('pressure', [10, 20, 30, 40, 50])
     fields = {
@@ -72,8 +85,8 @@ class DataObservationOperatorsTest(parameterized.TestCase):
     query = {'a': query_pressure_coord}
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        f'query vertical coordinate {query_pressure_coord} is not a subset of '
-        f'field vertical coordinate {pressure_coord}',
+        "query coordinate for 'a' is not a valid slice of"
+        f' field:\n{query_pressure_coord}\nvs\n{pressure_coord}',
     ):
       operator.observe(inputs={}, query=query)
 
@@ -95,7 +108,7 @@ class DataObservationOperatorsTest(parameterized.TestCase):
     query = {'a': q_coord}
     with self.assertRaisesWithLiteralMatch(
         ValueError,
-        "query coordinate for 'a' does not match"
+        "query coordinate for 'a' is not a valid slice of"
         f' field:\n{q_coord}\nvs\n{coord}',
     ):
       operator.observe(inputs={}, query=query)

@@ -267,52 +267,47 @@ class LonLatGrid(cx.Coordinate):
     """Remaps indexers to labeled axes."""
     longitudes_axis = cx.LabeledAxis('longitude', self.fields['longitude'].data)
     latitudes_axis = cx.LabeledAxis('latitude', self.fields['latitude'].data)
-    idx_remap = {self.axes[0]: longitudes_axis, self.axes[1]: latitudes_axis}
+    remap = {self.axes[0]: longitudes_axis, self.axes[1]: latitudes_axis}
     axes = (longitudes_axis, latitudes_axis)
-    return {idx_remap.get(k, k): v for k, v in indexers.items()}, axes
+    indexers = {  # swap self.axes to LabeledAxes for both keys and idx values.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
+    return indexers, axes
 
   def map_indexers(
       self,
       indexers: dict[str | cx.Coordinate, Any],
       method: coordax.experimental.SelMethod = None,
   ) -> tuple[dict[str, Any], set[str]]:
-    # When slicing by longitude/latitude, we convert respective axes to
+    # When slicing by longitude/latitude, we remap respective axes to
     # LabeledAxis, since sliced LonLatGrid is not necessarily a LonLatGrid.
-
-    # We remap self.axes to LabeledAxes to reuse 1d indexing logic. To ensure
-    # that downstream isel works correctly on LabledAxes and indexer validation
-    # passes we use to axis name notation for mapped indexers.
+    # This allows us to reuse 1d indexing logic. When returning, keys must be
+    # mapped back to ensure that associated dimensions can be identified.
     indexers, (lon_ax, lat_ax) = self._remap_indexers_to_labeled_axes(indexers)
     mapped, consumed = {}, set()
     if 'longitude' in indexers or lon_ax in indexers:
-      key = 'longitude' if 'longitude' in indexers else lon_ax
-      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
-          lon_ax,
-          indexers,
-          ticks_are_sorted=True,
-          method=method,
-      )
-      mapped.update({'longitude': sub_mapped[key]})
+      sub_mapped, sub_consumed = lon_ax.map_indexers(indexers, method=method)
+      mapped.update(sub_mapped)
       consumed.update(sub_consumed)
 
     if 'latitude' in indexers or lat_ax in indexers:
-      key = 'latitude' if 'latitude' in indexers else lat_ax
-      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
-          lat_ax,
-          indexers,
-          ticks_are_sorted=True,
-          method=method,
-      )
-      mapped.update({'latitude': sub_mapped[key]})
+      sub_mapped, sub_consumed = lat_ax.map_indexers(indexers, method=method)
+      mapped.update(sub_mapped)
       consumed.update(sub_consumed)
-    # Remap LabeledAxes back to self.axes.
-    consumed_remap = {l_ax: ax for l_ax, ax in zip((lon_ax, lat_ax), self.axes)}
-    consumed = {consumed_remap.get(ax, ax) for ax in consumed}
+
+    # Remap LabeledAxes keys back to self.axes to ensure keys consistency.
+    from_labeled = {l_ax: ax for l_ax, ax in zip((lon_ax, lat_ax), self.axes)}
+    consumed = {from_labeled.get(ax, ax) for ax in consumed}
+    mapped = {from_labeled.get(k, k): v for k, v in mapped.items()}
     return mapped, consumed
 
   def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
-    indexers, axes = self._remap_indexers_to_labeled_axes(indexers)
-    return cx.coords.compose(*axes).isel(indexers)
+    indexers, l_axes = self._remap_indexers_to_labeled_axes(indexers)
+    l_isel = cx.coords.compose(*l_axes).isel(indexers)
+    # If selected axis was not sliced, we preserve the original axis.
+    labeled_to_orig = {ax: orig for ax, orig in zip(l_axes, self.axes)}
+    return cx.coords.compose(*[labeled_to_orig.get(c, c) for c in l_isel.axes])
 
   def integrate(
       self,
@@ -672,49 +667,48 @@ class SphericalHarmonicGrid(cx.Coordinate):
     ls_ax = cx.LabeledAxis(
         'total_wavenumber', self.fields['total_wavenumber'].data
     )
-    idx_remap = {self.axes[0]: ms_ax, self.axes[1]: ls_ax}
+    remap = {self.axes[0]: ms_ax, self.axes[1]: ls_ax}
     axes = (ms_ax, ls_ax)
-    return {idx_remap.get(k, k): v for k, v in indexers.items()}, axes
+    indexers = {  # swap self.axes to LabeledAxes for both keys and idx values.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
+    return indexers, axes
 
   def map_indexers(
       self,
       indexers: dict[str | cx.Coordinate, Any],
       method: Literal['nearest'] | None = None,
   ) -> tuple[dict[str, Any], set[str]]:
-    mapped, consumed = {}, set()
-    # We remap self.axes to LabeledAxes to reuse 1d indexing logic. To ensure
-    # that downstream isel works correctly on LabledAxes and indexer validation
-    # passes we use to axis name notation for mapped indexers.
+    # When slicing by longitude/total wavenumber, we remap respective axes to
+    # LabeledAxis, since sliced SphericalHarmonicGrid is not necessarily a
+    # SphericalHarmonicGrid. This allows us to reuse 1d indexing logic. When
+    # returning, keys must be mapped back to ensure that associated dimensions
+    # can be identified.
     indexers, (ms_ax, ls_ax) = self._remap_indexers_to_labeled_axes(indexers)
+    mapped, consumed = {}, set()
     if 'longitude_wavenumber' in indexers or ms_ax in indexers:
-      key = ms_ax if ms_ax in indexers else 'longitude_wavenumber'
-      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
-          ms_ax,
-          indexers,
-          ticks_are_sorted=True,
-          method=method,
-      )
-      mapped.update({'longitude_wavenumber': sub_mapped[key]})
+      sub_mapped, sub_consumed = ms_ax.map_indexers(indexers, method=method)
+      mapped.update(sub_mapped)
       consumed.update(sub_consumed)
 
     if 'total_wavenumber' in indexers or ls_ax in indexers:
-      key = ls_ax if ls_ax in indexers else 'total_wavenumber'
-      sub_mapped, sub_consumed = coordax.experimental.map_indexers_using_ticks(
-          ls_ax,
-          indexers,
-          ticks_are_sorted=True,
-          method=method,
-      )
-      mapped.update({'total_wavenumber': sub_mapped[key]})
+      sub_mapped, sub_consumed = ls_ax.map_indexers(indexers, method=method)
+      mapped.update(sub_mapped)
       consumed.update(sub_consumed)
-    # Remap consumed ms, ls axes back to self to ensure keys are accounted for.
-    consumed_remap = {l_ax: ax for l_ax, ax in zip((ms_ax, ls_ax), self.axes)}
-    consumed = {consumed_remap.get(ax, ax) for ax in consumed}
+
+    # Remap LabeledAxes keys back to self.axes to ensure keys consistency.
+    from_labeled = {l_ax: ax for l_ax, ax in zip((ms_ax, ls_ax), self.axes)}
+    consumed = {from_labeled.get(ax, ax) for ax in consumed}
+    mapped = {from_labeled.get(k, k): v for k, v in mapped.items()}
     return mapped, consumed
 
   def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
-    indexers, (ms_ax, ls_ax) = self._remap_indexers_to_labeled_axes(indexers)
-    return cx.coords.compose(ms_ax, ls_ax).isel(indexers)
+    indexers, l_axes = self._remap_indexers_to_labeled_axes(indexers)
+    l_isel = cx.coords.compose(*l_axes).isel(indexers)
+    # If selected axis was not sliced, we preserve the original axis.
+    labeled_to_orig = {ax: orig for ax, orig in zip(l_axes, self.axes)}
+    return cx.coords.compose(*[labeled_to_orig.get(c, c) for c in l_isel.axes])
 
   def add_constant(
       self,
@@ -1068,24 +1062,26 @@ class SigmaLevels(cx.Coordinate):
       method: Literal['nearest'] | None = None,
   ) -> tuple[dict[str, Any], set[str]]:
     sigma_labeled = cx.LabeledAxis(self.dims[0], self.sigma_levels.centers)
-    if self in indexers:
-      indexers[sigma_labeled] = indexers.pop(self)
-    if self.dims[0] in indexers or sigma_labeled in indexers:
-      key = sigma_labeled if sigma_labeled in indexers else self.dims[0]
-      i_indexers, consumed = sigma_labeled.map_indexers(indexers, method)
-      i_indexers = {self.dims[0]: i_indexers[key]}
-    else:
-      i_indexers = {}
-      consumed = set()
-    remap_consumed = {sigma_labeled: self}
-    consumed = {remap_consumed.get(k, k) for k in consumed}
+    remap = {self: sigma_labeled}
+    indexers = {  # remaped to sigma_labeled.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
+    i_indexers, consumed = sigma_labeled.map_indexers(indexers, method)
+    from_labeled = {sigma_labeled: self}
+    consumed = {from_labeled.get(k, k) for k in consumed}
+    i_indexers = {from_labeled.get(k, k): v for k, v in i_indexers.items()}
     return i_indexers, consumed
 
   def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
     sigma_labeled = cx.LabeledAxis(self.dims[0], self.sigma_levels.centers)
-    if self in indexers:
-      indexers[sigma_labeled] = indexers.pop(self)
-    return sigma_labeled.isel(indexers)
+    remap = {self: sigma_labeled}
+    indexers = {  # remaped to sigma_labeled.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
+    l_isel = sigma_labeled.isel(indexers)
+    return self if l_isel == sigma_labeled else l_isel
 
   def integrate(self, x: cx.Field) -> cx.Field:
     """Integrates `x` over the sigma levels."""
@@ -1222,18 +1218,26 @@ class SigmaBoundaries(SigmaLevels):
       method: Literal['nearest'] | None = None,
   ) -> tuple[dict[str, Any], set[str]]:
     sigma_labeled = cx.LabeledAxis(self.dims[0], self.boundaries)
-    if self in indexers:
-      indexers[sigma_labeled] = indexers.pop(self)
+    remap = {self: sigma_labeled}
+    indexers = {  # remaped to sigma_labeled.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
     i_indexers, consumed = sigma_labeled.map_indexers(indexers, method)
-    remap_consumed = {sigma_labeled: self}
-    consumed = {remap_consumed.get(k, k) for k in consumed}
+    from_labeled = {sigma_labeled: self}
+    consumed = {from_labeled.get(k, k) for k in consumed}
+    i_indexers = {from_labeled.get(k, k): v for k, v in i_indexers.items()}
     return i_indexers, consumed
 
   def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
     sigma_labeled = cx.LabeledAxis(self.dims[0], self.boundaries)
-    if self in indexers:
-      indexers[sigma_labeled] = indexers.pop(self)
-    return sigma_labeled.isel(indexers)
+    remap = {self: sigma_labeled}
+    indexers = {  # remaped to sigma_labeled.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
+    l_isel = sigma_labeled.isel(indexers)
+    return self if l_isel == sigma_labeled else l_isel
 
   def __eq__(self, other):
     return (
@@ -1464,9 +1468,8 @@ class HybridLevels(cx.Coordinate):
 
   def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
     hybrid_labeled = cx.LabeledAxis(self.dims[0], self.fields['hybrid'].data)
-    if self in indexers:
-      indexers[hybrid_labeled] = indexers.pop(self)
-    return hybrid_labeled.isel(indexers)
+    idxrs = {{self: hybrid_labeled}.get(k, k): v for k, v in indexers.items()}
+    return hybrid_labeled.isel(idxrs)
 
   def asdict(self) -> dict[str, Any]:
     return {
@@ -1692,18 +1695,26 @@ class LayerLevels(cx.Coordinate):
       method: Literal['nearest'] | None = None,
   ) -> tuple[dict[str, Any], set[str]]:
     labeled_layers = cx.LabeledAxis(self.name, np.arange(self.n_layers))
-    if self in indexers:
-      indexers[labeled_layers] = indexers.pop(self)
+    remap = {self: labeled_layers}
+    indexers = {  # remaped to labeled_layers.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
     i_indexers, consumed = labeled_layers.map_indexers(indexers, method)
-    remap_consumed = {labeled_layers: self}
-    consumed = {remap_consumed.get(k, k) for k in consumed}
+    from_labeled = {labeled_layers: self}
+    consumed = {from_labeled.get(k, k) for k in consumed}
+    i_indexers = {from_labeled.get(k, k): v for k, v in i_indexers.items()}
     return i_indexers, consumed
 
   def _isel(self, indexers: dict[str | cx.Coordinate, Any]) -> cx.Coordinate:
     labeled_layers = cx.LabeledAxis(self.name, np.arange(self.n_layers))
-    if self in indexers:
-      indexers[labeled_layers] = indexers.pop(self)
-    return labeled_layers.isel(indexers)
+    remap = {self: labeled_layers}
+    indexers = {  # remaped to labeled_layers.
+        remap.get(k, k): remap.get(v, v) if cx.is_coord(v) else v
+        for k, v in indexers.items()
+    }
+    l_isel = labeled_layers.isel(indexers)
+    return self if l_isel == labeled_layers else l_isel
 
   @classmethod
   def from_xarray(

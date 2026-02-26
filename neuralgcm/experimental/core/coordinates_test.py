@@ -533,10 +533,8 @@ class CoordinatesSelectionTest(parameterized.TestCase):
       self.assertIsInstance(sliced, cx.CartesianProduct)
       self.assertEqual(sliced.shape, (10, 32))
     with self.subTest('index_latitude'):
-      indexed = grid.isel(latitude=5)
-      self.assertIsInstance(indexed, cx.LabeledAxis)
-      self.assertEqual(indexed.dims, ('longitude',))
-      self.assertEqual(indexed.shape, (64,))
+      indexed = grid.isel(latitude=5)  # longitude preserved, remains original.
+      self.assertEqual(indexed, grid.axes[0])
     with self.subTest('select_point'):
       lons, lats = grid.fields['longitude'].data, grid.fields['latitude'].data
       point = grid.sel(longitude=lons[5], latitude=lats[10])
@@ -562,8 +560,7 @@ class CoordinatesSelectionTest(parameterized.TestCase):
       self.assertEqual(sliced.shape, (5, grid.shape[1]))
     with self.subTest('index_total_wavenumber'):
       sliced = grid.isel(total_wavenumber=10)
-      self.assertIsInstance(sliced, cx.LabeledAxis)
-      self.assertEqual(sliced.shape, (grid.shape[0],))
+      self.assertEqual(sliced, grid.axes[0])
     with self.subTest('using_grid_axis_as_key'):
       axis = cx.SelectedAxis(grid, axis=1)
       region = grid.isel({axis: slice(0, 5)})

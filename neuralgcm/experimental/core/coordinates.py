@@ -22,7 +22,6 @@ from typing import Any, Iterable, Literal, Self, Sequence, TYPE_CHECKING, cast
 
 import coordax as cx
 import coordax.experimental
-from dinosaur import coordinate_systems as dinosaur_coordinates
 from dinosaur import fourier
 from dinosaur import hybrid_coordinates
 from dinosaur import sigma_coordinates
@@ -1875,71 +1874,3 @@ class CoordinateWithPadding(cx.Coordinate):
   @property
   def fields(self):
     return {}
-
-
-#
-# Solver-specific coordinate combinations
-#
-
-
-@jax.tree_util.register_static
-@dataclasses.dataclass(frozen=True)
-class DinosaurCoordinates(cx.CartesianProduct):
-  """Coordinate that is product of horizontal & vertical coorinates.
-
-  This combined coordinate object is useful for compactly keeping track of the
-  full coordinate system of the Dinosaur dynamic core or pressure-level
-  representation of the spherical shell data.
-  """
-
-  coordinates: tuple[cx.Coordinate, ...] = dataclasses.field(init=False)
-  horizontal: LonLatGrid | SphericalHarmonicGrid = dataclasses.field()
-  vertical: (
-      SigmaLevels | PressureLevels | LayerLevels | HybridLevels | SoilLevels
-  ) = dataclasses.field()
-  dycore_partition_spec: jax.sharding.PartitionSpec = P('z', 'x', 'y')
-  physics_partition_spec: jax.sharding.PartitionSpec = P(None, ('x', 'z'), 'y')
-
-  def __init__(
-      self,
-      horizontal,
-      vertical,
-      dycore_partition_spec: jax.sharding.PartitionSpec = P('z', 'x', 'y'),
-      physics_partition_spec: jax.sharding.PartitionSpec = P(
-          None, ('x', 'z'), 'y'
-      ),
-  ):
-    super().__init__(coordinates=(vertical, horizontal))
-    object.__setattr__(self, 'horizontal', horizontal)
-    object.__setattr__(self, 'vertical', vertical)
-    object.__setattr__(self, 'dycore_partition_spec', dycore_partition_spec)
-    object.__setattr__(self, 'physics_partition_spec', physics_partition_spec)
-
-  @property
-  def dims(self):
-    return self.vertical.dims + self.horizontal.dims
-
-  @property
-  def shape(self) -> tuple[int, ...]:
-    return self.vertical.shape + self.horizontal.shape
-
-  @property
-  def fields(self):
-    return self.vertical.fields | self.horizontal.fields
-
-  @classmethod
-  def from_dinosaur_coords(
-      cls,
-      coords: dinosaur_coordinates.CoordinateSystem,
-  ):
-    """Constructs instance from coordinates in Dinosaur package."""
-    horizontal = LonLatGrid.from_dinosaur_grid(coords.horizontal)
-    if isinstance(coords.vertical, sigma_coordinates.SigmaCoordinates):
-      vertical = SigmaLevels.from_dinosaur_sigma_levels(coords.vertical)
-    elif isinstance(
-        coords.vertical, vertical_interpolation.PressureCoordinates
-    ):
-      vertical = PressureLevels.from_dinosaur_pressure_levels(coords.vertical)
-    else:
-      raise ValueError(f'Unsupported vertical {coords.vertical=}')
-    return cls(horizontal=horizontal, vertical=vertical)

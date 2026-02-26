@@ -41,12 +41,10 @@ class ObservationOperatorsTest(parameterized.TestCase):
         partition_schema_key=None,
         mesh=parallelism.Mesh(),
     )
-    self.sh_grid = coordinates.SphericalHarmonicGrid.T21()
+    self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     self.grid = coordinates.LonLatGrid.T21()
-    self.input_sigma_levels = coordinates.SigmaLevels.equidistant(n_sigma)
-    self.source_coords = coordinates.DinosaurCoordinates(
-        horizontal=self.sh_grid, vertical=self.input_sigma_levels
-    )
+    self.in_sigma = coordinates.SigmaLevels.equidistant(n_sigma)
+    self.source_coords = cx.coords.compose(self.in_sigma, self.ylm_grid)
     self.sim_units = units.DEFAULT_UNITS
     self.mesh = parallelism.Mesh(None)
     self.orography_module = orographies.ModalOrography(
@@ -60,15 +58,13 @@ class ObservationOperatorsTest(parameterized.TestCase):
         'vorticity': zero_like(self.source_coords),
         'specific_humidity': zero_like(self.source_coords),
         'temperature': zero_like(self.source_coords),
-        'log_surface_pressure': zero_like(self.sh_grid),
+        'log_surface_pressure': zero_like(self.ylm_grid),
         'time': cx.field(jdt.to_datetime('2001-01-01')),
     }
 
   def test_returns_pressure_level_outputs(self):
     pressure_levels = coordinates.PressureLevels.with_13_era5_levels()
-    target_coords = coordinates.DinosaurCoordinates(
-        horizontal=self.grid, vertical=pressure_levels
-    )
+    target_coords = cx.coords.compose(pressure_levels, self.grid)
     operator = observation_operators.StandardVariablesObservationOperator(
         ylm_map=self.ylm_map,
         orography=self.orography_module,
@@ -88,9 +84,7 @@ class ObservationOperatorsTest(parameterized.TestCase):
 
   def test_returns_sigma_level_outputs(self):
     target_sigma_levels = coordinates.SigmaLevels.equidistant(10)
-    target_coords = coordinates.DinosaurCoordinates(
-        horizontal=self.grid, vertical=target_sigma_levels
-    )
+    target_coords = cx.coords.compose(target_sigma_levels, self.grid)
     operator = observation_operators.StandardVariablesObservationOperator(
         ylm_map=self.ylm_map,
         orography=self.orography_module,

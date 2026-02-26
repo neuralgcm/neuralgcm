@@ -75,15 +75,6 @@ class CoordinatesTest(parameterized.TestCase):
           expected_shape=(4, 44, 23),
       ),
       dict(
-          testcase_name='dinosaur_primitive_equation_coords',
-          coords=coordinates.DinosaurCoordinates(
-              horizontal=coordinates.SphericalHarmonicGrid.T21(),
-              vertical=coordinates.SigmaLevels.equidistant(4),
-          ),
-          expected_dims=('sigma', 'longitude_wavenumber', 'total_wavenumber'),
-          expected_shape=(4, 44, 23),
-      ),
-      dict(
           testcase_name='batched_trajectory',
           coords=cx.coords.compose(
               cx.SizedAxis('batch', 7),

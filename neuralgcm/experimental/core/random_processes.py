@@ -405,14 +405,13 @@ class GaussianRandomField(RandomProcessModule):
     self.rng_step.set_value(
         cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate)
     )
-    self.core.set_value(
-        cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid)
-    )
+    sample_core = cx.cmap(self.grf.sample_core, out_axes='leading')
+    self.core.set_value(sample_core(k).tag(self.grf.core_grid))
 
   def advance(self) -> None:
     """Updates the CoreRandomState of a random gaussian field."""
     self.core.set_value(
-        cx.cmap(self.grf.advance_core)(
+        cx.cpmap(self.grf.advance_core)(
             self.core.get_value().untag(self.grf.core_grid),
             self.state_rng.get_value(),
             self.rng_step.get_value(),
@@ -426,12 +425,15 @@ class GaussianRandomField(RandomProcessModule):
   ) -> cx.Field:
     if coord is None:
       coord = self.ylm_map.nodal_grid
-    if coord != self.ylm_map.nodal_grid:
+    if coord == self.ylm_map.modal_grid:
+      return self.core.get_value()
+    elif coord == self.ylm_map.nodal_grid:
+      return self.ylm_map.to_nodal(self.core.get_value())
+    else:
       raise ValueError(
           f'Interpolation is not supported yet, requested {coord=} '
           f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
-    return self.ylm_map.to_nodal(self.core.get_value())
 
 
 class VectorizedGaussianRandomField(RandomProcessModule):
@@ -507,7 +509,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     rngs = cx.cmap(split)(rng).tag(self.axis)
     sample_single = lambda grf, rng: grf.sample_core(rng)
     sample_collection = nnx.vmap(sample_single)
-    return cx.cmap(sample_collection, vmap=nnx.vmap)(
+    return cx.cmap(sample_collection, vmap=nnx.vmap, out_axes='leading')(
         self.batch_grf_core, rngs.untag(self.axis)
     ).tag(self.axis, self.batch_grf_core.core_grid)
 
@@ -526,7 +528,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     advance_keys = cx.cmap(_advance_prng_key)(rngs, step)
     advance_single = lambda grf, core, k, step: grf.advance_core(core, k, step)
     advance_collection = nnx.vmap(advance_single, in_axes=(0, 0, 0, None))
-    next_core = cx.cmap(advance_collection, vmap=nnx.vmap)(
+    next_core = cx.cmap(advance_collection, vmap=nnx.vmap, out_axes='leading')(
         self.batch_grf_core,
         self.core.get_value().untag(self.axis, self.batch_grf_core.core_grid),
         advance_keys.untag(self.axis),
@@ -541,12 +543,15 @@ class VectorizedGaussianRandomField(RandomProcessModule):
   ) -> cx.Field:
     if coord is None:
       coord = self.ylm_map.nodal_grid
-    if coord != self.ylm_map.nodal_grid:
+    if coord == self.ylm_map.modal_grid:
+      return self.core.get_value()
+    elif coord == self.ylm_map.nodal_grid:
+      return self.ylm_map.to_nodal(self.core.get_value())
+    else:
       raise ValueError(
           f'Interpolation is not supported yet, requested {coord=} '
           f'but the process is defined on {self.ylm_map.nodal_grid=}'
       )
-    return self.ylm_map.to_nodal(self.core.get_value())
 
   @classmethod
   def with_range_of_scales(
@@ -573,7 +578,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
       clip: float = 6.0,
       rngs: nnx.Rngs,
   ):
-    """Constructs GRF fields with correlation times and lengths in a given range.
+    """Constructs GRF fields with a range of correlation times and lengths.
 
     This method generates correlation times and lengths for gaussian random
     fields that range between min and max values. The variance of each field is

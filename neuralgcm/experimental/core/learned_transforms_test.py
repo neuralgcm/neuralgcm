@@ -193,9 +193,12 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         np.where(land_sea_mask.data, np.nan, sic_vals.data), grid
     )
 
-    mask_nans_transform = transforms.Mask(
-        mask_key='sea_ice_cover',
-        compute_mask_method='isnan',
+    mask_nans_transform = transforms.ApplyOverMasks(
+        compute_masks=transforms.ComputeMasks(
+            compute_mask_method='isnan',
+            mask_keys=('sea_ice_cover',)
+        ),
+        default_mask_key='sea_ice_cover',
         apply_mask_method='nan_to_0',
     )
     land_mask_transform = transforms.Select('land_sea_mask')

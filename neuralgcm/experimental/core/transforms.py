@@ -88,7 +88,7 @@ def filter_fields_by_coordinate(
 def _masked_nan_to_num(
     x: cx.Field, mask: cx.Field, num: float = 0.0
 ) -> cx.Field:
-  """Replaces NaNs in `x` with `num` where mask is True."""
+  """Replaces NaN entries over `True` mask with `num`."""
   mask_coord = cx.get_coordinate(mask)
   masked_nan_to_num = lambda x, m: jnp.where(m, jnp.nan_to_num(x, nan=num), x)
   result = cx.cpmap(masked_nan_to_num)(*cx.untag([x, mask], mask_coord))
@@ -96,30 +96,44 @@ def _masked_nan_to_num(
 
 
 def _masked_to_mean(x: cx.Field, mask: cx.Field) -> cx.Field:
-  """Replaces masked entries in `x` with the mean of non-masked values."""
+  """Replaces NaN entries over `True` mask with the mean of the complement."""
   mask_coord = cx.get_coordinate(mask)
-  mean_over_valid_fn = lambda x, m: jnp.mean(x, where=~m)
-  mean_values = cx.cmap(mean_over_valid_fn)(*cx.untag([x, mask], mask_coord))
-  replace_masked_with_mean = lambda x, means, mask: jnp.where(mask, means, x)
-  result = cx.cpmap(replace_masked_with_mean)(
+  mean_over_complement = lambda x, m: jnp.mean(x, where=~m.astype(jnp.bool))
+  mean_values = cx.cmap(mean_over_complement)(*cx.untag([x, mask], mask_coord))
+  replace_over_mask = lambda x, means, mask: jnp.where(mask, means, x)
+  result = cx.cpmap(replace_over_mask)(
       x.untag(mask_coord), mean_values, mask.untag(mask_coord)
   )
   return result.tag(mask_coord)
 
 
-ApplyMaskMethods = Literal['multiply', 'nan_to_0', 'nan_to_mean']
-ComputeMaskMethods = Literal['isnan', 'isinf', 'above', 'below', 'take']
+ApplyMaskMethods = (
+    Literal['zero_multiply', 'nan_to_0', 'nan_to_mean', 'set_nan']
+    | Callable[[cx.Field, cx.Field], cx.Field]
+)
+ComputeMaskMethods = Literal[
+    'isnan',
+    'notnan',
+    'isinf',
+    'notinf',
+    'above',
+    'below',
+    'as_bool',
+]
 APPLY_MASK_FNS = {
-    'multiply': lambda x, mask: x * mask,
+    'zero_multiply': lambda x, mask: x * (~mask).astype(jnp.float32),
     'nan_to_0': _masked_nan_to_num,
     'nan_to_mean': _masked_to_mean,
+    'set_nan': cx.cmap(lambda x, mask: jnp.where(mask, jnp.nan, x)),
 }
 COMPUTE_MASK_FNS = {
     'isnan': lambda x, t: cx.cmap(jnp.isnan)(x),
+    'notnan': lambda x, t: cx.cmap(lambda x: ~jnp.isnan(x))(x),
     'isinf': lambda x, t: cx.cmap(jnp.isinf)(x),
-    'above': lambda x, t: cx.cmap(jnp.where)(x > t, True, False),
-    'below': lambda x, t: cx.cmap(jnp.where)(x < t, True, False),
-    'take': lambda x, t: x,
+    'notinf': lambda x, t: cx.cmap(lambda x: ~jnp.isinf(x))(x),
+    'above': lambda x, t: cx.cmap(lambda x: x > t)(x),
+    'below': lambda x, t: cx.cmap(lambda x: x < t)(x),
+    'as_bool': lambda x, t: x.astype(jnp.bool),
 }
 
 
@@ -142,6 +156,9 @@ class Prescribed(TransformABC):
   """Returns a prescribed dict of fields."""
 
   prescribed_fields: dict[str, cx.Field]
+
+  def __init__(self, prescribed_fields: dict[str, cx.Field]):
+    self.prescribed_fields = prescribed_fields
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return self.prescribed_fields
@@ -391,6 +408,29 @@ class ApplyToKeys(TransformABC):
 
 
 @nnx_compat.dataclass
+class WithExemptKeys(TransformABC):
+  """Wrapper transform that is excludes `keys` from the wrapped transform.
+
+  This is a helper transform that passes through `keys` unchanged and applies
+  `transform` to the rest of the keys. This is equivalent to:
+
+      merge(select(inputs, keys), transform(select(inputs, keys, invert=True)))
+  """
+
+  transform: Transform
+  keys: str | Sequence[str]
+
+  def __post_init__(self):
+    keys = self.keys
+    self.keys = tuple([keys]) if isinstance(keys, str) else tuple(keys)
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    to_transform = {k: v for k, v in inputs.items() if k not in self.keys}
+    keep_as_is = {k: v for k, v in inputs.items() if k in self.keys}
+    return self.transform(to_transform) | keep_as_is
+
+
+@nnx_compat.dataclass
 class ApplyFnToKeys(TransformABC):
   """Applies a Field -> Field function to a subset of keys.
 
@@ -618,19 +658,24 @@ class InpaintMaskForHarmonics(TransformABC):
 
   Attributes:
     ylm_map: Mapping between nodal and modal representations.
-    get_masks_transform: Transform that returns a mask for each input field. The
-      True mask values indicate entries to be inpainted.
+    compute_masks: Transform that returns a mask for each input field. The True
+      mask values indicate entries to be inpainted.
     lowpass_filter: Filter to apply in modal space to smooth the inpainting.
     n_iter: Number of iterations to perform.
   """
 
   ylm_map: spherical_harmonics.YlmMapper | spherical_harmonics.FixedYlmMapping
-  get_masks_transform: Transform
+  compute_masks: Transform
   lowpass_filter: spatial_filters.ModalSpatialFilter
   n_iter: int = 2
+  default_mask_key: str | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    masks = self.get_masks_transform(inputs)
+    masks = self.compute_masks(inputs)
+    masks = {k: masks.get(k, masks.get(self.default_mask_key)) for k in inputs}
+    for k, mask in masks.items():
+      if mask is None:
+        raise ValueError(f'No mask found for {k=}')
     # Initialize masked values with mean of valid data.
     current_guess = {k: _masked_to_mean(v, masks[k]) for k, v in inputs.items()}
 
@@ -662,15 +707,16 @@ class Regrid(TransformABC):
 
 
 @nnx_compat.dataclass
-class MakeBoolMasks(TransformABC):
-  """Transforms inputs to a boolean masks for keys in `mask_keys`."""
+class ComputeMasks(TransformABC):
+  """Transforms inputs to boolean masks for keys in `mask_keys`."""
 
-  compute_mask_method: ComputeMaskMethods = 'take'
+  compute_mask_method: ComputeMaskMethods = 'as_bool'
   threshold_value: float | None = None
-  mask_keys: tuple[str, ...] | None = None
+  mask_keys: str | tuple[str, ...] | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    mask_keys = self.mask_keys
+    is_str = lambda x: isinstance(x, str)
+    mask_keys = (self.mask_keys,) if is_str(self.mask_keys) else self.mask_keys
     if mask_keys is None:
       mask_keys = inputs.keys()
     compute_mask_fn = COMPUTE_MASK_FNS[self.compute_mask_method]
@@ -680,22 +726,37 @@ class MakeBoolMasks(TransformABC):
 
 
 @nnx_compat.dataclass
-class Mask(TransformABC):
-  """Masks input Fields with a static mask."""
+class ApplyOverMasks(TransformABC):
+  """Applies masking to `transform(inputs)` using `compute_masks(inputs)`.
 
-  mask_key: str
-  compute_mask_method: ComputeMaskMethods = 'take'
-  apply_mask_method: ApplyMaskMethods = 'multiply'
-  threshold_value: float | None = None
-  drop_mask: bool = True
+  Attributes:
+    transform: Transform to apply to inputs.
+    compute_masks: Transform that returns a mask for each input field.
+    apply_mask_method: Method to apply the mask to the input fields.
+    default_mask_key: Key of the default mask to use when compute_masks does not
+      produce a key matching mask for field in inputs.
+  """
+
+  compute_masks: TransformABC
+  apply_mask_method: ApplyMaskMethods = 'zero_multiply'
+  transform: TransformABC | None = None
+  default_mask_key: str | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    compute_mask = COMPUTE_MASK_FNS[self.compute_mask_method]
-    mask = compute_mask(inputs[self.mask_key], self.threshold_value)
-    apply_mask = APPLY_MASK_FNS[self.apply_mask_method]
-    if self.drop_mask:
-      inputs = {k: v for k, v in inputs.items() if k != self.mask_key}
-    return {k: apply_mask(v, mask) for k, v in inputs.items()}
+    masks = self.compute_masks(inputs)
+    inputs = self.transform(inputs) if self.transform is not None else inputs
+    apply_mask_fn = (
+        self.apply_mask_method
+        if callable(self.apply_mask_method)
+        else APPLY_MASK_FNS[self.apply_mask_method]
+    )
+    outputs = {}
+    for k, v in inputs.items():
+      mask = masks.get(k, masks.get(self.default_mask_key))
+      if mask is None:
+        raise ValueError(f'No mask found for {k=}')
+      outputs[k] = apply_mask_fn(v, mask)
+    return outputs
 
 
 class Nondimensionalize(TransformABC):

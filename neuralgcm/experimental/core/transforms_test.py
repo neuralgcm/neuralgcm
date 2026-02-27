@@ -232,30 +232,38 @@ class TransformsTest(parameterized.TestCase):
         'v': cx.field(np.arange(x.shape[0]), x),
     }
     with self.subTest('_below'):
-      mask = transforms.Mask(
-          mask_key='mask',
-          compute_mask_method='below',
-          apply_mask_method='multiply',
-          threshold_value=0.6,
+      mask = transforms.ApplyOverMasks(
+          compute_masks=transforms.ComputeMasks(
+              compute_mask_method='below',
+              threshold_value=0.6,
+              mask_keys=('mask',),
+          ),
+          transform=transforms.Select(r'(?!mask).*'),
+          default_mask_key='mask',
+          apply_mask_method='zero_multiply',
       )
       actual = mask(inputs)
       expected = {
-          'u': inputs['u'] * (x.fields['x'] < 0.6).astype(np.float32),
-          'v': inputs['v'] * (x.fields['x'] < 0.6).astype(np.float32),
+          'u': inputs['u'] * (x.fields['x'] >= 0.6).astype(np.float32),
+          'v': inputs['v'] * (x.fields['x'] >= 0.6).astype(np.float32),
       }
       chex.assert_trees_all_equal(actual, expected)
 
     with self.subTest('_above'):
-      mask = transforms.Mask(
-          mask_key='mask',
-          compute_mask_method='above',
-          apply_mask_method='multiply',
-          threshold_value=0.3,
+      mask = transforms.ApplyOverMasks(
+          compute_masks=transforms.ComputeMasks(
+              compute_mask_method='above',
+              threshold_value=0.3,
+              mask_keys=('mask',),
+          ),
+          transform=transforms.Select(r'(?!mask).*'),
+          default_mask_key='mask',
+          apply_mask_method='zero_multiply',
       )
       actual = mask(inputs)
       expected = {
-          'u': inputs['u'] * (x.fields['x'] > 0.3).astype(np.float32),
-          'v': inputs['v'] * (x.fields['x'] > 0.3).astype(np.float32),
+          'u': inputs['u'] * (x.fields['x'] <= 0.3).astype(np.float32),
+          'v': inputs['v'] * (x.fields['x'] <= 0.3).astype(np.float32),
       }
       chex.assert_trees_all_equal(actual, expected)
 
@@ -266,15 +274,20 @@ class TransformsTest(parameterized.TestCase):
         'u': cx.field(np.ones(x.shape), x),
         'v': cx.field(np.arange(x.shape[0]), x),
     }
-    mask = transforms.Mask(
-        mask_key='mask',
-        compute_mask_method='take',
-        apply_mask_method='multiply',
+    mask = transforms.ApplyOverMasks(
+        compute_masks=transforms.ComputeMasks(
+            compute_mask_method='as_bool',
+            threshold_value=None,
+            mask_keys=('mask',),
+        ),
+        transform=transforms.Select(r'(?!mask).*'),
+        default_mask_key='mask',
+        apply_mask_method='zero_multiply',
     )
     actual = mask(inputs)
     expected = {
-        'u': inputs['u'] * inputs['mask'],
-        'v': inputs['v'] * inputs['mask'],
+        'u': inputs['u'] * ~inputs['mask'],
+        'v': inputs['v'] * ~inputs['mask'],
     }
     chex.assert_trees_all_equal(actual, expected)
 
@@ -290,9 +303,14 @@ class TransformsTest(parameterized.TestCase):
         'no_nans': cx.field(np.arange(x.shape[0]), x),  # no nan in v.
         'all_nans': cx.field(np.ones(x.shape) * np.nan, x),
     }
-    mask = transforms.Mask(
-        mask_key='mask',
-        compute_mask_method='isnan',
+    mask = transforms.ApplyOverMasks(
+        compute_masks=transforms.ComputeMasks(
+            compute_mask_method='isnan',
+            threshold_value=None,
+            mask_keys=('mask',),
+        ),
+        transform=transforms.Select(r'(?!mask).*'),
+        default_mask_key='mask',
         apply_mask_method='nan_to_0',
     )
     actual = mask(inputs)
@@ -308,6 +326,36 @@ class TransformsTest(parameterized.TestCase):
       y_ones = np.ones(y.shape)
       np.testing.assert_allclose(actual['nan_at_mask'].data[0, :], y_ones)
       np.testing.assert_allclose(actual['all_nans'].data[0], np.nan)
+
+
+  def test_mask_custom_function(self):
+    x = cx.LabeledAxis('x', np.linspace(0, 1, 4))
+    mask = cx.field(np.array([1.0, 0.0, 1.0, 0.0]), x)
+    inputs = {
+        'mask': mask,
+        'u': cx.field(np.array([1.0, 2.0, 3.0, 4.0]), x),
+    }
+
+    def add_ten(x, m):
+      # x + 10 over mask m
+      return cx.cmap(lambda a, b: jnp.where(b, a + 10.0, a))(x, m)
+
+    mask_transform = transforms.ApplyOverMasks(
+        compute_masks=transforms.ComputeMasks(
+            compute_mask_method='above',
+            threshold_value=0.5,
+            mask_keys=('mask',),
+        ),
+        transform=transforms.Select(r'(?!mask).*'),
+        default_mask_key='mask',
+        apply_mask_method=add_ten,
+    )
+    actual = mask_transform(inputs)
+    # Mask is True at indices 0 and 2.
+    expected = {
+        'u': cx.field(np.array([11.0, 2.0, 13.0, 4.0]), x)
+    }
+    chex.assert_trees_all_equal(actual, expected)
 
   def test_clip_wavenumbers(self):
     """Tests that ClipWavenumbers works as expected."""
@@ -822,15 +870,15 @@ class TransformsTest(parameterized.TestCase):
     prescirbed_mask = transforms.Prescribed({'u': mask})
     inpaint = transforms.InpaintMaskForHarmonics(
         ylm_map=ylm_map,
-        get_masks_transform=prescirbed_mask,
+        compute_masks=prescirbed_mask,
         lowpass_filter=lowpass,
         n_iter=5,
     )
     output = inpaint(inputs)
 
-    valid_mask = ~mask_data
+    non_inpainted = ~mask_data
     np.testing.assert_allclose(
-        output['u'].data[valid_mask], u_corrupted.data[valid_mask]
+        output['u'].data[non_inpainted], u_corrupted.data[non_inpainted]
     )
 
     inpainted_values = output['u'].data[mask_data]
@@ -950,7 +998,7 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
     np.testing.assert_array_equal(output['f'].data, expected)
 
   def test_multiple_grids_and_batching(self):
-    """Tests handling of multiple fields on different grids and batched queries."""
+    """Tests handling of fields on different grids and batched queries."""
     # Field 1 on a 10-degree grid.
     grid1 = cx.coords.compose(
         cx.LabeledAxis('longitude', np.arange(0, 40, 10)),

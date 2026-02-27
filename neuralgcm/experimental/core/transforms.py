@@ -88,7 +88,7 @@ def filter_fields_by_coordinate(
 def _masked_nan_to_num(
     x: cx.Field, mask: cx.Field, num: float = 0.0
 ) -> cx.Field:
-  """Replaces NaNs in `x` with `num` where mask is True."""
+  """Replaces NaN entries over `True` mask with `num`."""
   mask_coord = cx.get_coordinate(mask)
   masked_nan_to_num = lambda x, m: jnp.where(m, jnp.nan_to_num(x, nan=num), x)
   result = cx.cpmap(masked_nan_to_num)(*cx.untag([x, mask], mask_coord))
@@ -96,30 +96,44 @@ def _masked_nan_to_num(
 
 
 def _masked_to_mean(x: cx.Field, mask: cx.Field) -> cx.Field:
-  """Replaces masked entries in `x` with the mean of non-masked values."""
+  """Replaces NaN entries over `True` mask with the mean of the complement."""
   mask_coord = cx.get_coordinate(mask)
-  mean_over_valid_fn = lambda x, m: jnp.mean(x, where=~m)
-  mean_values = cx.cmap(mean_over_valid_fn)(*cx.untag([x, mask], mask_coord))
-  replace_masked_with_mean = lambda x, means, mask: jnp.where(mask, means, x)
-  result = cx.cpmap(replace_masked_with_mean)(
+  mean_over_complement = lambda x, m: jnp.mean(x, where=~m.astype(jnp.bool))
+  mean_values = cx.cmap(mean_over_complement)(*cx.untag([x, mask], mask_coord))
+  replace_over_mask = lambda x, means, mask: jnp.where(mask, means, x)
+  result = cx.cpmap(replace_over_mask)(
       x.untag(mask_coord), mean_values, mask.untag(mask_coord)
   )
   return result.tag(mask_coord)
 
 
-ApplyMaskMethods = Literal['multiply', 'nan_to_0', 'nan_to_mean']
-ComputeMaskMethods = Literal['isnan', 'isinf', 'above', 'below', 'take']
+ApplyMaskMethods = (
+    Literal['zero_multiply', 'nan_to_0', 'nan_to_mean', 'set_nan']
+    | Callable[[cx.Field, cx.Field], cx.Field]
+)
+ComputeMaskMethods = Literal[
+    'isnan',
+    'notnan',
+    'isinf',
+    'notinf',
+    'above',
+    'below',
+    'as_bool',
+]
 APPLY_MASK_FNS = {
-    'multiply': lambda x, mask: x * mask,
+    'zero_multiply': lambda x, mask: x * (~mask).astype(jnp.float32),
     'nan_to_0': _masked_nan_to_num,
     'nan_to_mean': _masked_to_mean,
+    'set_nan': cx.cmap(lambda x, mask: jnp.where(mask, jnp.nan, x)),
 }
 COMPUTE_MASK_FNS = {
     'isnan': lambda x, t: cx.cmap(jnp.isnan)(x),
+    'notnan': lambda x, t: cx.cmap(lambda x: ~jnp.isnan(x))(x),
     'isinf': lambda x, t: cx.cmap(jnp.isinf)(x),
-    'above': lambda x, t: cx.cmap(jnp.where)(x > t, True, False),
-    'below': lambda x, t: cx.cmap(jnp.where)(x < t, True, False),
-    'take': lambda x, t: x,
+    'notinf': lambda x, t: cx.cmap(lambda x: ~jnp.isinf(x))(x),
+    'above': lambda x, t: cx.cmap(lambda x: x > t)(x),
+    'below': lambda x, t: cx.cmap(lambda x: x < t)(x),
+    'as_bool': lambda x, t: x.astype(jnp.bool),
 }
 
 
@@ -142,6 +156,9 @@ class Prescribed(TransformABC):
   """Returns a prescribed dict of fields."""
 
   prescribed_fields: dict[str, cx.Field]
+
+  def __init__(self, prescribed_fields: dict[str, cx.Field]):
+    self.prescribed_fields = prescribed_fields
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return self.prescribed_fields
@@ -172,26 +189,121 @@ class RavelDims(TransformABC):
     return {k: ravel_fn(v).tag(self.out_dim) for k, v in untagged.items()}
 
 
-@nnx_compat.dataclass
 class Select(TransformABC):
-  """Selects only fields whose keys match against regex.
+  """Selects subset of keys in the input dictionary.
 
   Attributes:
-    regex_patterns: regular expression pattern that specifies the set of keys
-      from `inputs` that will be returned by __call__ method.
+    keys: Keys to select. Can be a string, sequence of strings, or a callable.
+    invert: If True, invert the selection.
+    mode: Selection mode for string ``keys``. Can be 'match' or 'regex'.
+    strict: If True, raise an error if any of the keys are not found in inputs.
   """
 
-  regex_patterns: str
-
-  def __call__(
+  def __init__(
       self,
-      inputs: dict[str, cx.Field],
-  ) -> dict[str, cx.Field]:
-    outputs = {}
-    for k, v in inputs.items():
-      if re.fullmatch(self.regex_patterns, k):
-        outputs[k] = v
-    return outputs
+      keys: str | Sequence[str] | Callable[[str], bool],
+      invert: bool = False,
+      mode: Literal['match', 'regex'] = 'match',
+      strict: bool = True,
+  ):
+    if isinstance(keys, str):
+      self.keys = tuple([keys])
+    elif isinstance(keys, Sequence):
+      self.keys = tuple(keys)
+    elif callable(keys):
+      if mode == 'regex':
+        raise TypeError(f'mode must be "match" when using {type(keys)=}.')
+      self.keys = keys
+    else:
+      raise TypeError(
+          "The 'keys' parameter must be a str, sequence of str, or a callable."
+      )
+    if mode not in ['match', 'regex']:
+      raise ValueError(f'Unknown mode: {mode}')
+    self.invert = invert
+    self.mode = mode
+    self.strict = strict
+
+  def __call__(self, data: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    selected_keys = set()
+    if callable(self.keys):
+      selected_keys = {k for k in data.keys() if self.keys(k)}
+    elif self.mode == 'regex':
+      for pattern in self.keys:
+        matched = {k for k in data.keys() if re.fullmatch(pattern, k)}
+        if self.strict and not matched:
+          raise KeyError(
+              f'Select strict mode failed. Regex pattern {pattern!r} '
+              'did not match any keys.'
+          )
+        selected_keys.update(matched)
+    elif self.mode == 'match':
+      selected_keys = set(self.keys)
+      if self.strict:
+        missing = selected_keys - data.keys()
+        if missing:
+          raise KeyError(f'Select strict mode failed. Missing keys: {missing}')
+      selected_keys = selected_keys.intersection(data.keys())
+    else:
+      raise ValueError(f'Unknown mode: {self.mode}')
+
+    # Apply inversion logic if needed.
+    if self.invert:
+      final_keys = set(data.keys()) - selected_keys
+    else:
+      final_keys = selected_keys
+    return {k: v for k, v in data.items() if k in final_keys}
+
+
+@nnx_compat.dataclass
+class FilterByCoord(TransformABC):
+  """Selects subset of fields that match specified coordinate or type.
+
+  Attributes:
+    coords: A coordinate or a sequence of coordinates. If provided, the field
+      must contain at least one of these coordinates to be selected.
+    types: A type of coordinate or sequence of types. If provided, the field
+      must contain a coordinate of at least one of these types to be selected.
+    invert: If True, invert the selection.
+  """
+
+  coords: cx.Coordinate | Sequence[cx.Coordinate] | None = None
+  types: type[cx.Coordinate] | Sequence[type[cx.Coordinate]] | None = None
+  invert: bool = False
+
+  def __post_init__(self):
+    if self.coords is None and self.types is None:
+      raise ValueError('At least one of `coords` or `types` must be provided.')
+    # Standardize `coords` and `types` representation.
+    coords = () if self.coords is None else self.coords
+    self.coords = (coords,) if cx.is_coord(coords) else tuple(coords)
+    types = () if self.types is None else self.types
+    self.types = (types,) if isinstance(types, type) else tuple(types)
+
+  def __call__(self, data: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    selected_keys = set()
+    for k, v in data.items():
+      match = False
+      v_axes = set(v.coordinate.axes)
+      v_components = set(cx.coords.canonicalize(*v.coordinate.axes))
+      for c in self.coords:
+        if set(c.axes).issubset(v_axes):
+          match = True
+          break
+      if not match:
+        for t in self.types:
+          if any(isinstance(ax, t) for ax in v_components):
+            match = True
+            break
+      if match:
+        selected_keys.add(k)
+
+    if self.invert:
+      final_keys = set(data.keys()) - selected_keys
+    else:
+      final_keys = selected_keys
+
+    return {k: v for k, v in data.items() if k in final_keys}
 
 
 @nnx_compat.dataclass
@@ -391,6 +503,24 @@ class ApplyToKeys(TransformABC):
 
 
 @nnx_compat.dataclass
+class WithExemptKeys(TransformABC):
+  """Wrapper transform that is excludes `keys` from the wrapped transform.
+
+  This is a helper transform that applies `transform` to `keys` and keeps the
+  rest of the inputs unchanged. It is equivalent to:
+  merge(select(inputs, !keys), transform(select(inputs, keys)))
+  """
+
+  transform: Transform
+  keys: Sequence[str]
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    to_transform = {k: v for k, v in inputs.items() if k not in self.keys}
+    keep_as_is = {k: v for k, v in inputs.items() if k in self.keys}
+    return self.transform(to_transform) | keep_as_is
+
+
+@nnx_compat.dataclass
 class ApplyFnToKeys(TransformABC):
   """Applies a Field -> Field function to a subset of keys.
 
@@ -481,73 +611,46 @@ class Scale(TransformABC):
     return {k: scale_fn(v) for k, v in inputs.items()}
 
 
-class ShiftAndNormalize(TransformABC):
-  """Applies (x - shift) / scale to all input fields when reverse is False.
+class StandardizeFields(TransformABC):
+  """Shifts and scales inputs.
+
+  This transform applies shifts and scales. It can be applied globally
+  or on a per key basis.
 
   Attributes:
-    shift: The shift to use for centering input fields/
-    scale: The scale to use for normalization.
-    reverse: Whether to perform the inverse transformation.
+    shifts: The shifts to use for centering input fields.
+    scales: The scales to use for normalization.
+    from_normalized: Whether to invert the transform normalized --> original.
   """
 
   def __init__(
       self,
-      shift: cx.Field,
-      scale: cx.Field,
-      reverse: bool = False,
+      shifts: cx.Field | dict[str, cx.Field],
+      scales: cx.Field | dict[str, cx.Field],
+      from_normalized: bool = False,
   ):
-    self.shift = TransformParams(shift)
-    self.scale = TransformParams(scale)
-    self.reverse = reverse
-
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    if self.reverse:
-      scale_fn = lambda x, shift, scale: x * scale + shift
-    else:
-      scale_fn = lambda x, shift, scale: (x - shift) / scale
-    shift, scale = self.shift.get_value(), self.scale.get_value()
-    return {k: scale_fn(v, shift, scale) for k, v in inputs.items()}
-
-
-class ShiftAndNormalizePerKey(TransformABC):
-  """Shifts and then scales inputs per key.
-
-  This transform applies shifts and scales on a per key basis. The specified
-  `shifts` and `scales` can be a superset of input values, but if a key in the
-  inputs is not present in the shifts/scales, then an error is raised.
-  """
-
-  def __init__(
-      self,
-      shifts: dict[str, cx.Field],
-      scales: dict[str, cx.Field],
-      global_scale: float | None = None,  # TODO(dkochkov): deprecate this.
-      reverse: bool = False,
-  ):
-    if global_scale is not None:
-      scales = {k: global_scale * v for k, v in scales.items()}
     self.shifts = TransformParams(shifts)
     self.scales = TransformParams(scales)
-    self.reverse = reverse
+    self.from_normalized = from_normalized
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    shifts = pytree_utils.replace_with_matching_or_default(
-        inputs,
-        self.shifts.get_value(),
-        default=None,
-        check_used_all_replace_keys=False,
-    )
-    scales = pytree_utils.replace_with_matching_or_default(
-        inputs,
-        self.scales.get_value(),
-        default=None,
-        check_used_all_replace_keys=False,
-    )
-    if self.reverse:
+    shifts = self.shifts.get_value()
+    scales = self.scales.get_value()
+    if self.from_normalized:
       scale_fn = lambda x, shift, scale: x * scale + shift
     else:
       scale_fn = lambda x, shift, scale: (x - shift) / scale
-    return {k: scale_fn(v, shifts[k], scales[k]) for k, v in inputs.items()}
+
+    if isinstance(shifts, dict) or isinstance(scales, dict):
+      missing_to_none = lambda x: pytree_utils.replace_with_matching_or_default(
+          inputs, x, default=None, check_used_all_replace_keys=False
+      )
+      is_dict = lambda x: isinstance(x, dict)
+      shifts = shifts if is_dict(shifts) else missing_to_none(shifts)
+      scales = scales if is_dict(scales) else missing_to_none(scales)
+      return {k: scale_fn(v, shifts[k], scales[k]) for k, v in inputs.items()}
+    else:
+      return {k: scale_fn(v, shifts, scales) for k, v in inputs.items()}
 
 
 @nnx_compat.dataclass
@@ -618,19 +721,24 @@ class InpaintMaskForHarmonics(TransformABC):
 
   Attributes:
     ylm_map: Mapping between nodal and modal representations.
-    get_masks_transform: Transform that returns a mask for each input field. The
-      True mask values indicate entries to be inpainted.
+    compute_masks: Transform that returns a mask for each input field. The True
+      mask values indicate entries to be inpainted.
     lowpass_filter: Filter to apply in modal space to smooth the inpainting.
     n_iter: Number of iterations to perform.
   """
 
   ylm_map: spherical_harmonics.YlmMapper | spherical_harmonics.FixedYlmMapping
-  get_masks_transform: Transform
+  compute_masks: Transform
   lowpass_filter: spatial_filters.ModalSpatialFilter
   n_iter: int = 2
+  default_mask_key: str | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    masks = self.get_masks_transform(inputs)
+    masks = self.compute_masks(inputs)
+    masks = {k: masks.get(k, masks.get(self.default_mask_key)) for k in inputs}
+    for k, mask in masks.items():
+      if mask is None:
+        raise ValueError(f'No mask found for {k=}')
     # Initialize masked values with mean of valid data.
     current_guess = {k: _masked_to_mean(v, masks[k]) for k, v in inputs.items()}
 
@@ -662,15 +770,16 @@ class Regrid(TransformABC):
 
 
 @nnx_compat.dataclass
-class MakeBoolMasks(TransformABC):
-  """Transforms inputs to a boolean masks for keys in `mask_keys`."""
+class ComputeMasks(TransformABC):
+  """Transforms inputs to boolean masks for keys in `mask_keys`."""
 
-  compute_mask_method: ComputeMaskMethods = 'take'
+  compute_mask_method: ComputeMaskMethods = 'as_bool'
   threshold_value: float | None = None
-  mask_keys: tuple[str, ...] | None = None
+  mask_keys: str | tuple[str, ...] | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    mask_keys = self.mask_keys
+    is_str = lambda x: isinstance(x, str)
+    mask_keys = (self.mask_keys,) if is_str(self.mask_keys) else self.mask_keys
     if mask_keys is None:
       mask_keys = inputs.keys()
     compute_mask_fn = COMPUTE_MASK_FNS[self.compute_mask_method]
@@ -680,22 +789,38 @@ class MakeBoolMasks(TransformABC):
 
 
 @nnx_compat.dataclass
-class Mask(TransformABC):
-  """Masks input Fields with a static mask."""
+class ApplyOverMasks(TransformABC):
+  """Applies masking to `transform(inputs)` using from `compute_masks(inputs)`.
 
-  mask_key: str
-  compute_mask_method: ComputeMaskMethods = 'take'
-  apply_mask_method: ApplyMaskMethods = 'multiply'
-  threshold_value: float | None = None
-  drop_mask: bool = True
+  Attributes:
+    transform: Transform to apply to inputs.
+    compute_masks: Transform that returns a mask for each input field.
+    apply_mask_method: Method to apply the mask to the input fields.
+    default_mask_key: Key of the default mask to use when compute_masks does not
+      produce a key matching mask for field in inputs.
+    drop_mask: Whether to drop the mask from the output.
+  """
+
+  compute_masks: TransformABC
+  apply_mask_method: ApplyMaskMethods = 'zero_multiply'
+  transform: TransformABC | None = None
+  default_mask_key: str | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    compute_mask = COMPUTE_MASK_FNS[self.compute_mask_method]
-    mask = compute_mask(inputs[self.mask_key], self.threshold_value)
-    apply_mask = APPLY_MASK_FNS[self.apply_mask_method]
-    if self.drop_mask:
-      inputs = {k: v for k, v in inputs.items() if k != self.mask_key}
-    return {k: apply_mask(v, mask) for k, v in inputs.items()}
+    masks = self.compute_masks(inputs)
+    inputs = self.transform(inputs) if self.transform is not None else inputs
+    apply_mask_fn = (
+        self.apply_mask_method
+        if callable(self.apply_mask_method)
+        else APPLY_MASK_FNS[self.apply_mask_method]
+    )
+    outputs = {}
+    for k, v in inputs.items():
+      mask = masks.get(k, masks.get(self.default_mask_key))
+      if mask is None:
+        raise ValueError(f'No mask found for {k=}')
+      outputs[k] = apply_mask_fn(v, mask)
+    return outputs
 
 
 class Nondimensionalize(TransformABC):

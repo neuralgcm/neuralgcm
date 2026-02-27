@@ -37,19 +37,100 @@ class TransformsTest(parameterized.TestCase):
   """Tests that transforms work as expected."""
 
   def test_select(self):
-    select_transform = transforms.Select(regex_patterns='field_a|field_c')
     x = cx.SizedAxis('x', 3)
     inputs = {
-        'field_a': cx.field(np.array([1, 2, 3]), x),
-        'field_b': cx.field(np.array([4, 5, 6]), x),
-        'field_c': cx.field(np.array([7, 8, 9]), x),
+        'a': cx.field(np.array([1, 2, 3]), x),
+        'b': cx.field(np.array([4, 5, 6]), x),
+        'qual_b': cx.field(np.array([10, 11, 12]), x),
+        'qual_c': cx.field(np.array([7, 8, 9]), x),
+        'qual_d': cx.field(0),
     }
-    actual = select_transform(inputs)
-    expected = {
-        'field_a': inputs['field_a'],
-        'field_c': inputs['field_c'],
+    with self.subTest('match_single_key'):
+      select_transform = transforms.Select('a')
+      actual = select_transform(inputs)
+      expected = {'a': inputs['a']}
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('match_sequence'):
+      select_transform = transforms.Select(['a', 'qual_d'])
+      actual = select_transform(inputs)
+      expected = {'a': inputs['a'], 'qual_d': inputs['qual_d']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_callable'):
+      select_transform = transforms.Select(lambda x: x.endswith('b'))
+      actual = select_transform(inputs)
+      expected = {'b': inputs['b'], 'qual_b': inputs['qual_b']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('regex'):
+      select_transform = transforms.Select('qual.*', mode='regex')
+      actual = select_transform(inputs)
+      expected = {
+          'qual_b': inputs['qual_b'],
+          'qual_c': inputs['qual_c'],
+          'qual_d': inputs['qual_d'],
+      }
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('regex_invert'):
+      select_transform = transforms.Select('qual.*', mode='regex', invert=True)
+      actual = select_transform(inputs)
+      expected = {'a': inputs['a'], 'b': inputs['b']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('raises_on_missing_keys'):
+      select_transform = transforms.Select(['a', 'missing'])
+      with self.assertRaisesRegex(KeyError, 'Missing keys'):
+        select_transform(inputs)
+
+  def test_filter_by_coord(self):
+    x = cx.SizedAxis('x', 3)
+    special = cx.LabeledAxis('special', np.array([np.e, np.pi]))
+    sigma = coordinates.SigmaLevels.equidistant(4)
+    pressure = coordinates.PressureLevels.with_13_era5_levels()
+    grid = coordinates.LonLatGrid.T21()
+
+    inputs = {
+        'field_1': cx.field(np.ones(3), x),
+        'field_2': cx.field(np.ones((3, 2)), x, special),
+        'field_3': cx.field(np.ones((3, 4)), x, sigma),
+        'field_4': cx.field(np.ones((3, 13)), x, pressure),
+        'grid_field': cx.field(np.ones(grid.shape), grid),
     }
-    chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('match_coords'):
+      filter_transform = transforms.FilterByCoord(coords=special)
+      actual = filter_transform(inputs)
+      expected = {'field_2': inputs['field_2']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_types'):
+      filter_transform = transforms.FilterByCoord(
+          types=(coordinates.SigmaLevels, coordinates.PressureLevels)
+      )
+      actual = filter_transform(inputs)
+      expected = {'field_3': inputs['field_3'], 'field_4': inputs['field_4']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_multidim_types'):
+      filter_transform = transforms.FilterByCoord(
+          types=coordinates.LonLatGrid
+      )
+      actual = filter_transform(inputs)
+      expected = {'grid_field': inputs['grid_field']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_both'):
+      filter_transform = transforms.FilterByCoord(
+          coords=special, types=coordinates.SigmaLevels
+      )
+      actual = filter_transform(inputs)
+      expected = {'field_2': inputs['field_2'], 'field_3': inputs['field_3']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('invert'):
+      filter_transform = transforms.FilterByCoord(coords=special, invert=True)
+      actual = filter_transform(inputs)
+      expected = {
+          'field_1': inputs['field_1'],
+          'field_3': inputs['field_3'],
+          'field_4': inputs['field_4'],
+          'grid_field': inputs['grid_field'],
+      }
+      chex.assert_trees_all_close(actual, expected)
 
   def test_isel(self):
     x = cx.SizedAxis('x', 4)
@@ -123,22 +204,22 @@ class TransformsTest(parameterized.TestCase):
     }
     chex.assert_trees_all_close(actual, expected)
 
-  def test_shift_and_normalize(self):
+  def test_standardize_fields(self):
     b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 3)
     rng = jax.random.PRNGKey(0)
     data = 0.3 + 0.5 * jax.random.normal(rng, shape=(b.shape + x.shape))
     inputs = {'data': cx.field(data, b, x)}
-    normalize = transforms.ShiftAndNormalize(
-        shift=cx.field(np.mean(data)),
-        scale=cx.field(np.std(data)),
+    normalize = transforms.StandardizeFields(
+        shifts=cx.field(np.mean(data)),
+        scales=cx.field(np.std(data)),
     )
     out = normalize(inputs)
     np.testing.assert_allclose(np.mean(out['data'].data), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.std(out['data'].data), 1.0, atol=1e-6)
-    inverse_normalize = transforms.ShiftAndNormalize(
-        shift=cx.field(np.mean(data)),
-        scale=cx.field(np.std(data)),
-        reverse=True,
+    inverse_normalize = transforms.StandardizeFields(
+        shifts=cx.field(np.mean(data)),
+        scales=cx.field(np.std(data)),
+        from_normalized=True,
     )
     reconstructed = inverse_normalize(out)
     np.testing.assert_allclose(reconstructed['data'].data, data, atol=1e-6)
@@ -152,7 +233,7 @@ class TransformsTest(parameterized.TestCase):
         return {k: v + 1 for k, v in inputs.items()}
 
     sequential = transforms.Sequential(
-        transforms=[transforms.Select(regex_patterns=r'(?!time).*'), AddOne()]
+        [transforms.Select('time', invert=True), AddOne()]
     )
     inputs = {
         'a': cx.field(np.array([1, 2, 3]), x),
@@ -232,30 +313,38 @@ class TransformsTest(parameterized.TestCase):
         'v': cx.field(np.arange(x.shape[0]), x),
     }
     with self.subTest('_below'):
-      mask = transforms.Mask(
-          mask_key='mask',
-          compute_mask_method='below',
-          apply_mask_method='multiply',
-          threshold_value=0.6,
+      mask = transforms.ApplyOverMasks(
+          compute_masks=transforms.ComputeMasks(
+              compute_mask_method='below',
+              threshold_value=0.6,
+              mask_keys=('mask',),
+          ),
+          transform=transforms.Select('mask', invert=True),
+          default_mask_key='mask',
+          apply_mask_method='zero_multiply',
       )
       actual = mask(inputs)
       expected = {
-          'u': inputs['u'] * (x.fields['x'] < 0.6).astype(np.float32),
-          'v': inputs['v'] * (x.fields['x'] < 0.6).astype(np.float32),
+          'u': inputs['u'] * (x.fields['x'] >= 0.6).astype(np.float32),
+          'v': inputs['v'] * (x.fields['x'] >= 0.6).astype(np.float32),
       }
       chex.assert_trees_all_equal(actual, expected)
 
     with self.subTest('_above'):
-      mask = transforms.Mask(
-          mask_key='mask',
-          compute_mask_method='above',
-          apply_mask_method='multiply',
-          threshold_value=0.3,
+      mask = transforms.ApplyOverMasks(
+          compute_masks=transforms.ComputeMasks(
+              compute_mask_method='above',
+              threshold_value=0.3,
+              mask_keys=('mask',),
+          ),
+          transform=transforms.Select('mask', invert=True),
+          default_mask_key='mask',
+          apply_mask_method='zero_multiply',
       )
       actual = mask(inputs)
       expected = {
-          'u': inputs['u'] * (x.fields['x'] > 0.3).astype(np.float32),
-          'v': inputs['v'] * (x.fields['x'] > 0.3).astype(np.float32),
+          'u': inputs['u'] * (x.fields['x'] <= 0.3).astype(np.float32),
+          'v': inputs['v'] * (x.fields['x'] <= 0.3).astype(np.float32),
       }
       chex.assert_trees_all_equal(actual, expected)
 
@@ -266,15 +355,20 @@ class TransformsTest(parameterized.TestCase):
         'u': cx.field(np.ones(x.shape), x),
         'v': cx.field(np.arange(x.shape[0]), x),
     }
-    mask = transforms.Mask(
-        mask_key='mask',
-        compute_mask_method='take',
-        apply_mask_method='multiply',
+    mask = transforms.ApplyOverMasks(
+        compute_masks=transforms.ComputeMasks(
+            compute_mask_method='as_bool',
+            threshold_value=None,
+            mask_keys=('mask',),
+        ),
+        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
+        default_mask_key='mask',
+        apply_mask_method='zero_multiply',
     )
     actual = mask(inputs)
     expected = {
-        'u': inputs['u'] * inputs['mask'],
-        'v': inputs['v'] * inputs['mask'],
+        'u': inputs['u'] * ~inputs['mask'],
+        'v': inputs['v'] * ~inputs['mask'],
     }
     chex.assert_trees_all_equal(actual, expected)
 
@@ -290,9 +384,14 @@ class TransformsTest(parameterized.TestCase):
         'no_nans': cx.field(np.arange(x.shape[0]), x),  # no nan in v.
         'all_nans': cx.field(np.ones(x.shape) * np.nan, x),
     }
-    mask = transforms.Mask(
-        mask_key='mask',
-        compute_mask_method='isnan',
+    mask = transforms.ApplyOverMasks(
+        compute_masks=transforms.ComputeMasks(
+            compute_mask_method='isnan',
+            threshold_value=None,
+            mask_keys=('mask',),
+        ),
+        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
+        default_mask_key='mask',
         apply_mask_method='nan_to_0',
     )
     actual = mask(inputs)
@@ -308,6 +407,35 @@ class TransformsTest(parameterized.TestCase):
       y_ones = np.ones(y.shape)
       np.testing.assert_allclose(actual['nan_at_mask'].data[0, :], y_ones)
       np.testing.assert_allclose(actual['all_nans'].data[0], np.nan)
+
+  def test_mask_custom_function(self):
+    x = cx.LabeledAxis('x', np.linspace(0, 1, 4))
+    mask = cx.field(np.array([1.0, 0.0, 1.0, 0.0]), x)
+    inputs = {
+        'mask': mask,
+        'u': cx.field(np.array([1.0, 2.0, 3.0, 4.0]), x),
+    }
+
+    def add_ten(x, m):
+      # x + 10 over mask m
+      return cx.cmap(lambda a, b: jnp.where(b, a + 10.0, a))(x, m)
+
+    mask_transform = transforms.ApplyOverMasks(
+        compute_masks=transforms.ComputeMasks(
+            compute_mask_method='above',
+            threshold_value=0.5,
+            mask_keys=('mask',),
+        ),
+        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
+        default_mask_key='mask',
+        apply_mask_method=add_ten,
+    )
+    actual = mask_transform(inputs)
+    # Mask is True at indices 0 and 2.
+    expected = {
+        'u': cx.field(np.array([11.0, 2.0, 13.0, 4.0]), x)
+    }
+    chex.assert_trees_all_equal(actual, expected)
 
   def test_clip_wavenumbers(self):
     """Tests that ClipWavenumbers works as expected."""
@@ -467,8 +595,8 @@ class TransformsTest(parameterized.TestCase):
         'a': cx.field(np.array([1.0, 2.0, 3.0]), x),
         'b': cx.field(np.array([4.0, 5.0, 6.0]), x),
     }
-    shift_and_norm = transforms.ShiftAndNormalize(
-        shift=cx.field(1.0), scale=cx.field(2.0)
+    shift_and_norm = transforms.StandardizeFields(
+        shifts=cx.field(1.0), scales=cx.field(2.0)
     )
     apply_to_a = transforms.ApplyToKeys(transform=shift_and_norm, keys=['a'])
     actual = apply_to_a(inputs)
@@ -644,11 +772,11 @@ class TransformsTest(parameterized.TestCase):
         'coarse_temp': coarse_twos,
     }
     raw_hres_transform = transforms.Sequential([
-        transforms.Select('hres_.*'),
+        transforms.Select('hres_.*', mode='regex', strict=False),
         transforms.Rename({'hres_precip': 'precip', 'hres_temp': 'temp'}),
     ])
     ref_coarse_transform = transforms.Sequential([
-        transforms.Select('coarse_.*'),
+        transforms.Select('coarse_.*', mode='regex', strict=False),
         transforms.Rename({'coarse_precip': 'precip', 'coarse_temp': 'temp'}),
     ])
 
@@ -822,15 +950,15 @@ class TransformsTest(parameterized.TestCase):
     prescirbed_mask = transforms.Prescribed({'u': mask})
     inpaint = transforms.InpaintMaskForHarmonics(
         ylm_map=ylm_map,
-        get_masks_transform=prescirbed_mask,
+        compute_masks=prescirbed_mask,
         lowpass_filter=lowpass,
         n_iter=5,
     )
     output = inpaint(inputs)
 
-    valid_mask = ~mask_data
+    non_inpainted = ~mask_data
     np.testing.assert_allclose(
-        output['u'].data[valid_mask], u_corrupted.data[valid_mask]
+        output['u'].data[non_inpainted], u_corrupted.data[non_inpainted]
     )
 
     inpainted_values = output['u'].data[mask_data]
@@ -950,7 +1078,7 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
     np.testing.assert_array_equal(output['f'].data, expected)
 
   def test_multiple_grids_and_batching(self):
-    """Tests handling of multiple fields on different grids and batched queries."""
+    """Tests handling of fields on different grids and batched queries."""
     # Field 1 on a 10-degree grid.
     grid1 = cx.coords.compose(
         cx.LabeledAxis('longitude', np.arange(0, 40, 10)),

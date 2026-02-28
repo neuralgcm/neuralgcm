@@ -24,7 +24,6 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spatial_filters
@@ -37,19 +36,100 @@ class TransformsTest(parameterized.TestCase):
   """Tests that transforms work as expected."""
 
   def test_select(self):
-    select_transform = transforms.Select(regex_patterns='field_a|field_c')
     x = cx.SizedAxis('x', 3)
     inputs = {
-        'field_a': cx.field(np.array([1, 2, 3]), x),
-        'field_b': cx.field(np.array([4, 5, 6]), x),
-        'field_c': cx.field(np.array([7, 8, 9]), x),
+        'a': cx.field(np.array([1, 2, 3]), x),
+        'b': cx.field(np.array([4, 5, 6]), x),
+        'qual_b': cx.field(np.array([10, 11, 12]), x),
+        'qual_c': cx.field(np.array([7, 8, 9]), x),
+        'qual_d': cx.field(0),
     }
-    actual = select_transform(inputs)
-    expected = {
-        'field_a': inputs['field_a'],
-        'field_c': inputs['field_c'],
+    with self.subTest('match_single_key'):
+      select_transform = transforms.Select('a')
+      actual = select_transform(inputs)
+      expected = {'a': inputs['a']}
+      chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('match_sequence'):
+      select_transform = transforms.Select(['a', 'qual_d'])
+      actual = select_transform(inputs)
+      expected = {'a': inputs['a'], 'qual_d': inputs['qual_d']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_callable'):
+      select_transform = transforms.Select(lambda x: x.endswith('b'))
+      actual = select_transform(inputs)
+      expected = {'b': inputs['b'], 'qual_b': inputs['qual_b']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('regex'):
+      select_transform = transforms.Select('qual.*', mode='regex')
+      actual = select_transform(inputs)
+      expected = {
+          'qual_b': inputs['qual_b'],
+          'qual_c': inputs['qual_c'],
+          'qual_d': inputs['qual_d'],
+      }
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('regex_invert'):
+      select_transform = transforms.Select('qual.*', mode='regex', invert=True)
+      actual = select_transform(inputs)
+      expected = {'a': inputs['a'], 'b': inputs['b']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('raises_on_missing_keys'):
+      select_transform = transforms.Select(['a', 'missing'])
+      with self.assertRaisesRegex(KeyError, 'Missing keys'):
+        select_transform(inputs)
+
+  def test_filter_by_coord(self):
+    x = cx.SizedAxis('x', 3)
+    special = cx.LabeledAxis('special', np.array([np.e, np.pi]))
+    sigma = coordinates.SigmaLevels.equidistant(4)
+    pressure = coordinates.PressureLevels.with_13_era5_levels()
+    grid = coordinates.LonLatGrid.T21()
+
+    inputs = {
+        'field_1': cx.field(np.ones(3), x),
+        'field_2': cx.field(np.ones((3, 2)), x, special),
+        'field_3': cx.field(np.ones((3, 4)), x, sigma),
+        'field_4': cx.field(np.ones((3, 13)), x, pressure),
+        'grid_field': cx.field(np.ones(grid.shape), grid),
     }
-    chex.assert_trees_all_close(actual, expected)
+
+    with self.subTest('match_coords'):
+      filter_transform = transforms.FilterByCoord(coords=special)
+      actual = filter_transform(inputs)
+      expected = {'field_2': inputs['field_2']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_types'):
+      filter_transform = transforms.FilterByCoord(
+          types=(coordinates.SigmaLevels, coordinates.PressureLevels)
+      )
+      actual = filter_transform(inputs)
+      expected = {'field_3': inputs['field_3'], 'field_4': inputs['field_4']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_multidim_types'):
+      filter_transform = transforms.FilterByCoord(
+          types=coordinates.LonLatGrid
+      )
+      actual = filter_transform(inputs)
+      expected = {'grid_field': inputs['grid_field']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('match_both'):
+      filter_transform = transforms.FilterByCoord(
+          coords=special, types=coordinates.SigmaLevels
+      )
+      actual = filter_transform(inputs)
+      expected = {'field_2': inputs['field_2'], 'field_3': inputs['field_3']}
+      chex.assert_trees_all_close(actual, expected)
+    with self.subTest('invert'):
+      filter_transform = transforms.FilterByCoord(coords=special, invert=True)
+      actual = filter_transform(inputs)
+      expected = {
+          'field_1': inputs['field_1'],
+          'field_3': inputs['field_3'],
+          'field_4': inputs['field_4'],
+          'grid_field': inputs['grid_field'],
+      }
+      chex.assert_trees_all_close(actual, expected)
 
   def test_isel(self):
     x = cx.SizedAxis('x', 4)
@@ -123,25 +203,59 @@ class TransformsTest(parameterized.TestCase):
     }
     chex.assert_trees_all_close(actual, expected)
 
-  def test_shift_and_normalize(self):
+  def test_standardize_fields_single_key(self):
     b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 3)
     rng = jax.random.PRNGKey(0)
     data = 0.3 + 0.5 * jax.random.normal(rng, shape=(b.shape + x.shape))
     inputs = {'data': cx.field(data, b, x)}
-    normalize = transforms.ShiftAndNormalize(
-        shift=cx.field(np.mean(data)),
-        scale=cx.field(np.std(data)),
+    normalize = transforms.StandardizeFields(
+        shifts=cx.field(np.mean(data)),
+        scales=cx.field(np.std(data)),
     )
     out = normalize(inputs)
     np.testing.assert_allclose(np.mean(out['data'].data), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.std(out['data'].data), 1.0, atol=1e-6)
-    inverse_normalize = transforms.ShiftAndNormalize(
-        shift=cx.field(np.mean(data)),
-        scale=cx.field(np.std(data)),
-        reverse=True,
+    inverse_normalize = transforms.StandardizeFields(
+        shifts=cx.field(np.mean(data)),
+        scales=cx.field(np.std(data)),
+        from_normalized=True,
     )
     reconstructed = inverse_normalize(out)
     np.testing.assert_allclose(reconstructed['data'].data, data, atol=1e-6)
+
+  def test_standardize_fields_mixed_keys(self):
+    b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 3)
+    rng_a, rng_c = jax.random.split(jax.random.key(0))
+    a = 0.3 + 0.5 * jax.random.normal(rng_a, shape=(b.shape + x.shape))
+    c = 0.5 + 0.5 * jax.random.normal(rng_c, shape=(b.shape + x.shape))
+    inputs = {'a': cx.field(a, b, x), 'c': cx.field(c, b, x)}
+    normalize = transforms.StandardizeFields(
+        shifts={
+            'a': cx.field(np.mean(a)),
+            'c': cx.field(np.mean(c)),
+            'unused_ok': cx.field(np.nan)
+        },
+        scales=cx.field(np.std(a)),  # scale a and c the same.
+    )
+    out = normalize(inputs)
+    np.testing.assert_allclose(np.mean(out['a'].data), 0.0, atol=1e-6)
+    np.testing.assert_allclose(np.mean(out['c'].data), 0.0, atol=1e-6)
+    np.testing.assert_allclose(np.std(out['a'].data), 1.0, atol=1e-6)
+    np.testing.assert_allclose(
+        np.std(out['c'].data), np.std(c) / np.std(a), atol=1e-6
+    )
+
+  def test_standardize_fields_raises_on_missing_keys(self):
+    x = cx.SizedAxis('x', 3)
+    inputs = {
+        'a': cx.field(np.ones(x.shape), x), 'b': cx.field(np.ones(x.shape), x)
+    }
+    normalize = transforms.StandardizeFields(
+        shifts={'a': cx.field(np.nan)},  # b is missing.
+        scales=cx.field(1.0),
+    )
+    with self.assertRaises(KeyError):
+      normalize(inputs)
 
   def test_sequential(self):
     x = cx.SizedAxis('x', 3)
@@ -152,7 +266,7 @@ class TransformsTest(parameterized.TestCase):
         return {k: v + 1 for k, v in inputs.items()}
 
     sequential = transforms.Sequential(
-        transforms=[transforms.Select(regex_patterns=r'(?!time).*'), AddOne()]
+        [transforms.Select('time', invert=True), AddOne()]
     )
     inputs = {
         'a': cx.field(np.array([1, 2, 3]), x),
@@ -238,7 +352,7 @@ class TransformsTest(parameterized.TestCase):
               threshold_value=0.6,
               mask_keys=('mask',),
           ),
-          transform=transforms.Select(r'(?!mask).*'),
+          transform=transforms.Select('mask', invert=True),
           default_mask_key='mask',
           apply_mask_method='zero_multiply',
       )
@@ -256,7 +370,7 @@ class TransformsTest(parameterized.TestCase):
               threshold_value=0.3,
               mask_keys=('mask',),
           ),
-          transform=transforms.Select(r'(?!mask).*'),
+          transform=transforms.Select('mask', invert=True),
           default_mask_key='mask',
           apply_mask_method='zero_multiply',
       )
@@ -280,7 +394,7 @@ class TransformsTest(parameterized.TestCase):
             threshold_value=None,
             mask_keys=('mask',),
         ),
-        transform=transforms.Select(r'(?!mask).*'),
+        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
         default_mask_key='mask',
         apply_mask_method='zero_multiply',
     )
@@ -309,7 +423,7 @@ class TransformsTest(parameterized.TestCase):
             threshold_value=None,
             mask_keys=('mask',),
         ),
-        transform=transforms.Select(r'(?!mask).*'),
+        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
         default_mask_key='mask',
         apply_mask_method='nan_to_0',
     )
@@ -326,7 +440,6 @@ class TransformsTest(parameterized.TestCase):
       y_ones = np.ones(y.shape)
       np.testing.assert_allclose(actual['nan_at_mask'].data[0, :], y_ones)
       np.testing.assert_allclose(actual['all_nans'].data[0], np.nan)
-
 
   def test_mask_custom_function(self):
     x = cx.LabeledAxis('x', np.linspace(0, 1, 4))
@@ -346,7 +459,7 @@ class TransformsTest(parameterized.TestCase):
             threshold_value=0.5,
             mask_keys=('mask',),
         ),
-        transform=transforms.Select(r'(?!mask).*'),
+        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
         default_mask_key='mask',
         apply_mask_method=add_ten,
     )
@@ -515,8 +628,8 @@ class TransformsTest(parameterized.TestCase):
         'a': cx.field(np.array([1.0, 2.0, 3.0]), x),
         'b': cx.field(np.array([4.0, 5.0, 6.0]), x),
     }
-    shift_and_norm = transforms.ShiftAndNormalize(
-        shift=cx.field(1.0), scale=cx.field(2.0)
+    shift_and_norm = transforms.StandardizeFields(
+        shifts=cx.field(1.0), scales=cx.field(2.0)
     )
     apply_to_a = transforms.ApplyToKeys(transform=shift_and_norm, keys=['a'])
     actual = apply_to_a(inputs)
@@ -692,11 +805,11 @@ class TransformsTest(parameterized.TestCase):
         'coarse_temp': coarse_twos,
     }
     raw_hres_transform = transforms.Sequential([
-        transforms.Select('hres_.*'),
+        transforms.Select('hres_.*', mode='regex', strict=False),
         transforms.Rename({'hres_precip': 'precip', 'hres_temp': 'temp'}),
     ])
     ref_coarse_transform = transforms.Sequential([
-        transforms.Select('coarse_.*'),
+        transforms.Select('coarse_.*', mode='regex', strict=False),
         transforms.Rename({'coarse_precip': 'precip', 'coarse_temp': 'temp'}),
     ])
 
@@ -780,70 +893,6 @@ class TransformsTest(parameterized.TestCase):
         nodal_inputs['v_component_of_wind'],
         atol=7.5e-3,
     )
-
-  def test_constrain_precipitation_and_evaporation(self):
-    x = cx.SizedAxis('x', 4)
-    precip_key = 'precipitation'
-    evap_key = 'evaporation'
-
-    with self.subTest('diagnose_precip'):
-      p_plus_e_val = cx.field(np.array([-2.0, -1.0, 0.5, 1.0]), x)
-      evap_in = cx.field(np.array([-3.0, -0.5, -1.0, 0.2]), x)
-      p_plus_e_diag = diagnostics.InstantDiagnostic(
-          extract=lambda *args, **kwargs: {
-              'precipitation_plus_evaporation_rate': p_plus_e_val
-          },
-          extract_coords={'precipitation_plus_evaporation_rate': x},
-      )
-      p_plus_e_diag({}, prognostics={})  # call to compute and store values
-      inputs = {evap_key: evap_in}
-      transform = transforms.ConstrainPrecipitationAndEvaporation(
-          p_plus_e_diagnostic=p_plus_e_diag,
-          var_to_constrain=evap_key,
-          precipitation_key=precip_key,
-          evaporation_key=evap_key,
-      )
-      actual = transform(inputs)
-      # in evap case, result should be min(evap_in, min(p_plus_e, 0))
-      # constrained_evap=min([-3,-2],[-0.5,-1],[-1,0],[0.2,0])
-      expected_evap_val = np.array([-3.0, -1.0, -1.0, 0.0])
-      cx.testing.assert_fields_allclose(
-          actual[evap_key], cx.field(expected_evap_val, x)
-      )
-      # diagnosed precip = p_plus_e - constrained_evap
-      expected_precip_val = p_plus_e_val.data - expected_evap_val
-      cx.testing.assert_fields_allclose(
-          actual[precip_key], cx.field(expected_precip_val, x)
-      )
-
-    with self.subTest('diagnose_evap'):
-      p_plus_e_val = cx.field(np.array([-1.0, 0.5, 2.0, 3.0]), x)
-      precip_in = cx.field(np.array([-2.0, -1.0, 1.0, 4.0]), x)
-      p_plus_e_diag = diagnostics.InstantDiagnostic(
-          extract=lambda *args, **kwargs: {
-              'precipitation_plus_evaporation_rate': p_plus_e_val
-          },
-          extract_coords={'precipitation_plus_evaporation_rate': x},
-      )
-      p_plus_e_diag({}, prognostics={})  # call to compute and store values
-      inputs = {precip_key: precip_in}
-      transform = transforms.ConstrainPrecipitationAndEvaporation(
-          p_plus_e_diagnostic=p_plus_e_diag,
-          var_to_constrain=precip_key,
-          precipitation_key=precip_key,
-          evaporation_key=evap_key,
-      )
-      actual = transform(inputs)
-      # in precip case, result should be max(precip_in, max(p_plus_e, 0))
-      # constrained_precip = max([-2,0],[-1,0.5],[1,2],[4,3]) = [0, 0.5, 2, 4]
-      expected_precip_val = np.array([0.0, 0.5, 2.0, 4.0])
-      cx.testing.assert_fields_allclose(
-          actual[precip_key], cx.field(expected_precip_val, x)
-      )
-      expected_evap_val = p_plus_e_val.data - expected_precip_val
-      cx.testing.assert_fields_allclose(
-          actual[evap_key], cx.field(expected_evap_val, x)
-      )
 
   def test_inpaint_mask_for_harmonics(self):
     mesh = parallelism.Mesh()

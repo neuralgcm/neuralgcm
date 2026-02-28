@@ -19,9 +19,9 @@ from absl.testing import parameterized
 import chex
 import coordax as cx
 import jax
-import jax_datetime as jdt
 from neuralgcm.experimental.atmosphere import transforms as atmos_transforms
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_harmonics
@@ -74,7 +74,6 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         'vorticity': cx.field(np.ones(shape_3d), sigma, modal_grid),
         'divergence': cx.field(np.ones(shape_3d), sigma, modal_grid),
         'lsp': cx.field(np.ones(modal_grid.shape), modal_grid),
-        'time': cx.field(jdt.to_datetime('2025-01-09T15:00')),
     }
     self._test_feature_module(features_grads, inputs)
 
@@ -116,6 +115,70 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         'log_surface_pressure': cx.field(np.ones(ylm_grid.shape), ylm_grid),
     }
     self._test_feature_module(pressure_features, inputs)
+
+  def test_constrain_precipitation_and_evaporation(self):
+    x = cx.SizedAxis('x', 4)
+    precip_key = 'precipitation'
+    evap_key = 'evaporation'
+
+    with self.subTest('diagnose_precip'):
+      p_plus_e_val = cx.field(np.array([-2.0, -1.0, 0.5, 1.0]), x)
+      evap_in = cx.field(np.array([-3.0, -0.5, -1.0, 0.2]), x)
+      p_plus_e_diag = diagnostics.InstantDiagnostic(
+          extract=lambda *args, **kwargs: {
+              'precipitation_plus_evaporation_rate': p_plus_e_val
+          },
+          extract_coords={'precipitation_plus_evaporation_rate': x},
+      )
+      p_plus_e_diag({}, prognostics={})  # call to compute and store values
+      inputs = {evap_key: evap_in}
+      transform = atmos_transforms.ConstrainPrecipitationAndEvaporation(
+          p_plus_e_diagnostic=p_plus_e_diag,
+          var_to_constrain=evap_key,
+          precipitation_key=precip_key,
+          evaporation_key=evap_key,
+      )
+      actual = transform(inputs)
+      # in evap case, result should be min(evap_in, min(p_plus_e, 0))
+      # constrained_evap=min([-3,-2],[-0.5,-1],[-1,0],[0.2,0])
+      expected_evap_val = np.array([-3.0, -1.0, -1.0, 0.0])
+      cx.testing.assert_fields_allclose(
+          actual[evap_key], cx.field(expected_evap_val, x)
+      )
+      # diagnosed precip = p_plus_e - constrained_evap
+      expected_precip_val = p_plus_e_val.data - expected_evap_val
+      cx.testing.assert_fields_allclose(
+          actual[precip_key], cx.field(expected_precip_val, x)
+      )
+
+    with self.subTest('diagnose_evap'):
+      p_plus_e_val = cx.field(np.array([-1.0, 0.5, 2.0, 3.0]), x)
+      precip_in = cx.field(np.array([-2.0, -1.0, 1.0, 4.0]), x)
+      p_plus_e_diag = diagnostics.InstantDiagnostic(
+          extract=lambda *args, **kwargs: {
+              'precipitation_plus_evaporation_rate': p_plus_e_val
+          },
+          extract_coords={'precipitation_plus_evaporation_rate': x},
+      )
+      p_plus_e_diag({}, prognostics={})  # call to compute and store values
+      inputs = {precip_key: precip_in}
+      transform = atmos_transforms.ConstrainPrecipitationAndEvaporation(
+          p_plus_e_diagnostic=p_plus_e_diag,
+          var_to_constrain=precip_key,
+          precipitation_key=precip_key,
+          evaporation_key=evap_key,
+      )
+      actual = transform(inputs)
+      # in precip case, result should be max(precip_in, max(p_plus_e, 0))
+      # constrained_precip = max([-2,0],[-1,0.5],[1,2],[4,3]) = [0, 0.5, 2, 4]
+      expected_precip_val = np.array([0.0, 0.5, 2.0, 4.0])
+      cx.testing.assert_fields_allclose(
+          actual[precip_key], cx.field(expected_precip_val, x)
+      )
+      expected_evap_val = p_plus_e_val.data - expected_precip_val
+      cx.testing.assert_fields_allclose(
+          actual[evap_key], cx.field(expected_evap_val, x)
+      )
 
 
 if __name__ == '__main__':

@@ -152,7 +152,7 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     features = transforms.Merge({
         'radiation': feature_transforms.RadiationFeatures(self.grid),
         'latitude': feature_transforms.LatitudeFeatures(self.grid),
-        'prognostics': transforms.Select(r'(?!time).*'),
+        'prognostics': transforms.Select('time', invert=True),
     })
     parameterization = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
@@ -208,17 +208,17 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         axis=cx.DummyAxis(None, 1), loc=grid
     )
     land_features = transforms.Sequential([
-        transforms.Select('2m_temp|sea_ice_cover'),
+        transforms.Select(['2m_temp', 'sea_ice_cover']),
         mask_nans_transform,
         insert_concat_axis,
     ])
     sea_features = transforms.Sequential([
-        transforms.Select('sst|sea_ice_cover'),
+        transforms.Select(['sst', 'sea_ice_cover']),
         mask_nans_transform,
         insert_concat_axis,
     ])
     ice_features = transforms.Sequential([
-        transforms.Select('f1|sea_ice_cover'),
+        transforms.Select(['f1', 'sea_ice_cover']),
         mask_nans_transform,
         insert_concat_axis,
     ])

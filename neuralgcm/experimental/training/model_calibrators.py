@@ -128,7 +128,7 @@ class CollectNormalizationStats(ModelCalibrator):
 
     unroll_fn = nnx.jit(unroll_fn)
     stats_modules = module_utils.retrieve_subclass_modules(
-        model, transforms.StreamingStatsNorm
+        model, transforms.StreamNorm
     )
     for m in stats_modules:
       m.update_stats = True

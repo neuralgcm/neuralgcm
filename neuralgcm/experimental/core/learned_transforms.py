@@ -406,7 +406,7 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
 
 
 @nnx_compat.dataclass
-class WeightedLandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
+class LandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
   """Combines FieldTowerTransforms for land, sea and sea ice.
 
   Outputs are computed by evaluating ForwardTower for each

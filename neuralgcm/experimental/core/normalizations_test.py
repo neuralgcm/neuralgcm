@@ -21,7 +21,6 @@ import coordax as cx
 from flax import nnx
 import jax
 from jax import config  # pylint: disable=g-importing-member
-import jax.numpy as jnp
 from neuralgcm.experimental.core import normalizations
 import numpy as np
 
@@ -29,16 +28,6 @@ import numpy as np
 @functools.partial(nnx.jit, static_argnames=('update_stats',))
 def _stream_norm_apply(
     norm: normalizations.StreamNorm,
-    inputs: np.ndarray,
-    update_stats: bool = True,
-):
-  """Applies stream norm and updates state."""
-  return norm(inputs, update_stats=update_stats)
-
-
-@functools.partial(nnx.jit, static_argnames=('update_stats',))
-def _streaming_normalizer_apply(
-    norm: normalizations.StreamingNormalizer,
     inputs: dict[str, cx.Field],
     update_stats: bool = True,
     mask: cx.Field | None = None,
@@ -47,103 +36,16 @@ def _streaming_normalizer_apply(
   return norm(inputs, update_stats=update_stats, mask=mask)
 
 
-class NormalizationsTest(parameterized.TestCase):
-
-  def test_stream_norm_close_to_identity_at_init(self):
-    # we get exact identity if epsilon is zero.
-    norm = normalizations.StreamNorm((2,), feature_axes=(-2,), epsilon=0.0)
-    inputs = np.random.RandomState(0).normal(size=(10, 2, 2))
-    outputs = _stream_norm_apply(norm, inputs, update_stats=False)
-    np.testing.assert_allclose(outputs, inputs)
-
-  def test_stream_norm_first_step_estimate(self):
-    norm = normalizations.StreamNorm(epsilon=0.0)
-    inputs = np.random.RandomState(0).normal(size=(10, 2, 2))
-    _ = _stream_norm_apply(norm, inputs)
-    mean, var = norm.stats()
-    np.testing.assert_allclose(mean, np.mean(inputs), rtol=1e-6)
-    np.testing.assert_allclose(var, np.var(inputs, ddof=1), rtol=1e-6)
-
-  def test_stream_norm_normalizes_fixed_inputs(self):
-    norm = normalizations.StreamNorm(epsilon=0.0)
-    inputs = np.random.RandomState(0).normal(size=(10, 2, 2))
-    output = _stream_norm_apply(norm, inputs)
-    np.testing.assert_allclose(np.mean(output), 0.0, atol=1e-6)
-    np.testing.assert_allclose(np.var(output, ddof=1), 1.0, atol=1e-6)
-
-  @parameterized.named_parameters(
-      dict(testcase_name='μ=0.5__σ=2.5', mean=0.5, var=2.5),
-      dict(testcase_name='μ=1e-9__σ=4e-13', mean=1e-9, var=4e-13),  # clouds.
-      dict(testcase_name='μ=273__σ=40', mean=273, var=40),  # temperature.
-      dict(testcase_name='μ=1e6__σ=1e5', mean=1e6, var=1e5),  # geopotential.
-  )
-  def test_stream_norm_estimates_stats_correctly(self, mean, var):
-    n_samples = 100
-    n_levels = 4
-    shape = (n_samples, n_levels, 32, 16)
-    rng = np.random.RandomState(0)
-    stream_norm = normalizations.StreamNorm()
-    all_inputs = mean + np.sqrt(var) * rng.normal(size=shape)
-    for i in range(n_samples):
-      inputs = all_inputs[i]
-      _ = _stream_norm_apply(stream_norm, inputs)
-
-    expected_mean = all_inputs.mean()
-    expected_variance = all_inputs.var(ddof=1)
-    actual_mean, actual_variance = stream_norm.stats()
-    np.testing.assert_allclose(actual_mean, expected_mean, rtol=1e-4)
-    np.testing.assert_allclose(actual_variance, expected_variance, rtol=1e-3)
-
-  def test_stream_norm_estimates_stats_correctly_per_level(self):
-    n_samples = 100
-    n_levels = 4
-    spatial_shape = (32, 16)
-    rng = jax.random.PRNGKey(0)
-    stream_norm_per_level = normalizations.StreamNorm(
-        feature_shape=(n_levels,),
-        feature_axes=(-3,),
-        epsilon=0.0,
-    )
-    means = np.array([0.5, 1.5, 2.5, 3.5])
-    stds = np.array([2.5, 4.5, 6.5, 8.5])
-    sample_level = lambda rng, i: jax.random.normal(
-        jax.random.fold_in(rng, i), shape=(n_samples, *spatial_shape)
-    )
-    all_inputs = jnp.stack(
-        [means[i] + stds[i] * sample_level(rng, i) for i in range(n_levels)],
-        axis=1,
-    )
-    for i in range(n_samples):
-      inputs = all_inputs[i]
-      _ = _stream_norm_apply(stream_norm_per_level, inputs)
-
-    expected_mean = all_inputs.mean(axis=(0, 2, 3))
-    expected_variance = all_inputs.var(axis=(0, 2, 3), ddof=1)
-    actual_mean, actual_variance = stream_norm_per_level.stats()
-    np.testing.assert_allclose(actual_mean, expected_mean, rtol=1e-4)
-    np.testing.assert_allclose(actual_variance, expected_variance, rtol=5e-3)
-
-    with self.subTest('output_is_normalized'):
-      expected_mean = all_inputs.mean(axis=(0, 2, 3), keepdims=True)[0, ...]
-      expected_variance = all_inputs.var(axis=(0, 2, 3), keepdims=True)[0, ...]
-      inputs = all_inputs[0, ...]  # pick one of the samples.
-      actual_output = _stream_norm_apply(
-          stream_norm_per_level, inputs, update_stats=False
-      )
-      expected_output = (inputs - expected_mean) / np.sqrt(expected_variance)
-      np.testing.assert_allclose(actual_output, expected_output, atol=1e-4)
-
-
-class StreamingNormalizerTest(parameterized.TestCase):
+class StreamNormTest(parameterized.TestCase):
 
   def test_stream_norm_close_to_identity_at_init(self):
     # we get exact identity if epsilon is zero.
     s = cx.SizedAxis('s', 2)
-    norm = normalizations.StreamingNormalizer({'x': s}, epsilon=0.0)
+    norm = normalizations.StreamNorm({'x': s}, epsilon=0.0)
     rng = np.random.RandomState(0)
     inputs = {'x': cx.field(rng.normal(size=(10, 2, s.size)), 'a', 'b', s)}
 
-    outputs = _streaming_normalizer_apply(norm, inputs, update_stats=False)
+    outputs = _stream_norm_apply(norm, inputs, update_stats=False)
     np.testing.assert_allclose(outputs['x'].data, inputs['x'].data)
 
   def test_streaming_normalizer_first_step_estimate(self):
@@ -151,8 +53,8 @@ class StreamingNormalizerTest(parameterized.TestCase):
     inputs_data = np.random.RandomState(0).normal(size=(10, x.size))
     inputs = {'u': cx.field(inputs_data, 'b', x)}
 
-    normalizer = normalizations.StreamingNormalizer({'u': x}, epsilon=0.0)
-    _ = _streaming_normalizer_apply(normalizer, inputs)
+    normalizer = normalizations.StreamNorm({'u': x}, epsilon=0.0)
+    _ = _stream_norm_apply(normalizer, inputs)
     means, vars_ = normalizer.stats(ddof=1)
 
     expected_mean = np.mean(inputs_data, axis=0)
@@ -165,8 +67,8 @@ class StreamingNormalizerTest(parameterized.TestCase):
     inputs_data = np.random.RandomState(0).normal(size=(100, x.size))
     inputs = {'u': cx.field(inputs_data, 'b', x)}
 
-    normalizer = normalizations.StreamingNormalizer({'u': x}, epsilon=0.0)
-    outputs = _streaming_normalizer_apply(normalizer, inputs)
+    normalizer = normalizations.StreamNorm({'u': x}, epsilon=0.0)
+    outputs = _stream_norm_apply(normalizer, inputs)
 
     out_data = outputs['u'].data
     np.testing.assert_allclose(np.mean(out_data, axis=0), 0.0, atol=1e-5)
@@ -183,9 +85,9 @@ class StreamingNormalizerTest(parameterized.TestCase):
     }
 
     coords = {'u': cx.Scalar(), 'v': cx.Scalar()}  # scalar stats.
-    normalizer = normalizations.StreamingNormalizer(coords, epsilon=0.0)
+    normalizer = normalizations.StreamNorm(coords, epsilon=0.0)
 
-    _ = _streaming_normalizer_apply(normalizer, inputs)
+    _ = _stream_norm_apply(normalizer, inputs)
     means, vars_ = normalizer.stats(ddof=1)
 
     with self.subTest('u_stats'):
@@ -218,8 +120,8 @@ class StreamingNormalizerTest(parameterized.TestCase):
     inputs = {'u': cx.field(data, 'b', level, xy)}
     coords = {'u': level}
 
-    normalizer = normalizations.StreamingNormalizer(coords, epsilon=0.0)
-    _ = _streaming_normalizer_apply(normalizer, inputs)
+    normalizer = normalizations.StreamNorm(coords, epsilon=0.0)
+    _ = _stream_norm_apply(normalizer, inputs)
     means_out, vars_out = normalizer.stats(ddof=1)
 
     expected_mean = np.mean(data, axis=(0, 2, 3))
@@ -239,14 +141,14 @@ class StreamingNormalizerTest(parameterized.TestCase):
       all_data[k] = means[k] + np.sqrt(variances[k]) * rng.normal(size=shape)
 
     coords = {k: cx.Scalar() for k in means}
-    normalizer = normalizations.StreamingNormalizer(coords, epsilon=0.0)
+    normalizer = normalizations.StreamNorm(coords, epsilon=0.0)
 
     batch_size = 10
     for i in range(0, n_samples, batch_size):
       inputs = {}
       for k in means:
         inputs[k] = cx.field(all_data[k][i : i + batch_size], 'batch', x, y)
-      _ = _streaming_normalizer_apply(normalizer, inputs)
+      _ = _stream_norm_apply(normalizer, inputs)
 
     actual_means, actual_vars = normalizer.stats(ddof=1)
     expected_means = {k: np.mean(all_data[k]) for k in means}
@@ -296,8 +198,8 @@ class StreamingNormalizerTest(parameterized.TestCase):
     mask_arr = jax.random.bernoulli(rng_jax, p=0.8, shape=mask_shape)
     mask = cx.field(mask_arr, time_dim, x, y)
 
-    normalizer = normalizations.StreamingNormalizer(coords)
-    _ = _streaming_normalizer_apply(normalizer, inputs, mask=mask)
+    normalizer = normalizations.StreamNorm(coords)
+    _ = _stream_norm_apply(normalizer, inputs, mask=mask)
     means, vars_ = normalizer.stats(ddof=1)
 
     # We assemble expected means and variances by hand, skipping invalid data.
@@ -316,7 +218,7 @@ class StreamingNormalizerTest(parameterized.TestCase):
     np.testing.assert_allclose(vars_['u'].data, expected_var, atol=1e-5)
 
   def test_streaming_normalizer_skip_unspecified(self):
-    normalizer = normalizations.StreamingNormalizer(
+    normalizer = normalizations.StreamNorm(
         {'u': cx.Scalar()}, skip_unspecified=True, epsilon=0.0
     )
     rng = np.random.RandomState(0)
@@ -325,23 +227,23 @@ class StreamingNormalizerTest(parameterized.TestCase):
         'v': cx.field(2.0 * rng.normal(size=(100)), 'b'),
     }
 
-    _ = _streaming_normalizer_apply(normalizer, inputs)
-    outputs = _streaming_normalizer_apply(normalizer, inputs, False)
+    _ = _stream_norm_apply(normalizer, inputs)
+    outputs = _stream_norm_apply(normalizer, inputs, False)
     np.testing.assert_allclose(np.var(outputs['u'].data, ddof=1), 1, atol=1e-3)
     np.testing.assert_allclose(outputs['v'].data, inputs['v'].data, atol=1e-3)
 
     # Without skip_unspecified=True, this should raise an error.
-    normalizer_strict = normalizations.StreamingNormalizer(
+    normalizer_strict = normalizations.StreamNorm(
         {'u': cx.Scalar()}, skip_unspecified=False
     )
     with self.assertRaisesRegex(
         ValueError, 'Inputs contain keys not in coords'
     ):
-      _streaming_normalizer_apply(normalizer_strict, inputs)
+      _stream_norm_apply(normalizer_strict, inputs)
 
   def test_streaming_normalizer_allow_missing(self):
     # if allow_missing=False, inputs must contain all keys from coords.
-    normalizer = normalizations.StreamingNormalizer(
+    normalizer = normalizations.StreamNorm(
         {'u': cx.Scalar(), 'v': cx.Scalar()}, allow_missing=False
     )
     rng = np.random.RandomState(0)
@@ -349,14 +251,14 @@ class StreamingNormalizerTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, 'Inputs are missing keys in coords'
     ):
-      _streaming_normalizer_apply(normalizer, inputs)
+      _stream_norm_apply(normalizer, inputs)
 
     # if allow_missing=True, inputs can miss keys from coords.
-    normalizer_allowing_missing = normalizations.StreamingNormalizer(
+    normalizer_allowing_missing = normalizations.StreamNorm(
         {'u': cx.Scalar(), 'v': cx.Scalar()}, allow_missing=True
     )
     # should not raise error
-    _streaming_normalizer_apply(normalizer_allowing_missing, inputs)
+    _stream_norm_apply(normalizer_allowing_missing, inputs)
 
   def test_streaming_normalizer_skip_nans(self):
     x = cx.SizedAxis('x', 5)
@@ -370,10 +272,10 @@ class StreamingNormalizerTest(parameterized.TestCase):
     inputs = {'u': cx.field(inputs_data, 'b', x)}
 
     # Enable skip_nans
-    normalizer = normalizations.StreamingNormalizer(
+    normalizer = normalizations.StreamNorm(
         {'u': x}, epsilon=0.0, skip_nans=True
     )
-    _ = _streaming_normalizer_apply(normalizer, inputs)
+    _ = _stream_norm_apply(normalizer, inputs)
     means, vars_ = normalizer.stats(ddof=1)
 
     # Calculate expected stats ignoring NaNs

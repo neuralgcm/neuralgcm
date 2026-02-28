@@ -358,7 +358,7 @@ class ExtractEnergyResiduals(nnx.Module):
       prognostics: dict[str, cx.Field],
   ) -> tuple[cx.Field, cx.Field]:
     """Computes nodal kinetic energy and its tendency."""
-    velocity_from_div_curl = transforms.VelocityFromModalDivCurl(
+    velocity_from_div_curl = transforms.VelocityFromDivCurl(
         self.ylm_map
     )
     winds = velocity_from_div_curl({
@@ -582,7 +582,7 @@ class ExtractColumnEnergyBudget(nnx.Module):
     else:
       qi_nodal_field = 0.0
 
-    velocity_from_div_curl = transforms.VelocityFromModalDivCurl(self.ylm_map)
+    velocity_from_div_curl = transforms.VelocityFromDivCurl(self.ylm_map)
     winds = velocity_from_div_curl({
         'vorticity': prognostics['vorticity'],
         'divergence': prognostics['divergence'],

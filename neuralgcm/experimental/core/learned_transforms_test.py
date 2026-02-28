@@ -152,7 +152,7 @@ class ForwardTowerTransformTest(parameterized.TestCase):
     features = transforms.Merge({
         'radiation': feature_transforms.RadiationFeatures(self.grid),
         'latitude': feature_transforms.LatitudeFeatures(self.grid),
-        'prognostics': transforms.Select(r'(?!time).*'),
+        'prognostics': transforms.SelectKeys('time', invert=True),
     })
     parameterization = ForwardTowerTransform.build_using_factories(
         input_shapes=input_shapes,
@@ -201,24 +201,24 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         default_mask_key='sea_ice_cover',
         apply_mask_method='nan_to_0',
     )
-    land_mask_transform = transforms.Select('land_sea_mask')
-    sea_ice_mask_transform = transforms.Select('sea_ice_cover')
+    land_mask_transform = transforms.SelectKeys('land_sea_mask')
+    sea_ice_mask_transform = transforms.SelectKeys('sea_ice_cover')
 
-    insert_concat_axis = transforms.InsertAxis(
+    insert_concat_axis = transforms.ExpandDims(
         axis=cx.DummyAxis(None, 1), loc=grid
     )
     land_features = transforms.Sequential([
-        transforms.Select('2m_temp|sea_ice_cover'),
+        transforms.SelectKeys(['2m_temp', 'sea_ice_cover']),
         mask_nans_transform,
         insert_concat_axis,
     ])
     sea_features = transforms.Sequential([
-        transforms.Select('sst|sea_ice_cover'),
+        transforms.SelectKeys(['sst', 'sea_ice_cover']),
         mask_nans_transform,
         insert_concat_axis,
     ])
     ice_features = transforms.Sequential([
-        transforms.Select('f1|sea_ice_cover'),
+        transforms.SelectKeys(['f1', 'sea_ice_cover']),
         mask_nans_transform,
         insert_concat_axis,
     ])
@@ -260,7 +260,7 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         mesh=self.mesh,
         rngs=rngs,
     )
-    land_sea_ice = learned_transforms.WeightedLandSeaIceTowersTransform(
+    land_sea_ice = learned_transforms.LandSeaIceTowersTransform(
         land_transform=land_transform,
         sea_transform=sea_transform,
         sea_ice_transform=ice_transform,

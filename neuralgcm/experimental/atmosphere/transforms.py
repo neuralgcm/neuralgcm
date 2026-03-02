@@ -22,13 +22,13 @@ from __future__ import annotations
 import coordax as cx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
-
 
 
 @nnx_compat.dataclass
@@ -41,8 +41,6 @@ class ToModalWithDivCurl(transforms.TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     grid = self.ylm_map.nodal_grid
-    # TODO(dkochkov): Consider doing a strict check rather than filtering.
-    inputs = transforms.filter_fields_by_coordinate(inputs, grid)
     mesh = self.ylm_map.mesh
     if self.u_key not in inputs or self.v_key not in inputs:
       raise ValueError(
@@ -179,8 +177,77 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     inputs = self.pre_process(inputs)
-    ylm_grid = self.ylm_map.modal_grid
-    # TODO(dkochkov): Consider doing a strict check rather than filtering.
-    filtered_inputs = transforms.filter_fields_by_coordinate(inputs, ylm_grid)
-    nodal_features = self._extract_features(filtered_inputs)
+    nodal_features = self._extract_features(inputs)
     return nodal_features
+
+
+@nnx_compat.dataclass
+class ConstrainPrecipitationAndEvaporation(transforms.TransformABC):
+  """Constrains precipitation or evaporation based on precipitation+evaporation.
+
+  If `observation_key` is precipitation, it constrains it to be positive and
+  smaller than precipitation+evaporation if precipitation+evaporation is
+  positive. If `observation_key` is evaporation, it constrains it to be negative
+  and larger than precipitation+evaporation if precipitation+evaporation is
+  negative. Evaporation is assumed to be negative. Precipitation is assumed to
+  be positive.
+
+  Attributes:
+    p_plus_e_diagnostic: Diagnostics that computes precipitation + evaporation.
+    var_to_constrain: Key in inputs to constrain, precipitation or evaporation.
+    precipitation_key: Key for precipitation.
+    evaporation_key: Key for evaporation.
+    p_plus_e_key: Key for precipitation + evaporation in p_plus_e_diagnostic.
+  """
+
+  p_plus_e_diagnostic: diagnostics.DiagnosticModule
+  var_to_constrain: str
+  precipitation_key: str
+  evaporation_key: str
+  p_plus_e_key: str = 'precipitation_plus_evaporation_rate'
+
+  def __post_init__(self):
+    if self.var_to_constrain not in [
+        self.precipitation_key,
+        self.evaporation_key,
+    ]:
+      raise ValueError(
+          f'{self.var_to_constrain=} should be either'
+          f' {self.precipitation_key=} or {self.evaporation_key=}.'
+      )
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    """Applies constraint."""
+    diag_values = self.p_plus_e_diagnostic.diagnostic_values()
+    if self.p_plus_e_key not in diag_values:
+      raise ValueError(f'{self.p_plus_e_key} not in {diag_values.keys()=}')
+    p_plus_e = diag_values[self.p_plus_e_key]
+    if self.var_to_constrain not in inputs:
+      raise ValueError(f'{self.var_to_constrain} not in {inputs.keys()=}')
+    observation = inputs[self.var_to_constrain]
+    if self.var_to_constrain == self.precipitation_key:
+      diagnosed_key = self.evaporation_key
+      constrained_observation = cx.cmap(
+          lambda x, a, b: jnp.maximum(x, jnp.maximum(a, b))
+      )(observation, p_plus_e, 0)
+      precipitation_and_evaporation = {
+          self.var_to_constrain: constrained_observation,
+          diagnosed_key: p_plus_e - constrained_observation,
+      }
+    elif self.var_to_constrain == self.evaporation_key:
+      diagnosed_key = self.precipitation_key
+      constrained_observation = cx.cmap(
+          lambda x, a, b: jnp.minimum(x, jnp.minimum(a, b))
+      )(observation, p_plus_e, 0)
+      precipitation_and_evaporation = {
+          self.var_to_constrain: constrained_observation,
+          diagnosed_key: p_plus_e - constrained_observation,
+      }
+    else:
+      raise ValueError(
+          f'{self.var_to_constrain=} should be either'
+          f' {self.precipitation_key=} or {self.evaporation_key=}.'
+      )
+    outputs = inputs.copy()
+    outputs.update(precipitation_and_evaporation)
+    return outputs

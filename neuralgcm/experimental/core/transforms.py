@@ -942,7 +942,7 @@ class StreamingStatsNorm(TransformABC):
   """Normalizes inputs using values from streaming mean and variances.
 
   Attributes:
-    streaming_norm: StreamingNormalizer that performs the normalization.
+    stream_norm: StreamNorm that performs the normalization.
     update_stats: Whether to update the normalization statistics.
     make_masks_transform: Optional transform that produces a mask indicating
       which entries should contribute to the statistics updates.
@@ -975,7 +975,7 @@ class StreamingStatsNorm(TransformABC):
         is specified (i.e., keys in `norm_coords`). If False, all keys in
         `norm_coords` must be present in `inputs`, otherwise an error is raised.
     """
-    self.streaming_norm = normalizations.StreamingNormalizer(
+    self.stream_norm = normalizations.StreamNorm(
         norm_coords,
         epsilon=epsilon,
         skip_unspecified=skip_unspecified,
@@ -999,7 +999,7 @@ class StreamingStatsNorm(TransformABC):
         [mask] = list(mask.values())
     else:
       mask = None
-    return self.streaming_norm(inputs, self.update_stats, mask=mask)
+    return self.stream_norm(inputs, self.update_stats, mask=mask)
 
   @classmethod
   def for_inputs_struct(

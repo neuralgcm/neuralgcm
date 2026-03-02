@@ -144,7 +144,7 @@ class TransformObservationOperatorTest(parameterized.TestCase):
     self.inputs = {
         k: cx.field(np.ones(full_coord.shape), full_coord) for k in input_names
     }
-    feature_module = transforms.Select('|'.join(input_names))
+    feature_module = transforms.Select(input_names)
     net_factory = functools.partial(
         standard_layers.Mlp.uniform, hidden_size=6, hidden_layers=2
     )

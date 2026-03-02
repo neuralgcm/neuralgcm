@@ -189,26 +189,121 @@ class RavelDims(TransformABC):
     return {k: ravel_fn(v).tag(self.out_dim) for k, v in untagged.items()}
 
 
-@nnx_compat.dataclass
 class Select(TransformABC):
-  """Selects only fields whose keys match against regex.
+  """Selects subset of keys in the input dictionary.
 
   Attributes:
-    regex_patterns: regular expression pattern that specifies the set of keys
-      from `inputs` that will be returned by __call__ method.
+    keys: Keys to select. Can be a string, sequence of strings, or a callable.
+    invert: If True, invert the selection.
+    mode: Selection mode for string ``keys``. Can be 'match' or 'regex'.
+    strict: If True, raise an error if any of the keys are not found in inputs.
   """
 
-  regex_patterns: str
-
-  def __call__(
+  def __init__(
       self,
-      inputs: dict[str, cx.Field],
-  ) -> dict[str, cx.Field]:
-    outputs = {}
-    for k, v in inputs.items():
-      if re.fullmatch(self.regex_patterns, k):
-        outputs[k] = v
-    return outputs
+      keys: str | Sequence[str] | Callable[[str], bool],
+      invert: bool = False,
+      mode: Literal['match', 'regex'] = 'match',
+      strict: bool = True,
+  ):
+    if isinstance(keys, str):
+      self.keys = tuple([keys])
+    elif isinstance(keys, Sequence):
+      self.keys = tuple(keys)
+    elif callable(keys):
+      if mode == 'regex':
+        raise TypeError(f'mode must be "match" when using {type(keys)=}.')
+      self.keys = keys
+    else:
+      raise TypeError(
+          "The 'keys' parameter must be a str, sequence of str, or a callable."
+      )
+    if mode not in ['match', 'regex']:
+      raise ValueError(f'Unknown mode: {mode}')
+    self.invert = invert
+    self.mode = mode
+    self.strict = strict
+
+  def __call__(self, data: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    selected_keys = set()
+    if callable(self.keys):
+      selected_keys = {k for k in data.keys() if self.keys(k)}
+    elif self.mode == 'regex':
+      for pattern in self.keys:
+        matched = {k for k in data.keys() if re.fullmatch(pattern, k)}
+        if self.strict and not matched:
+          raise KeyError(
+              f'Select strict mode failed. Regex pattern {pattern!r} '
+              'did not match any keys.'
+          )
+        selected_keys.update(matched)
+    elif self.mode == 'match':
+      selected_keys = set(self.keys)
+      if self.strict:
+        missing = selected_keys - data.keys()
+        if missing:
+          raise KeyError(f'Select strict mode failed. Missing keys: {missing}')
+      selected_keys = selected_keys.intersection(data.keys())
+    else:
+      raise ValueError(f'Unknown mode: {self.mode}')
+
+    # Apply inversion logic if needed.
+    if self.invert:
+      final_keys = set(data.keys()) - selected_keys
+    else:
+      final_keys = selected_keys
+    return {k: v for k, v in data.items() if k in final_keys}
+
+
+@nnx_compat.dataclass
+class FilterByCoord(TransformABC):
+  """Selects subset of fields that match specified coordinate or type.
+
+  Attributes:
+    coords: A coordinate or a sequence of coordinates. If provided, the field
+      must contain at least one of these coordinates to be selected.
+    types: A type of coordinate or sequence of types. If provided, the field
+      must contain a coordinate of at least one of these types to be selected.
+    invert: If True, invert the selection.
+  """
+
+  coords: cx.Coordinate | Sequence[cx.Coordinate] | None = None
+  types: type[cx.Coordinate] | Sequence[type[cx.Coordinate]] | None = None
+  invert: bool = False
+
+  def __post_init__(self):
+    if self.coords is None and self.types is None:
+      raise ValueError('At least one of `coords` or `types` must be provided.')
+    # Standardize `coords` and `types` representation.
+    coords = () if self.coords is None else self.coords
+    self.coords = (coords,) if cx.is_coord(coords) else tuple(coords)
+    types = () if self.types is None else self.types
+    self.types = (types,) if isinstance(types, type) else tuple(types)
+
+  def __call__(self, data: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    selected_keys = set()
+    for k, v in data.items():
+      match = False
+      v_axes = set(v.coordinate.axes)
+      v_components = set(cx.coords.canonicalize(*v.coordinate.axes))
+      for c in self.coords:
+        if set(c.axes).issubset(v_axes):
+          match = True
+          break
+      if not match:
+        for t in self.types:
+          if any(isinstance(ax, t) for ax in v_components):
+            match = True
+            break
+      if match:
+        selected_keys.add(k)
+
+    if self.invert:
+      final_keys = set(data.keys()) - selected_keys
+    else:
+      final_keys = selected_keys
+
+    return {k: v for k, v in data.items() if k in final_keys}
 
 
 @nnx_compat.dataclass

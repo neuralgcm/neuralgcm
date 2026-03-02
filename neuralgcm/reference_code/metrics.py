@@ -370,7 +370,7 @@ class BatchMeanSquaredBias(metrics_base.Loss):
       self,
       trajectory_spec: metrics_util.TrajectorySpec,
       components: Sequence[linear_transforms.LinearTransformConstructor] = (),
-      observation_fn: ... = _spectral_amplitude,
+      observation_fn=_spectral_amplitude,
       getter: Callable[[Pytree], Pytree] = metrics_util.filter_sim_time,
       is_nodal: bool = False,
       is_encoded: bool = False,

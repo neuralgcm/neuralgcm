@@ -337,7 +337,7 @@ class DynamicalSystem(hk.Module):
 
   def trajectory(
       self,
-      x: ...,
+      x,
       outer_steps: int,
       inner_steps: int = 1,
       *,
@@ -380,10 +380,10 @@ class ModularStepModel(DynamicalSystem):
       aux_features: Dict[str, Any],
       input_coords: coordinate_systems.CoordinateSystem,
       output_coords: coordinate_systems.CoordinateSystem,
-      advance_module: ... = gin.REQUIRED,
-      encoder_module: ... = gin.REQUIRED,
-      decoder_module: ... = gin.REQUIRED,
-      forcing_module: ... = forcings.NoForcing,
+      advance_module=gin.REQUIRED,
+      encoder_module=gin.REQUIRED,
+      decoder_module=gin.REQUIRED,
+      forcing_module=forcings.NoForcing,
       name: Optional[str] = None,
   ):
     super().__init__(
@@ -433,10 +433,10 @@ class StochasticModularStepModel(DynamicalSystem):
       aux_features: Dict[str, Any],
       input_coords: coordinate_systems.CoordinateSystem,
       output_coords: coordinate_systems.CoordinateSystem,
-      advance_module: ... = gin.REQUIRED,
-      encoder_module: ... = gin.REQUIRED,
-      decoder_module: ... = gin.REQUIRED,
-      forcing_module: ... = forcings.NoForcing,
+      advance_module=gin.REQUIRED,
+      encoder_module=gin.REQUIRED,
+      decoder_module=gin.REQUIRED,
+      forcing_module=forcings.NoForcing,
       name: Optional[str] = None,
   ):
     super().__init__(

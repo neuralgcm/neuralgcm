@@ -41,7 +41,7 @@ class EmptyTransform(hk.Module):
     del args  # unused.
     super().__init__(name=name)
 
-  def __call__(self, inputs: ...) -> typing.Pytree:
+  def __call__(self, inputs) -> typing.Pytree:
     return {}
 
 

@@ -204,25 +204,59 @@ class TransformsTest(parameterized.TestCase):
     }
     chex.assert_trees_all_close(actual, expected)
 
-  def test_shift_and_normalize(self):
+  def test_standardize_fields_single_key(self):
     b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 3)
     rng = jax.random.PRNGKey(0)
     data = 0.3 + 0.5 * jax.random.normal(rng, shape=(b.shape + x.shape))
     inputs = {'data': cx.field(data, b, x)}
-    normalize = transforms.ShiftAndNormalize(
-        shift=cx.field(np.mean(data)),
-        scale=cx.field(np.std(data)),
+    normalize = transforms.StandardizeFields(
+        shifts=cx.field(np.mean(data)),
+        scales=cx.field(np.std(data)),
     )
     out = normalize(inputs)
     np.testing.assert_allclose(np.mean(out['data'].data), 0.0, atol=1e-6)
     np.testing.assert_allclose(np.std(out['data'].data), 1.0, atol=1e-6)
-    inverse_normalize = transforms.ShiftAndNormalize(
-        shift=cx.field(np.mean(data)),
-        scale=cx.field(np.std(data)),
-        reverse=True,
+    inverse_normalize = transforms.StandardizeFields(
+        shifts=cx.field(np.mean(data)),
+        scales=cx.field(np.std(data)),
+        from_normalized=True,
     )
     reconstructed = inverse_normalize(out)
     np.testing.assert_allclose(reconstructed['data'].data, data, atol=1e-6)
+
+  def test_standardize_fields_mixed_keys(self):
+    b, x = cx.SizedAxis('batch', 20), cx.SizedAxis('x', 3)
+    rng_a, rng_c = jax.random.split(jax.random.key(0))
+    a = 0.3 + 0.5 * jax.random.normal(rng_a, shape=(b.shape + x.shape))
+    c = 0.5 + 0.5 * jax.random.normal(rng_c, shape=(b.shape + x.shape))
+    inputs = {'a': cx.field(a, b, x), 'c': cx.field(c, b, x)}
+    normalize = transforms.StandardizeFields(
+        shifts={
+            'a': cx.field(np.mean(a)),
+            'c': cx.field(np.mean(c)),
+            'unused_ok': cx.field(np.nan)
+        },
+        scales=cx.field(np.std(a)),  # scale a and c the same.
+    )
+    out = normalize(inputs)
+    np.testing.assert_allclose(np.mean(out['a'].data), 0.0, atol=1e-6)
+    np.testing.assert_allclose(np.mean(out['c'].data), 0.0, atol=1e-6)
+    np.testing.assert_allclose(np.std(out['a'].data), 1.0, atol=1e-6)
+    np.testing.assert_allclose(
+        np.std(out['c'].data), np.std(c) / np.std(a), atol=1e-6
+    )
+
+  def test_standardize_fields_raises_on_missing_keys(self):
+    x = cx.SizedAxis('x', 3)
+    inputs = {
+        'a': cx.field(np.ones(x.shape), x), 'b': cx.field(np.ones(x.shape), x)
+    }
+    normalize = transforms.StandardizeFields(
+        shifts={'a': cx.field(np.nan)},  # b is missing.
+        scales=cx.field(1.0),
+    )
+    with self.assertRaises(KeyError):
+      normalize(inputs)
 
   def test_sequential(self):
     x = cx.SizedAxis('x', 3)
@@ -595,8 +629,8 @@ class TransformsTest(parameterized.TestCase):
         'a': cx.field(np.array([1.0, 2.0, 3.0]), x),
         'b': cx.field(np.array([4.0, 5.0, 6.0]), x),
     }
-    shift_and_norm = transforms.ShiftAndNormalize(
-        shift=cx.field(1.0), scale=cx.field(2.0)
+    shift_and_norm = transforms.StandardizeFields(
+        shifts=cx.field(1.0), scales=cx.field(2.0)
     )
     apply_to_a = transforms.ApplyToKeys(transform=shift_and_norm, keys=['a'])
     actual = apply_to_a(inputs)

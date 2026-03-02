@@ -25,6 +25,7 @@ These transformations are most often used in two different settings:
 from __future__ import annotations
 
 import abc
+import collections
 import dataclasses
 import itertools
 import re
@@ -43,7 +44,6 @@ from neuralgcm.experimental.core import interpolators
 from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import normalizations
 from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
@@ -616,73 +616,44 @@ class Scale(TransformABC):
     return {k: scale_fn(v) for k, v in inputs.items()}
 
 
-class ShiftAndNormalize(TransformABC):
-  """Applies (x - shift) / scale to all input fields when reverse is False.
+class StandardizeFields(TransformABC):
+  """Shifts and scales inputs.
+
+  This transform applies shifts and scales. It can be applied globally
+  or on a per key basis.
 
   Attributes:
-    shift: The shift to use for centering input fields/
-    scale: The scale to use for normalization.
-    reverse: Whether to perform the inverse transformation.
+    shifts: The shifts to use for centering input fields.
+    scales: The scales to use for normalization.
+    from_normalized: Whether to invert the transform normalized --> original.
   """
 
   def __init__(
       self,
-      shift: cx.Field,
-      scale: cx.Field,
-      reverse: bool = False,
+      shifts: cx.Field | dict[str, cx.Field],
+      scales: cx.Field | dict[str, cx.Field],
+      from_normalized: bool = False,
   ):
-    self.shift = TransformParams(shift)
-    self.scale = TransformParams(scale)
-    self.reverse = reverse
-
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    if self.reverse:
-      scale_fn = lambda x, shift, scale: x * scale + shift
-    else:
-      scale_fn = lambda x, shift, scale: (x - shift) / scale
-    shift, scale = self.shift.get_value(), self.scale.get_value()
-    return {k: scale_fn(v, shift, scale) for k, v in inputs.items()}
-
-
-class ShiftAndNormalizePerKey(TransformABC):
-  """Shifts and then scales inputs per key.
-
-  This transform applies shifts and scales on a per key basis. The specified
-  `shifts` and `scales` can be a superset of input values, but if a key in the
-  inputs is not present in the shifts/scales, then an error is raised.
-  """
-
-  def __init__(
-      self,
-      shifts: dict[str, cx.Field],
-      scales: dict[str, cx.Field],
-      global_scale: float | None = None,  # TODO(dkochkov): deprecate this.
-      reverse: bool = False,
-  ):
-    if global_scale is not None:
-      scales = {k: global_scale * v for k, v in scales.items()}
     self.shifts = TransformParams(shifts)
     self.scales = TransformParams(scales)
-    self.reverse = reverse
+    self.from_normalized = from_normalized
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    shifts = pytree_utils.replace_with_matching_or_default(
-        inputs,
-        self.shifts.get_value(),
-        default=None,
-        check_used_all_replace_keys=False,
-    )
-    scales = pytree_utils.replace_with_matching_or_default(
-        inputs,
-        self.scales.get_value(),
-        default=None,
-        check_used_all_replace_keys=False,
-    )
-    if self.reverse:
+    shifts = self.shifts.get_value()
+    scales = self.scales.get_value()
+    if self.from_normalized:
       scale_fn = lambda x, shift, scale: x * scale + shift
     else:
       scale_fn = lambda x, shift, scale: (x - shift) / scale
-    return {k: scale_fn(v, shifts[k], scales[k]) for k, v in inputs.items()}
+
+    if isinstance(shifts, dict) or isinstance(scales, dict):
+      same_value_dict = lambda x: collections.defaultdict(lambda: x)
+      is_dict = lambda x: isinstance(x, dict)
+      shifts = shifts if is_dict(shifts) else same_value_dict(shifts)
+      scales = scales if is_dict(scales) else same_value_dict(scales)
+      return {k: scale_fn(v, shifts[k], scales[k]) for k, v in inputs.items()}
+    else:
+      return {k: scale_fn(v, shifts, scales) for k, v in inputs.items()}
 
 
 @nnx_compat.dataclass

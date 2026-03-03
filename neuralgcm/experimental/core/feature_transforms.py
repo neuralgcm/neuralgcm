@@ -82,7 +82,7 @@ class LatitudeFeatures(transforms.TransformABC):
 
 
 @nnx_compat.dataclass
-class DiagnosticValueTransform(transforms.TransformABC):
+class DiagnosticValueFeatures(transforms.TransformABC):
   """Returns diagnostic values to be used as features."""
 
   diagnostic_module: diagnostics.DiagnosticModule
@@ -135,7 +135,7 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
   """Returns orography features and their gradients."""
 
   orography_module: orographies.ModalOrography
-  compute_gradients_transform: transforms.ToModalWithFilteredGradients
+  compute_gradients_transform: transforms.ToModalWithDerivatives
   include_raw_orography: bool = True
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
@@ -167,8 +167,8 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
     return features
 
 
-class CoordFeatures(transforms.TransformABC):
-  """Returns features that are static in space and time."""
+class ParamFeatures(transforms.TransformABC):
+  """Returns, potentially learnable, features on fixed coordinates."""
 
   def __init__(
       self,

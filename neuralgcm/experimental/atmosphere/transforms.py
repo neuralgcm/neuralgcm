@@ -67,15 +67,21 @@ class ToModalWithDivCurl(transforms.TransformABC):
 
 
 @nnx_compat.dataclass
-class PressureOnLevelsFeatures(transforms.TransformABC):
+class PressureFeatures(transforms.TransformABC):
   """Feature module that computes pressure."""
 
   ylm_map: spherical_harmonics.FixedYlmMapping
-  levels: coordinates.SigmaLevels | coordinates.HybridLevels
+  levels: (
+      coordinates.SigmaLevels
+      | coordinates.HybridLevels
+      | coordinates.PressureLevels
+  )
   feature_name: str = 'pressure'
   sim_units: units.SimUnits | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    if isinstance(self.levels, coordinates.PressureLevels):
+      return {self.feature_name: self.levels.fields['pressure']}
     log_surface_p = self.ylm_map.to_nodal(inputs['log_surface_pressure'])
     surface_p = cx.cmap(jnp.exp)(log_surface_p)
     if isinstance(self.levels, coordinates.SigmaLevels):
@@ -97,7 +103,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
       surface_field_names: tuple[str, ...] = tuple(),
       volume_field_names: tuple[str, ...] = tuple(),
       compute_gradients_transform: (
-          transforms.ToModalWithFilteredGradients | None
+          transforms.ToModalWithDerivatives | None
       ) = None,
       inputs_are_modal: bool = True,
       u_key: str = 'u_component_of_wind',
@@ -182,7 +188,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
 
 
 @nnx_compat.dataclass
-class ConstrainPrecipitationAndEvaporation(transforms.TransformABC):
+class ConstrainWaterBudget(transforms.TransformABC):
   """Constrains precipitation or evaporation based on precipitation+evaporation.
 
   If `observation_key` is precipitation, it constrains it to be positive and

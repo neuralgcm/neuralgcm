@@ -52,7 +52,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         partition_schema_key=None,
         mesh=parallelism.Mesh(),
     )
-    with_gradients_transform = transforms.ToModalWithFilteredGradients(
+    with_gradients_transform = transforms.ToModalWithDerivatives(
         ylm_map,
         filter_attenuations=[2.0],
     )
@@ -86,7 +86,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         partition_schema_key=None,
         mesh=parallelism.Mesh(None),
     )
-    pressure_features = atmos_transforms.PressureOnLevelsFeatures(
+    pressure_features = atmos_transforms.PressureFeatures(
         ylm_map=ylm_map,
         levels=sigma,
     )
@@ -107,7 +107,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
         partition_schema_key=None,
         mesh=parallelism.Mesh(None),
     )
-    pressure_features = atmos_transforms.PressureOnLevelsFeatures(
+    pressure_features = atmos_transforms.PressureFeatures(
         ylm_map=ylm_map,
         levels=hybrid,
     )
@@ -132,7 +132,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
       )
       p_plus_e_diag({}, prognostics={})  # call to compute and store values
       inputs = {evap_key: evap_in}
-      transform = atmos_transforms.ConstrainPrecipitationAndEvaporation(
+      transform = atmos_transforms.ConstrainWaterBudget(
           p_plus_e_diagnostic=p_plus_e_diag,
           var_to_constrain=evap_key,
           precipitation_key=precip_key,
@@ -162,7 +162,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
       )
       p_plus_e_diag({}, prognostics={})  # call to compute and store values
       inputs = {precip_key: precip_in}
-      transform = atmos_transforms.ConstrainPrecipitationAndEvaporation(
+      transform = atmos_transforms.ConstrainWaterBudget(
           p_plus_e_diagnostic=p_plus_e_diag,
           var_to_constrain=precip_key,
           precipitation_key=precip_key,

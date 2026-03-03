@@ -94,7 +94,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     )
     orography_features = feature_transforms.OrographyWithGradsFeatures(
         orography_module=orography,
-        compute_gradients_transform=transforms.ToModalWithFilteredGradients(
+        compute_gradients_transform=transforms.ToModalWithDerivatives(
             ylm_map,
             filter_attenuations=[2.0],
         ),
@@ -175,7 +175,7 @@ class FeatureTransformsTest(parameterized.TestCase):
         'surface_embedings': cx.coords.compose(z, grid),
         'land_sea_mask': grid,
     }
-    coord_features = feature_transforms.CoordFeatures(coords, rngs=nnx.Rngs(1))
+    coord_features = feature_transforms.ParamFeatures(coords, rngs=nnx.Rngs(1))
     self._test_feature_module(coord_features, None)
 
   @parameterized.named_parameters(

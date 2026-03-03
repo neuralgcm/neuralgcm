@@ -127,7 +127,7 @@ def get_temperature_linearization_transform(
           keys=[abs_temperature_key],
           include_remaining=True,
       ),
-      transforms.Rename(rename_dict={abs_temperature_key: del_temperature_key}),
+      transforms.RenameKeys(rename_dict={abs_temperature_key: del_temperature_key}),
   ])
 
 
@@ -156,7 +156,7 @@ def get_temperature_delinearization_transform(
           keys=[del_temperature_key],
           include_remaining=True,
       ),
-      transforms.Rename(rename_dict={del_temperature_key: abs_temperature_key}),
+      transforms.RenameKeys(rename_dict={del_temperature_key: abs_temperature_key}),
   ])
 
 
@@ -230,7 +230,7 @@ class PrimitiveEquations(time_integrators.ImplicitExplicitODE):
     self.delinearize_transform = get_temperature_delinearization_transform(
         ref_temperatures=reference_temperatures
     )
-    self.linear_to_absolute_rename = transforms.Rename(
+    self.linear_to_absolute_rename = transforms.RenameKeys(
         rename_dict={'temperature_variation': 'temperature'}
     )
     if isinstance(levels, coordinates.SigmaLevels):
@@ -425,7 +425,7 @@ class HeldSuarezForcing(time_integrators.ExplicitODE):
     self.linearize_transform = get_temperature_linearization_transform(
         ref_temperatures=reference_temperatures
     )
-    self.linear_to_absolute_rename = transforms.Rename(
+    self.linear_to_absolute_rename = transforms.RenameKeys(
         rename_dict={'temperature_variation': 'temperature'}
     )
 

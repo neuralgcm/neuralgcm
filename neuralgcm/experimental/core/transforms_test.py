@@ -45,23 +45,23 @@ class TransformsTest(parameterized.TestCase):
         'qual_d': cx.field(0),
     }
     with self.subTest('match_single_key'):
-      select_transform = transforms.Select('a')
+      select_transform = transforms.SelectKeys('a')
       actual = select_transform(inputs)
       expected = {'a': inputs['a']}
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('match_sequence'):
-      select_transform = transforms.Select(['a', 'qual_d'])
+      select_transform = transforms.SelectKeys(['a', 'qual_d'])
       actual = select_transform(inputs)
       expected = {'a': inputs['a'], 'qual_d': inputs['qual_d']}
       chex.assert_trees_all_close(actual, expected)
     with self.subTest('match_callable'):
-      select_transform = transforms.Select(lambda x: x.endswith('b'))
+      select_transform = transforms.SelectKeys(lambda x: x.endswith('b'))
       actual = select_transform(inputs)
       expected = {'b': inputs['b'], 'qual_b': inputs['qual_b']}
       chex.assert_trees_all_close(actual, expected)
     with self.subTest('regex'):
-      select_transform = transforms.Select('qual.*', mode='regex')
+      select_transform = transforms.SelectKeys('qual.*', mode='regex')
       actual = select_transform(inputs)
       expected = {
           'qual_b': inputs['qual_b'],
@@ -70,12 +70,14 @@ class TransformsTest(parameterized.TestCase):
       }
       chex.assert_trees_all_close(actual, expected)
     with self.subTest('regex_invert'):
-      select_transform = transforms.Select('qual.*', mode='regex', invert=True)
+      select_transform = transforms.SelectKeys(
+          'qual.*', mode='regex', invert=True
+      )
       actual = select_transform(inputs)
       expected = {'a': inputs['a'], 'b': inputs['b']}
       chex.assert_trees_all_close(actual, expected)
     with self.subTest('raises_on_missing_keys'):
-      select_transform = transforms.Select(['a', 'missing'])
+      select_transform = transforms.SelectKeys(['a', 'missing'])
       with self.assertRaisesRegex(KeyError, 'Missing keys'):
         select_transform(inputs)
 
@@ -107,9 +109,7 @@ class TransformsTest(parameterized.TestCase):
       expected = {'field_3': inputs['field_3'], 'field_4': inputs['field_4']}
       chex.assert_trees_all_close(actual, expected)
     with self.subTest('match_multidim_types'):
-      filter_transform = transforms.FilterByCoord(
-          types=coordinates.LonLatGrid
-      )
+      filter_transform = transforms.FilterByCoord(types=coordinates.LonLatGrid)
       actual = filter_transform(inputs)
       expected = {'grid_field': inputs['grid_field']}
       chex.assert_trees_all_close(actual, expected)
@@ -233,7 +233,7 @@ class TransformsTest(parameterized.TestCase):
         shifts={
             'a': cx.field(np.mean(a)),
             'c': cx.field(np.mean(c)),
-            'unused_ok': cx.field(np.nan)
+            'unused_ok': cx.field(np.nan),
         },
         scales=cx.field(np.std(a)),  # scale a and c the same.
     )
@@ -248,7 +248,8 @@ class TransformsTest(parameterized.TestCase):
   def test_standardize_fields_raises_on_missing_keys(self):
     x = cx.SizedAxis('x', 3)
     inputs = {
-        'a': cx.field(np.ones(x.shape), x), 'b': cx.field(np.ones(x.shape), x)
+        'a': cx.field(np.ones(x.shape), x),
+        'b': cx.field(np.ones(x.shape), x),
     }
     normalize = transforms.StandardizeFields(
         shifts={'a': cx.field(np.nan)},  # b is missing.
@@ -266,7 +267,7 @@ class TransformsTest(parameterized.TestCase):
         return {k: v + 1 for k, v in inputs.items()}
 
     sequential = transforms.Sequential(
-        [transforms.Select('time', invert=True), AddOne()]
+        [transforms.SelectKeys('time', invert=True), AddOne()]
     )
     inputs = {
         'a': cx.field(np.array([1, 2, 3]), x),
@@ -283,7 +284,7 @@ class TransformsTest(parameterized.TestCase):
     inputs = {'a': cx.field(np.arange(4)[:, None] + np.arange(5)[None, :], xy)}
 
     with self.subTest('standard_mean'):
-      transform = transforms.MeanOverAxes(dims=('x', 'y'))
+      transform = transforms.ReduceMean(dims=('x', 'y'))
       actual = transform(inputs)
       expected = {'a': cx.field(3.5)}
       chex.assert_trees_all_close(actual, expected)
@@ -298,13 +299,13 @@ class TransformsTest(parameterized.TestCase):
     inputs_sphere = {'u': cx.field(data, grid)}
 
     with self.subTest('spherical_mean_lat_lon'):
-      transform = transforms.MeanOverAxes(dims=('latitude', 'longitude'))
+      transform = transforms.ReduceMean(dims=('latitude', 'longitude'))
       actual = transform(inputs_sphere)
       expected = {'u': cx.field(3.0)}
       chex.assert_trees_all_close(actual, expected, atol=1e-6)
 
     with self.subTest('spherical_mean_lon'):
-      transform = transforms.MeanOverAxes(dims=('longitude',))
+      transform = transforms.ReduceMean(dims=('longitude',))
       actual = transform(inputs_sphere)
       # Mean over lon of sin(lon) is 0.
       # Mean over lon of 3.0 + sin(lat) is 3.0 + sin(lat).
@@ -313,7 +314,7 @@ class TransformsTest(parameterized.TestCase):
       chex.assert_trees_all_close(actual, expected, atol=1e-6)
 
     with self.subTest('spherical_mean_lat'):
-      transform = transforms.MeanOverAxes(dims=('latitude',))
+      transform = transforms.ReduceMean(dims=('latitude',))
       actual = transform(inputs_sphere)
       # Mean over lat of sin(lat) is 0.
       # Mean over lat of 3.0 + sin(lon) is 3.0 + sin(lon).
@@ -331,7 +332,7 @@ class TransformsTest(parameterized.TestCase):
       # Should average over lat (spatial) then mean over pressure (arithmetic).
       # Spatial mean of a constant field is the constant.
       # Mean of 1.0 and 2.0 is 1.5.
-      transform = transforms.MeanOverAxes(dims=('latitude', 'pressure'))
+      transform = transforms.ReduceMean(dims=('latitude', 'pressure'))
       actual = transform(inputs_sphere_p)
       expected = {
           'u': cx.field(np.ones(grid.axes[0].shape) * 1.5, grid.axes[0])
@@ -352,7 +353,7 @@ class TransformsTest(parameterized.TestCase):
               threshold_value=0.6,
               mask_keys=('mask',),
           ),
-          transform=transforms.Select('mask', invert=True),
+          transform=transforms.SelectKeys('mask', invert=True),
           default_mask_key='mask',
           apply_mask_method='zero_multiply',
       )
@@ -370,7 +371,7 @@ class TransformsTest(parameterized.TestCase):
               threshold_value=0.3,
               mask_keys=('mask',),
           ),
-          transform=transforms.Select('mask', invert=True),
+          transform=transforms.SelectKeys('mask', invert=True),
           default_mask_key='mask',
           apply_mask_method='zero_multiply',
       )
@@ -394,7 +395,9 @@ class TransformsTest(parameterized.TestCase):
             threshold_value=None,
             mask_keys=('mask',),
         ),
-        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
+        transform=transforms.SelectKeys(
+            r'(?!mask).*', mode='regex', strict=False
+        ),
         default_mask_key='mask',
         apply_mask_method='zero_multiply',
     )
@@ -423,7 +426,9 @@ class TransformsTest(parameterized.TestCase):
             threshold_value=None,
             mask_keys=('mask',),
         ),
-        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
+        transform=transforms.SelectKeys(
+            r'(?!mask).*', mode='regex', strict=False
+        ),
         default_mask_key='mask',
         apply_mask_method='nan_to_0',
     )
@@ -459,15 +464,15 @@ class TransformsTest(parameterized.TestCase):
             threshold_value=0.5,
             mask_keys=('mask',),
         ),
-        transform=transforms.Select(r'(?!mask).*', mode='regex', strict=False),
+        transform=transforms.SelectKeys(
+            r'(?!mask).*', mode='regex', strict=False
+        ),
         default_mask_key='mask',
         apply_mask_method=add_ten,
     )
     actual = mask_transform(inputs)
     # Mask is True at indices 0 and 2.
-    expected = {
-        'u': cx.field(np.array([11.0, 2.0, 13.0, 4.0]), x)
-    }
+    expected = {'u': cx.field(np.array([11.0, 2.0, 13.0, 4.0]), x)}
     chex.assert_trees_all_equal(actual, expected)
 
   def test_clip_wavenumbers(self):
@@ -598,27 +603,27 @@ class TransformsTest(parameterized.TestCase):
 
     with self.subTest('insert_by_index'):
       # Insert 'y' at index 0 (before 'x')
-      insert_y = transforms.InsertAxis(axis=y, loc=0)
+      insert_y = transforms.ExpandDims(axis=y, loc=0)
       actual = insert_y(inputs)
       expected = {'field_a': cx.field(np.array([[1, 2, 3], [1, 2, 3]]), y, x)}
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('insert_by_name'):
       # Insert 'y' at loc 'x' (before 'x')
-      insert_y = transforms.InsertAxis(axis=y, loc='x')
+      insert_y = transforms.ExpandDims(axis=y, loc='x')
       actual = insert_y(inputs)
       expected = {'field_a': cx.field(np.array([[1, 2, 3], [1, 2, 3]]), y, x)}
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('insert_at_end'):
       # Insert 'y' at index 1 (after 'x')
-      insert_y = transforms.InsertAxis(axis=y, loc=1)
+      insert_y = transforms.ExpandDims(axis=y, loc=1)
       actual = insert_y(inputs)
       expected = {'field_a': cx.field(np.array([[1, 1], [2, 2], [3, 3]]), x, y)}
       chex.assert_trees_all_close(actual, expected)
 
     with self.subTest('raises_if_missing'):
-      insert_y = transforms.InsertAxis(axis=y, loc='z')
+      insert_y = transforms.ExpandDims(axis=y, loc='z')
       with self.assertRaisesRegex(ValueError, 'Axis z not present'):
         insert_y(inputs)
 
@@ -674,9 +679,7 @@ class TransformsTest(parameterized.TestCase):
         'u': cx.field(np.ones(time.shape + nodal_grid.shape), time, nodal_grid),
     }
     expected = to_modal(inputs)
-    scan_transform = transforms.ApplyOverAxisWithScan(
-        transform=to_modal, axis='time'
-    )
+    scan_transform = transforms.ScanOverAxis(transform=to_modal, axis='time')
     actual = scan_transform(inputs)
     chex.assert_trees_all_close(actual, expected, atol=1e-6)
 
@@ -729,7 +732,7 @@ class TransformsTest(parameterized.TestCase):
     }
 
     with self.subTest('explicit_constructor'):
-      norm = transforms.StreamingStatsNorm(
+      norm = transforms.StreamNorm(
           norm_coords={'u': level, 'v': pressure},
           update_stats=True,
           epsilon=0.0,
@@ -749,7 +752,7 @@ class TransformsTest(parameterized.TestCase):
       np.testing.assert_allclose(np.var(v_out, axis=0, ddof=1), 1.0, atol=1e-5)
 
     with self.subTest('for_inputs_struct'):
-      norm = transforms.StreamingStatsNorm.for_inputs_struct(
+      norm = transforms.StreamNorm.for_inputs_struct(
           inputs,
           independent_axes=(level, pressure),
           update_stats=True,
@@ -777,8 +780,8 @@ class TransformsTest(parameterized.TestCase):
         'u': cx.field(data, 't', 'x'),
         'outlier_mask': cx.field(mask_data, 't', 'x'),
     }
-    make_masks_transform = transforms.Select('outlier_mask')
-    norm = transforms.StreamingStatsNorm(
+    make_masks_transform = transforms.SelectKeys('outlier_mask')
+    norm = transforms.StreamNorm(
         norm_coords={'u': cx.Scalar()},
         update_stats=True,
         make_masks_transform=make_masks_transform,
@@ -805,16 +808,18 @@ class TransformsTest(parameterized.TestCase):
         'coarse_temp': coarse_twos,
     }
     raw_hres_transform = transforms.Sequential([
-        transforms.Select('hres_.*', mode='regex', strict=False),
-        transforms.Rename({'hres_precip': 'precip', 'hres_temp': 'temp'}),
+        transforms.SelectKeys('hres_.*', mode='regex', strict=False),
+        transforms.RenameKeys({'hres_precip': 'precip', 'hres_temp': 'temp'}),
     ])
     ref_coarse_transform = transforms.Sequential([
-        transforms.Select('coarse_.*', mode='regex', strict=False),
-        transforms.Rename({'coarse_precip': 'precip', 'coarse_temp': 'temp'}),
+        transforms.SelectKeys('coarse_.*', mode='regex', strict=False),
+        transforms.RenameKeys(
+            {'coarse_precip': 'precip', 'coarse_temp': 'temp'}
+        ),
     ])
 
     with self.subTest('conservation_applied'):
-      transform = transforms.ScaleToMatchCoarseFields(
+      transform = transforms.ConstrainToCoarse(
           raw_hres_transform=raw_hres_transform,
           ref_coarse_transform=ref_coarse_transform,
           coarse_grid=coarse_grid,
@@ -839,7 +844,7 @@ class TransformsTest(parameterized.TestCase):
           'coarse_precip': coarse_twos,
           # 'coarse_temp' is missing
       }
-      transform = transforms.ScaleToMatchCoarseFields(
+      transform = transforms.ConstrainToCoarse(
           raw_hres_transform=raw_hres_transform,
           ref_coarse_transform=ref_coarse_transform,
           coarse_grid=coarse_grid,
@@ -871,8 +876,8 @@ class TransformsTest(parameterized.TestCase):
     to_nodal = transforms.ToNodal(ylm_map)
     nodal_inputs = to_nodal(filter_fn(to_modal(nodal_inputs)))
 
-    div_curl_to_uv = transforms.VelocityFromModalDivCurl(ylm_map)
-    uv_to_div_curl = transforms.DivCurlFromNodalVelocity(ylm_map)
+    div_curl_to_uv = transforms.VelocityFromDivCurl(ylm_map)
+    uv_to_div_curl = transforms.VelocityToDivCurl(ylm_map)
 
     # test nodal -> modal -> nodal roundtrip
     div_curl_outputs = uv_to_div_curl(nodal_inputs)
@@ -916,8 +921,8 @@ class TransformsTest(parameterized.TestCase):
     lowpass = spatial_filters.ExponentialModalFilter(
         ylm_map, attenuation=2.0, order=1
     )
-    prescirbed_mask = transforms.Prescribed({'u': mask})
-    inpaint = transforms.InpaintMaskForHarmonics(
+    prescirbed_mask = transforms.PrescribedFields({'u': mask})
+    inpaint = transforms.InpaintHarmonics(
         ylm_map=ylm_map,
         compute_masks=prescirbed_mask,
         lowpass_filter=lowpass,
@@ -944,7 +949,7 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
     lats = grid.fields['latitude']
     # Use complex values to encode (longitude, latitude) into a single field.
     field = lons + 1j * lats
-    transform = transforms.PointNeighborsFromGrid(width=1)
+    transform = transforms.ExtractLocalPatchFromGrid(width=1)
 
     with self.subTest('on_grid'):
       lon_idx, lat_idx = 12, 15
@@ -977,7 +982,7 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
         cx.LabeledAxis('latitude', lats),
     )
     field = cx.field(lons[:, None] + 1j * lats[None, :], grid)
-    transform = transforms.PointNeighborsFromGrid(width=2)
+    transform = transforms.ExtractLocalPatchFromGrid(width=2)
 
     # Query point at (15, 15), which is in the center of the 4 grid points:
     # (10, 10), (10, 20), (20, 10), (20, 20).
@@ -1004,7 +1009,7 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
         cx.LabeledAxis('latitude', lats),
     )
     field = cx.field(lons[:, None] + 1j * lats[None, :], grid)
-    transform = transforms.PointNeighborsFromGrid(width=3)
+    transform = transforms.ExtractLocalPatchFromGrid(width=3)
 
     # Queries within +\-5 of (20, 20) should return the same patch.
     # Width 3 patch should be centered at (20, 20), i.e., indices [1, 2, 3]
@@ -1032,7 +1037,7 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
         cx.LabeledAxis('latitude', lats),
     )
     field = cx.field(lons[:, None] + 1j * lats[None, :], grid)
-    transform = transforms.PointNeighborsFromGrid(width=2)
+    transform = transforms.ExtractLocalPatchFromGrid(width=2)
 
     # Query at 330 (between 300 and 0) and latitude 5 (between 0 and 10).
     output = transform({
@@ -1070,7 +1075,7 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
         'f1': field1,
         'f2': field2,
     }
-    transform = transforms.PointNeighborsFromGrid(width=1)
+    transform = transforms.ExtractLocalPatchFromGrid(width=1)
     output = transform(inputs)
 
     # For point 0: (8, 9).
@@ -1096,7 +1101,9 @@ class PointNeighborsFromGridTest(parameterized.TestCase):
         'f1': f1,
         'f2': f2,
     }
-    transform = transforms.PointNeighborsFromGrid(width=1, include_offset=True)
+    transform = transforms.ExtractLocalPatchFromGrid(
+        width=1, include_offset=True
+    )
     output = transform(inputs)
 
     self.assertEqual(output['f1'].dims, ('points', 'z'))
@@ -1209,7 +1216,7 @@ class SanitizedNanGradTransformTest(parameterized.TestCase):
     )
 
     # Sanitized run
-    sanitized = transforms.SanitizeNanGradTransform(transform_factory())
+    sanitized = transforms.SanitizeGradients(transform_factory())
     out_san, grads_san = nnx.value_and_grad(mean_squared_a_err, argnums=0)(
         sanitized, inputs, targets
     )
@@ -1254,7 +1261,7 @@ class SanitizedNanGradTransformTest(parameterized.TestCase):
     )
 
     # Sanitized Run (Full with NaNs), should match reference.
-    sanitized = transforms.SanitizeNanGradTransform(transform_factory())
+    sanitized = transforms.SanitizeGradients(transform_factory())
     out_san, grads_san = nnx.value_and_grad(mean_squared_a_err, argnums=0)(
         sanitized, inputs, targets_full
     )
@@ -1282,8 +1289,8 @@ class NestedTransformTest(parameterized.TestCase):
 
   def test_dict_transform_specific_keys(self):
     """Tests using a dictionary of transforms."""
-    scale_2 = transforms.Scale(cx.field(2.0))
-    scale_3 = transforms.Scale(cx.field(3.0))
+    scale_2 = transforms.ScaleFields(cx.field(2.0))
+    scale_3 = transforms.ScaleFields(cx.field(3.0))
     transform = transforms.NestedTransform({'a': scale_2, 'b': scale_3})
     inputs = {
         'a': {'val': cx.field(np.array([1.0]), 'x')},
@@ -1298,8 +1305,8 @@ class NestedTransformTest(parameterized.TestCase):
 
   def test_dict_transform_with_ellipsis(self):
     """Tests using Ellipsis as default transform."""
-    scale_2 = transforms.Scale(cx.field(2.0))
-    scale_10 = transforms.Scale(cx.field(10.0))
+    scale_2 = transforms.ScaleFields(cx.field(2.0))
+    scale_10 = transforms.ScaleFields(cx.field(10.0))
     transform = transforms.NestedTransform({'a': scale_2, ...: scale_10})
     inputs = {
         'a': {'val': cx.field(np.array([1.0]), 'x')},
@@ -1316,7 +1323,7 @@ class NestedTransformTest(parameterized.TestCase):
 
   def test_dict_transform_missing_key_raises(self):
     """Tests ValueError is raised if a key is missing and no default is set."""
-    scale_2 = transforms.Scale(cx.field(2.0))
+    scale_2 = transforms.ScaleFields(cx.field(2.0))
     transform = transforms.NestedTransform({'a': scale_2})
     inputs = {
         'a': {'val': cx.field(np.array([1.0]), 'x')},

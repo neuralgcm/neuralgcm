@@ -140,7 +140,7 @@ class Empty(TransformABC):
 
 
 @nnx_compat.dataclass
-class Prescribed(TransformABC):
+class PrescribedFields(TransformABC):
   """Returns a prescribed dict of fields."""
 
   prescribed_fields: dict[str, cx.Field]
@@ -177,7 +177,7 @@ class RavelDims(TransformABC):
     return {k: ravel_fn(v).tag(self.out_dim) for k, v in untagged.items()}
 
 
-class Select(TransformABC):
+class SelectKeys(TransformABC):
   """Selects subset of keys in the input dictionary.
 
   Attributes:
@@ -359,7 +359,7 @@ class Isel(TransformABC):
 
 
 @nnx_compat.dataclass
-class MeanOverAxes(TransformABC):
+class ReduceMean(TransformABC):
   """Computes mean over specified dims, accounting for grid geometry."""
 
   dims: tuple[str | cx.Coordinate, ...]
@@ -423,8 +423,14 @@ class Sel(TransformABC):
 
 
 @nnx_compat.dataclass
-class InsertAxis(TransformABC):
-  """Inserts `self.axis` at `self.loc` in all fields in `inputs`."""
+class ExpandDims(TransformABC):
+  """Returns `inputs` with expanded `axis` at `loc`, broadcasting if necessary.
+
+  Attributes:
+    axis: The axis to insert. If size is not 1, broadcasts over the axis.
+    loc: The location to insert the axis at. If an integer, inserts at the
+      given position. If a string or coordinate, inserts to the left of it.
+  """
 
   axis: cx.Coordinate
   loc: int | str | cx.Coordinate
@@ -533,7 +539,7 @@ class ApplyFnToKeys(TransformABC):
 
 
 @nnx_compat.dataclass
-class ApplyOverAxisWithScan(TransformABC):
+class ScanOverAxis(TransformABC):
   """Wrapper transform that applies `transform` over `axis` using scan."""
 
   transform: Transform
@@ -582,8 +588,8 @@ class ApplyOverAxisWithScan(TransformABC):
 
 
 @nnx_compat.dataclass
-class AddShardingConstraint(TransformABC):
-  """Adds a sharding constraint to all fields in `inputs`."""
+class ShardFields(TransformABC):
+  """Adds a `schema` sharding constraint to all fields in `inputs`."""
 
   mesh: parallelism.Mesh
   schema: str | tuple[str, ...]
@@ -592,7 +598,7 @@ class AddShardingConstraint(TransformABC):
     return self.mesh.with_sharding_constraint(inputs, self.schema)
 
 
-class Scale(TransformABC):
+class ScaleFields(TransformABC):
   """Applies x * `self.scale` to all fields in inputs."""
 
   def __init__(self, scale: cx.Field):
@@ -700,7 +706,7 @@ class ClipWavenumbers(TransformABC):
 
 
 @nnx_compat.dataclass
-class InpaintMaskForHarmonics(TransformABC):
+class InpaintHarmonics(TransformABC):
   """Inpaints `inputs` over `mask` with smoothed spherical harmonics.
 
   A variation of PGA (Papoulis-Gerchberg Algorithm) that iteratively inpaints,
@@ -876,8 +882,8 @@ class Redimensionalize(TransformABC):
 
 
 @nnx_compat.dataclass
-class RemovePrefix(TransformABC):
-  """Transforms inputs by removing `prefix` from dictionary keys."""
+class StripPrefix(TransformABC):
+  """Transforms inputs by stripping `prefix` from the dictionary keys."""
 
   prefix: str
 
@@ -886,7 +892,7 @@ class RemovePrefix(TransformABC):
 
 
 @nnx_compat.dataclass
-class Rename(TransformABC):
+class RenameKeys(TransformABC):
   """Renames keys in inputs based on rename_dict."""
 
   rename_dict: dict[str, str]
@@ -938,7 +944,7 @@ class Relu(TransformABC):
     return outputs
 
 
-class StreamingStatsNorm(TransformABC):
+class StreamNorm(TransformABC):
   """Normalizes inputs using values from streaming mean and variances.
 
   Attributes:
@@ -958,7 +964,7 @@ class StreamingStatsNorm(TransformABC):
       skip_unspecified: bool = False,
       allow_missing: bool = True,
   ):
-    """Initializes StreamingStatsNorm.
+    """Initializes StreamNorm.
 
     Args:
       norm_coords: A dictionary mapping variable names to the coordinates over
@@ -1070,7 +1076,7 @@ class ToNodal(TransformABC):
     return nodal_outputs
 
 
-class ToModalWithFilteredGradients:
+class ToModalWithDerivatives:
   """Helper module that returns filtered grads and laplacians of inputs fields.
 
   Gradients are filtered with an exponential filter of order 1 and provided
@@ -1136,15 +1142,15 @@ class ToModalWithFilteredGradients:
 
 
 @nnx_compat.dataclass
-class ScaleToMatchCoarseFields(TransformABC):
-  """Scales hres fields s.t. spatially-averaged values match coarse ones.
+class ConstrainToCoarse(TransformABC):
+  """Constrains fields so that spatially-averaged values match coarse reference.
 
-  This transform applies scaling to high-resolution fields such that their
+  This transform applies scaling to higher-resolution fields such that their
   spatial average, when regridded to a coarse grid, matches the average of
-  corresponding coarse-resolution fields. This is useful for enforcing
+  corresponding coarse-resolution fields. This is useful for enforcing additive
   conservation laws across different resolutions.
 
-  Note: due to regridding, conservation is not exact.
+  Note: due to regridding, conservation is not numerically exact.
 
   Attributes:
     raw_hres_transform: Transform that generates high-resolution fields.
@@ -1197,7 +1203,7 @@ class ScaleToMatchCoarseFields(TransformABC):
 
 
 @nnx_compat.dataclass
-class VelocityFromModalDivCurl(TransformABC):
+class VelocityFromDivCurl(TransformABC):
   """Transform divergence and vorticity in inputs to 2D velocity components."""
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
@@ -1217,7 +1223,7 @@ class VelocityFromModalDivCurl(TransformABC):
 
 
 @nnx_compat.dataclass
-class DivCurlFromNodalVelocity(TransformABC):
+class VelocityToDivCurl(TransformABC):
   """Transform 2D velocity components to divergence and vorticity."""
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
@@ -1236,7 +1242,7 @@ class DivCurlFromNodalVelocity(TransformABC):
 
 
 @nnx_compat.dataclass
-class PointNeighborsFromGrid(TransformABC):
+class ExtractLocalPatchFromGrid(TransformABC):
   """Extracts a patch of neighbors from gridded fields around query points.
 
   This transform splits inputs into two parts: query longitude/latitude fields
@@ -1389,7 +1395,7 @@ def _sanitize_values(
 
 
 @nnx_compat.dataclass
-class SanitizeNanGradTransform(TransformABC):
+class SanitizeGradients(TransformABC):
   """Wraps a transform to provide NaN-safe gradients."""
 
   transform: TransformABC

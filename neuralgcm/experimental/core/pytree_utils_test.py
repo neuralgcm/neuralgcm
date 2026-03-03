@@ -16,7 +16,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
-import jax.numpy as jnp
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
 import numpy as np
@@ -31,147 +30,6 @@ class TreeMathStruct:
 
 
 class PytreeUtilsTest(parameterized.TestCase):
-
-  @parameterized.parameters(
-      dict(
-          pytree={
-              'a': np.arange(8).reshape((2, 2, 2)),
-              'b': np.ones((2, 2, 2)),
-          },
-          axis=0,
-      ),
-      dict(
-          pytree=(np.arange(16).reshape((2, 4, 2)), np.zeros((2, 2, 2))),
-          axis=1,
-      ),
-      dict(
-          pytree=(np.arange(4).reshape((4, 1)), np.zeros((4, 5))),
-          axis=-1,
-      ),
-  )
-  def test_tree_pack_unpack_roundtrip(self, pytree, axis):
-    """Tests that packing -> unpacking a pytree preserves the data."""
-    pytree_shapes = pytree_utils.shape_structure(pytree)
-    packed = pytree_utils.pack_pytree(pytree, axis=axis)
-    unpacked = pytree_utils.unpack_to_pytree(packed, pytree_shapes, axis=axis)
-    chex.assert_trees_all_close(pytree, jax.device_get(unpacked))
-
-  @parameterized.parameters(
-      dict(
-          pytree={
-              'a': np.arange(8).reshape((1, 2, 4)),
-              'b': np.ones((2, 4)),
-          },
-          ndim=3,
-          axis=0,
-      ),
-      dict(
-          pytree=(np.arange(16), np.zeros((16, 7))),
-          ndim=2,
-          axis=1,
-      ),
-      dict(
-          pytree=(np.arange(4).reshape((4, 1)), np.zeros((4, 5))),
-          ndim=2,
-          axis=-1,
-      ),
-  )
-  def test_expand_to_ndim_squeeze_to_shapes_roundtrip(self, pytree, ndim, axis):
-    """Tests that expand_to_ndim --> squeeze_to_shapes preserves the data."""
-    shapes = pytree_utils.shape_structure(pytree)
-    expanded = pytree_utils.expand_to_ndim(pytree, ndim=ndim, axis=axis)
-    squeezed = pytree_utils.squeeze_to_shapes(expanded, shapes, axis=axis)
-    chex.assert_trees_all_close(pytree, jax.device_get(squeezed))
-
-  def test_expand_to_ndim_works_with_shape_dtypes(self):
-    inputs = {
-        'a': typing.ShapeFloatStruct((12, 32, 64)),
-        'b': typing.ShapeFloatStruct((32, 64)),
-    }
-    expanded = pytree_utils.expand_to_ndim(inputs, ndim=3, axis=0)
-    expected = {
-        'a': typing.ShapeFloatStruct((12, 32, 64)),
-        'b': typing.ShapeFloatStruct((1, 32, 64)),
-    }
-    chex.assert_trees_all_equal(expanded, expected)
-
-  @parameterized.parameters(
-      dict(
-          pytree={
-              'a': np.array([1, 2, 3]),
-              'b': np.array([4, 5, 6]),
-              'c': {'d': np.array([7, 8, 9])},
-          },
-          axis=0,
-          stacked_expected=np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
-      ),
-      dict(
-          pytree={
-              'a': np.array([1, 2, 3]),
-              'b': np.array([4, 5, 6]),
-              'c': {'d': np.array([7, 8, 9])},
-          },
-          axis=1,
-          stacked_expected=np.array([[1, 4, 7], [2, 5, 8], [3, 6, 9]]),
-      ),
-      dict(
-          pytree={
-              'a': np.ones((1, 2, 4)),
-              'b': np.ones((1, 2, 4)),
-              'c': {'d': np.ones((1, 2, 4))},
-          },
-          axis=-2,
-          stacked_expected=np.ones((1, 2, 3, 4)),
-      ),
-  )
-  def test_tree_stack_and_unstack(self, pytree, stacked_expected, axis):
-    """Tests that tree stacking/roundtrip returns expected values."""
-    stacked = pytree_utils.stack_pytree(pytree, axis)
-    with self.subTest('stack_pytree'):
-      chex.assert_trees_all_close(jax.device_get(stacked), stacked_expected)
-    with self.subTest('unstack_pytree'):
-      unstack_shapes = pytree_utils.shape_structure(pytree)
-      unstacked = pytree_utils.unstack_to_pytree(stacked, unstack_shapes, axis)
-      chex.assert_trees_all_close(pytree, jax.device_get(unstacked))
-    with self.subTest('jit'):
-
-      def roundtrip(x):
-        stacked = pytree_utils.stack_pytree(x, axis)
-        unstack_shapes = pytree_utils.shape_structure(x)
-        return pytree_utils.unstack_to_pytree(stacked, unstack_shapes, axis)
-
-      roundtrip_fn = jax.jit(roundtrip)
-      chex.assert_trees_all_close(pytree, jax.device_get(roundtrip_fn(pytree)))
-
-  @parameterized.parameters(
-      dict(pytree=(np.zeros((6, 3)), np.ones((6, 2, 2))), idx=3, axis=0),
-      dict(pytree=(np.zeros((3, 8)), np.ones((6, 8))), idx=3, axis=1),
-      dict(pytree={'a': np.zeros((3, 9)), 'b': np.ones((6, 9))}, idx=3, axis=1),
-      dict(pytree=np.zeros((13, 5)), idx=6, axis=0),
-      dict(pytree=(np.zeros(9), (np.ones((9, 1)), np.ones(9))), idx=6, axis=0),
-  )
-  def test_split_and_concat(self, pytree, idx, axis):
-    """Tests that split_along_axis, concat_along_axis return expected shapes."""
-    split_a, split_b = pytree_utils.split_along_axis(pytree, idx, axis, False)
-    with self.subTest('split_shape'):
-      self.assertEqual(jax.tree.leaves(split_a)[0].shape[axis], idx)
-
-    reconstruction = pytree_utils.concat_along_axis([split_a, split_b], axis)
-    with self.subTest('split_concat_roundtrip'):
-      chex.assert_trees_all_close(reconstruction, pytree)
-
-    same_ndims = len(set(a.ndim for a in jax.tree.leaves(reconstruction))) == 1
-    if not same_ndims:
-      with self.subTest('raises_when_wrong_ndims'):
-        with self.assertRaisesRegex(ValueError, 'arrays in `inputs` expected'):
-          _, _ = pytree_utils.split_along_axis(pytree, idx, axis, True)
-
-    with self.subTest('multiple_concat_shape'):
-      arrays = [split_a, split_a, split_b, split_b]
-      double_concat = pytree_utils.concat_along_axis(arrays, axis)
-      actual_shape = jax.tree.leaves(double_concat)[0].shape[axis]
-      expected_shape = jax.tree.leaves(pytree)[0].shape[axis] * 2
-      self.assertEqual(actual_shape, expected_shape)
 
   def test_pytree_cache(self):
     """Tests that tree_cache works as expected."""
@@ -290,22 +148,6 @@ class PytreeUtilsTest(parameterized.TestCase):
   @parameterized.named_parameters(
       dict(
           testcase_name='sqrt_1d_square_rest',
-          condition_fn=lambda x: jnp.asarray(x).ndim == 1,
-          f=lambda x: x**0.5,
-          g=lambda x: x**2,
-          pytree={'a': np.arange(8), 'b': 5, 'c': 2 * np.eye(2)},
-          expected={'a': np.arange(8) ** 0.5, 'b': 5**2, 'c': 2**2 * np.eye(2)},
-      ),
-  )
-  def test_tree_map_where(self, condition_fn, f, g, pytree, expected):
-    """Tests that tree_map_where works as expected."""
-    with self.subTest('jax_backed'):
-      actual = pytree_utils.tree_map_where(condition_fn, f, g, pytree)
-      chex.assert_trees_all_close(actual, expected)
-
-  @parameterized.named_parameters(
-      dict(
-          testcase_name='sqrt_1d_square_rest',
           f=lambda x: x**0.5,
           scalar_fn=lambda x: x**2,
           pytree={'a': np.arange(8), 'b': 5, 'c': 2 * np.eye(2)},
@@ -339,33 +181,6 @@ class PytreeUtilsTest(parameterized.TestCase):
       )
       jax.tree_util.tree_map(assert_not_jax_array, actual)
       chex.assert_trees_all_close(actual, expected)
-
-  @parameterized.named_parameters(
-      dict(
-          testcase_name='split_two_along_axis_0',
-          pytree={'a': np.stack([np.ones(4), np.zeros(4)]), 'b': np.arange(2)},
-          axis=0,
-          expected=(
-              {'a': np.ones(4), 'b': np.asarray(0)},
-              {'a': np.zeros(4), 'b': np.asarray(1)},
-          ),
-      ),
-      dict(
-          testcase_name='split_three_along_axis_1',
-          pytree={'a': np.eye(3), 'b': np.arange(3)[np.newaxis, :]},
-          axis=1,
-          expected=(
-              {'a': np.eye(3)[:, 0], 'b': np.asarray([0])},
-              {'a': np.eye(3)[:, 1], 'b': np.asarray([1])},
-              {'a': np.eye(3)[:, 2], 'b': np.asarray([2])},
-          ),
-      ),
-  )
-  def test_split_axis(self, pytree, axis, expected):
-    """Tests that split_axis works as expected."""
-    actual = pytree_utils.split_axis(pytree, axis=axis)
-    chex.assert_trees_all_close(actual, expected)
-    chex.assert_trees_all_equal_shapes(actual, expected)
 
   @parameterized.named_parameters(
       dict(

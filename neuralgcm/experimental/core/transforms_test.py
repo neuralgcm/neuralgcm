@@ -1334,6 +1334,94 @@ class NestedTransformTest(parameterized.TestCase):
     ):
       transform(inputs)
 
+  def test_fill_nans(self):
+    x = cx.SizedAxis('x', 2)
+    inputs = {
+        'a': cx.field(jnp.array([1.0, jnp.nan]), x),
+        'b': cx.field(jnp.array([jnp.nan, 2.0]), x),
+        'c': cx.field(jnp.array([3.0, 4.0]), x),
+    }
+
+    with self.subTest('default_fill_zero_all_keys'):
+      transform = transforms.FillNaNs()
+      actual = transform(inputs)
+      expected = {
+          'a': cx.field(jnp.array([1.0, 0.0]), x),
+          'b': cx.field(jnp.array([0.0, 2.0]), x),
+          'c': cx.field(jnp.array([3.0, 4.0]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('fill_mean_specific_keys'):
+      transform = transforms.FillNaNs(keys=['a'], value='mean')
+      actual = transform(inputs)
+      expected = {
+          'a': cx.field(jnp.array([1.0, 1.0]), x),
+          'b': cx.field(jnp.array([jnp.nan, 2.0]), x),
+          'c': cx.field(jnp.array([3.0, 4.0]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+  def test_apply_mask(self):
+    x = cx.SizedAxis('x', 2)
+    inputs = {
+        'mask': cx.field(jnp.array([True, False]), x),
+        'a': cx.field(jnp.array([1.0, jnp.nan]), x),
+        'b': cx.field(jnp.array([jnp.nan, 4.0]), x),
+    }
+
+    with self.subTest('zero_multiply_all_keys'):
+      transform = transforms.ApplyMask('mask', apply_method='zero_multiply')
+      actual = transform(inputs)
+      # Note: zero_multiply does jnp.where(mask, v, 0)
+      # expected[b] = [3, 0], expected[a] = [1, 0]
+      expected = {
+          'mask': inputs['mask'] * cx.field(jnp.array([0.0, 1.0]), x),
+          'a': cx.field(jnp.array([0.0, jnp.nan]), x),
+          'b': cx.field(jnp.array([jnp.nan, 4.0]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('nan_to_0_specific_key'):
+      transform = transforms.ApplyMask(
+          'mask', apply_method='nan_to_0', keys=['b']
+      )
+      actual = transform(inputs)
+      expected = {
+          'mask': inputs['mask'],
+          'a': cx.field(jnp.array([1.0, jnp.nan]), x),
+          'b': cx.field(jnp.array([0.0, 4.0]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('nan_to_0_include_remaining_false'):
+      transform = transforms.ApplyMask(
+          'mask',
+          apply_method='nan_to_0',
+          keys='mask',
+          invert=True,
+          include_remaining=False,
+      )
+      actual = transform(inputs)
+      expected = {
+          'a': cx.field(jnp.array([1.0, jnp.nan]), x),
+          'b': cx.field(jnp.array([0.0, 4.0]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+  def test_where(self):
+    x = cx.SizedAxis('x', 2)
+    inputs = {
+        'mask': cx.field(jnp.array([True, False]), x),
+        'a': cx.field(jnp.array([1.0, 2.0]), x),
+    }
+    transform_true = transforms.ScaleFields(cx.field(10.0))
+    transform_false = transforms.ScaleFields(cx.field(100.0))
+    transform = transforms.Where('mask', transform_true, transform_false)
+    actual = transform(inputs)
+    expected = {'a': cx.field(jnp.array([10.0, 200.0]), x)}
+    chex.assert_trees_all_equal(actual, expected)
+
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

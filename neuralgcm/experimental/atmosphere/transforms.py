@@ -108,6 +108,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
       inputs_are_modal: bool = True,
       u_key: str = 'u_component_of_wind',
       v_key: str = 'v_component_of_wind',
+      skip_non_modal: bool = False,
   ):
     if compute_gradients_transform is None:
       compute_gradients_transform = lambda x: {}
@@ -118,6 +119,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
     self.compute_gradients_transform = compute_gradients_transform
     self.u_key = u_key
     self.v_key = v_key
+    self.skip_non_modal = skip_non_modal
     if inputs_are_modal:
       self.pre_process = lambda x: x
     else:
@@ -182,6 +184,10 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
     return features
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    if self.skip_non_modal:
+      inputs = transforms.FilterByCoord(
+          types=coordinates.SphericalHarmonicGrid
+      )(inputs)
     inputs = self.pre_process(inputs)
     nodal_features = self._extract_features(inputs)
     return nodal_features

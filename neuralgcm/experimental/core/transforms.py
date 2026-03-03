@@ -1356,8 +1356,8 @@ class StreamNorm(TransformABC):
         which the normalization is done independently.
       update_stats: Whether to update the normalization statistics.
       epsilon: A small float added to variance to avoid dividing by zero.
-      compute_masks: Optional transform that produces a mask indicating
-        which entries should contribute to the statistics updates.
+      compute_masks: Optional transform that produces a mask indicating which
+        entries should contribute to the statistics updates.
       skip_nans: If True, ignores NaNs when updating the statistics.
       skip_unspecified: If True, input fields for which no normalization is
         specified (i.e., keys not in `norm_coords`) are passed through
@@ -1872,6 +1872,148 @@ class SanitizeGradients(TransformABC):
 
     _sanitized_transform.defvjp(_sanitized_fwd, _sanitized_bwd)
     return _sanitized_transform(self.transform, inputs)
+
+
+#
+# Helper transforms that combine frequently used patterns.
+#
+
+
+@nnx_compat.dataclass
+class FillNaNs(TransformABC):
+  """Replaces NaN values with a specified value for selected keys.
+
+  Combines `SelectKeys`, `ComputeMask` and `ApplyOverMasks` transforms to fill
+  `nan` values in Fields selected by `keys` with `value`.
+
+  Args:
+    keys: Argument to `SelectKeys` transform. If None, applies to all keys.
+    invert: Whether to invert the selection of keys.
+    value: The numeric value or 'mean' to replace NaNs with.
+    include_remaining: Whether to include remaining keys not selected by `keys`.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.array([jnp.nan, 2.0]))}
+    >>> transforms.FillNaNs(0.0)(inputs)['a'].data
+    Array([0., 2.], dtype=float32)
+  """
+
+  keys: str | Sequence[str] | Callable[[str], bool] | None = None
+  invert: bool = False
+  value: float | Literal['mean'] = 0.0
+  include_remaining: bool = True
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    keys = tuple(inputs.keys()) if self.keys is None else self.keys
+    to_transform = SelectKeys(keys, self.invert)(inputs)
+
+    def fill_nans(field: cx.Field) -> cx.Field:
+      mask = cx.cmap(jnp.isnan)(field)
+      if self.value == 'mean':
+        return _masked_to_mean(field, mask)
+      return _masked_nan_to_num(field, mask, num=self.value)
+
+    outputs = {k: fill_nans(v) for k, v in to_transform.items()}
+    if self.include_remaining:
+      outputs.update({k: v for k, v in inputs.items() if k not in to_transform})
+    return outputs
+
+
+@nnx_compat.dataclass
+class ApplyMask(TransformABC):
+  """Applies a boolean mask field to other fields.
+
+  Args:
+    mask_key: The key of the boolean mask field in ``inputs``.
+    apply_method: Method specifying how to apply the mask. Can be one of:
+      ('zero_multiply', 'nan_to_0', 'nan_to_mean', 'set_nan') or a callable.
+    keys: Argument to ``SelectKeys`` transform. If None, applies to all keys.
+    invert: Whether to invert the selection of keys.
+    include_remaining: Whether to include remaining keys not selected by `keys`.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> mask = cx.field(jnp.array([True, False]))
+    >>> inputs = {'a': cx.field(jnp.array([1.0, 2.0])), 'mask': mask}
+    >>> transforms.ApplyMask('mask', 'zero_multiply')(inputs)['a'].data
+    Array([0., 2.], dtype=float32)
+  """
+
+  mask_key: str
+  apply_method: ApplyMaskMethods = 'zero_multiply'
+  keys: str | Sequence[str] | Callable[[str], bool] | None = None
+  invert: bool = False
+  include_remaining: bool = True
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    if self.mask_key not in inputs:
+      raise KeyError(f'Mask key {self.mask_key} not found in inputs.')
+    mask = inputs[self.mask_key]
+    keys = tuple(inputs.keys()) if self.keys is None else self.keys
+    to_transform = SelectKeys(keys, self.invert)(inputs)
+
+    apply_fn = (
+        self.apply_method
+        if callable(self.apply_method)
+        else APPLY_MASK_FNS[self.apply_method]
+    )
+
+    outputs = {k: apply_fn(v, mask) for k, v in to_transform.items()}
+    if self.include_remaining:
+      outputs.update({k: v for k, v in inputs.items() if k not in to_transform})
+    return outputs
+
+
+@nnx_compat.dataclass
+class Where(TransformABC):
+  """Applies one of two transforms based on a boolean mask.
+
+  Condition is evaluated using `jnp.where` on the fields output by the two
+  transforms.
+  Outputs of both transforms must have compatible shapes and coordinates with
+  the mask.
+
+  Args:
+    mask_key: The key of the boolean mask field in inputs.
+    true_transform: Transform to apply where the mask is True.
+    false_transform: Transform to apply where the mask is False.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> mask = cx.field(jnp.array([True, False]))
+    >>> inputs = {'a': cx.field(jnp.array([1.0, 2.0])), 'mask': mask}
+    >>> true_fn = transforms.ScaleFields(cx.field(10.0))
+    >>> false_fn = transforms.ScaleFields(cx.field(100.0))
+    >>> transforms.Where('mask', true_fn, false_fn)(inputs)['a'].data
+    Array([ 10., 200.], dtype=float32)
+  """
+
+  mask_key: str
+  true_transform: TransformABC
+  false_transform: TransformABC
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    if self.mask_key not in inputs:
+      raise KeyError(f'Mask key {self.mask_key} not found in inputs.')
+    mask = inputs[self.mask_key]
+
+    true_outputs = self.true_transform(inputs)
+    false_outputs = self.false_transform(inputs)
+    if set(true_outputs.keys()) != set(false_outputs.keys()):
+      raise ValueError('True and false transforms must have the same keys.')
+
+    where_fn = cx.cmap(jnp.where)
+    results = {}
+    for k in set(true_outputs.keys()) - {self.mask_key}:
+      results[k] = where_fn(mask, true_outputs[k], false_outputs[k])
+    return results
 
 
 class NestedTransform(nnx.Module, pytree=False):

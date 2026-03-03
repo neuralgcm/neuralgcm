@@ -784,7 +784,7 @@ class TransformsTest(parameterized.TestCase):
     norm = transforms.StreamNorm(
         norm_coords={'u': cx.Scalar()},
         update_stats=True,
-        make_masks_transform=make_masks_transform,
+        compute_masks=make_masks_transform,
         epsilon=0.0,
         skip_unspecified=True,
     )
@@ -940,7 +940,7 @@ class TransformsTest(parameterized.TestCase):
     np.testing.assert_allclose(inpainted_values, 1.0, atol=1e-5)
 
 
-class PointNeighborsFromGridTest(parameterized.TestCase):
+class ExtractLocalPatchFromGridTest(parameterized.TestCase):
 
   def test_nearest_neighbor_on_spherical_grid(self):
     """Verifies that width=1 returns the single nearest value on a TL63 grid."""
@@ -1170,7 +1170,7 @@ class SanitizedNanGradTransformTest(parameterized.TestCase):
           testcase_name='stateless_simple',
           transform_factory=lambda: transforms.Sequential([
               SimpleScale(2.0),
-              transforms.ApplyFnToKeys(cx.cpmap(jnp.square), ['a'], True),
+              transforms.ApplyFnToKeys(cx.cpmap(jnp.square), ['a']),
           ]),
           inputs={'a': cx.field(np.array([0.0, 1.0, 2.0]), 'x')},
       ),
@@ -1229,7 +1229,7 @@ class SanitizedNanGradTransformTest(parameterized.TestCase):
           testcase_name='stateless_simple_nan',
           transform_factory=lambda: transforms.Sequential([
               SimpleScale(2.0),
-              transforms.ApplyFnToKeys(cx.cpmap(jnp.square), ['a'], True),
+              transforms.ApplyFnToKeys(cx.cpmap(jnp.square), ['a']),
           ]),
           inputs={'a': cx.field(np.array([0.0, np.nan, 2.0]), 'x')},
           inputs_filtered={'a': cx.field(np.array([0.0, 2.0]), 'x')},

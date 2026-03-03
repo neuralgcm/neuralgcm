@@ -49,6 +49,7 @@ from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
+# pylint: disable=g-classes-have-attributes
 Transform: TypeAlias = typing.Transform
 
 
@@ -126,14 +127,32 @@ COMPUTE_MASK_FNS = {
 
 
 class Identity(TransformABC):
-  """Returns inputs as they are."""
+  """Returns inputs as they are.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.zeros(2))}
+    >>> transforms.Identity()(inputs)
+    {'a': <Field dims=(None,) shape=(2,) axes={} >}
+  """
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return inputs
 
 
 class Empty(TransformABC):
-  """Returns an empty dict."""
+  """Returns an empty dict, regardless of inputs.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.zeros(2))}
+    >>> transforms.Empty()(inputs)
+    {}
+  """
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return {}
@@ -141,7 +160,19 @@ class Empty(TransformABC):
 
 @nnx_compat.dataclass
 class PrescribedFields(TransformABC):
-  """Returns a prescribed dict of fields."""
+  """Returns a prescribed dict of fields, regardless of inputs.
+
+  Args:
+    prescribed_fields: A dictionary of predefined coordax Fields to return.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> prescribed = {'b': cx.field(jnp.ones(2))}
+    >>> transforms.PrescribedFields(prescribed)({'a': cx.field(jnp.zeros(2))})
+    {'b': <Field dims=(None,) shape=(2,) axes={} >}
+  """
 
   prescribed_fields: dict[str, cx.Field]
 
@@ -153,7 +184,23 @@ class PrescribedFields(TransformABC):
 
 
 class Broadcast(TransformABC):
-  """Broadcasts all fields in `inputs` to the same coordinates."""
+  """Broadcasts fields in ``inputs`` of congruent dimensions to the same coords.
+
+  This transform ensures that all input fields are broadcasted to share the same
+  dimensions of the field with the highest number of dimensions. All other
+  fields are expected to feature a subset of these dimensions to make the order
+  of broadcasting dimensions well-defined.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.SizedAxis('x', 3)
+    >>> y = cx.SizedAxis('y', 2)
+    >>> inputs = {'a': cx.field(1.5), 'b': cx.field(jnp.ones((3, 2)), x, y)}
+    >>> transforms.Broadcast()(inputs)['a'].dims
+    ('x', 'y')
+  """
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     # when broadcasting, fields either maintain or increase ndim. Hence it is
@@ -166,25 +213,62 @@ class Broadcast(TransformABC):
 
 @nnx_compat.dataclass
 class RavelDims(TransformABC):
-  """Ravels specified dimensions into another."""
+  """Ravels specified dimensions into a new single dimension.
+
+  Flattens a sequence of dims in each field into a single output dimension.
+  If a field in ``inputs`` lacks some of the dimensions and `allow_missing` is
+  ``False``, an error is raised. Otherwise the field is raveled only over
+  `dims_to_ravel` that are present.
+
+  Args:
+    dims_to_ravel: Sequence of dimensions or coordinates to flatten.
+    out_dim: The name or coordinate for the resulting flattened dimension.
+    allow_missing: If False, raises if missing any dim in `dims_to_ravel`.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x, y = cx.SizedAxis('x', 2), cx.SizedAxis('y', 3)
+    >>> inputs = {'a': cx.field(jnp.ones((2, 3)), x, y)}
+    >>> out = transforms.RavelDims(('x', 'y'), 'z')(inputs)
+    >>> out['a'].shape
+    (6,)
+    >>> out['a'].dims
+    ('z',)
+  """
 
   dims_to_ravel: tuple[str | cx.Coordinate, ...]
   out_dim: str | cx.Coordinate
+  allow_missing: bool = True
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    untagged = cx.untag(inputs, *self.dims_to_ravel, allow_missing=True)
+    untagged = cx.untag(
+        inputs, *self.dims_to_ravel, allow_missing=self.allow_missing
+    )
     ravel_fn = cx.cmap(jnp.ravel, out_axes='leading')
     return {k: ravel_fn(v).tag(self.out_dim) for k, v in untagged.items()}
 
 
 class SelectKeys(TransformABC):
-  """Selects subset of keys in the input dictionary.
+  """Selects subset of keys from the ``inputs``.
 
-  Attributes:
+  This transform filters the inputs dictionary based on key matching, regex, or
+  a custom callable.
+
+  Args:
     keys: Keys to select. Can be a string, sequence of strings, or a callable.
-    invert: If True, invert the selection.
+    invert: If True, invert the selection (returns keys NOT matching).
     mode: Selection mode for string ``keys``. Can be 'match' or 'regex'.
-    strict: If True, raise an error if any of the keys are not found in inputs.
+    strict: If True, raise an error if any of the string keys are not found.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2)), 'b': cx.field(jnp.zeros(2))}
+    >>> list(transforms.SelectKeys('a')(inputs).keys())
+    ['a']
   """
 
   def __init__(
@@ -245,14 +329,21 @@ class SelectKeys(TransformABC):
 
 @nnx_compat.dataclass
 class FilterByCoord(TransformABC):
-  """Selects subset of fields that match specified coordinate or type.
+  """Selects subset of fields in ``inputs`` that match specified coord or type.
 
-  Attributes:
-    coords: A coordinate or a sequence of coordinates. If provided, the field
-      must contain at least one of these coordinates to be selected.
-    types: A type of coordinate or sequence of types. If provided, the field
-      must contain a coordinate of at least one of these types to be selected.
-    invert: If True, invert the selection.
+  Args:
+    coords: A coordinate or sequence of coordinates that must be present.
+    types: A type or sequence of types that the field's coordinates must match.
+    invert: If True, invert the selection (returns fields that do NOT match).
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.SizedAxis('x', 3)
+    >>> inputs = {'a': cx.field(jnp.ones(3), x), 'b': cx.field(jnp.ones(2))}
+    >>> list(transforms.FilterByCoord(coords=x)(inputs).keys())
+    ['a']
   """
 
   coords: cx.Coordinate | Sequence[cx.Coordinate] | None = None
@@ -296,7 +387,23 @@ class FilterByCoord(TransformABC):
 
 @nnx_compat.dataclass
 class Sequential(TransformABC):
-  """Applies sequence of transforms in order."""
+  """Applies sequence of transforms in order.
+
+  Args:
+    transforms: A sequence of Transforms to apply sequentially.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2)), 'b': cx.field(jnp.zeros(2))}
+    >>> seq = transforms.Sequential([
+    ...     transforms.SelectKeys('a'),
+    ...     transforms.RenameKeys({'a': 'c'}),
+    ... ])
+    >>> list(seq(inputs).keys())
+    ['c']
+  """
 
   transforms: Sequence[Transform]
 
@@ -310,11 +417,22 @@ class Sequential(TransformABC):
 class Merge(TransformABC):
   """Merges outputs of multiple transforms into a single dictionary.
 
-  Transforms that will be combined are specified as dictionary values where
-  keys indicate optional feature prefix. This helps with: (1) disambiguating
-  multiple differently configured features; (2) accessing feature modules of a
-  configured model. By default, prefix is only added if `always_add_prefix` is
-  set to True or if there's a conflict in feature names.
+  Applies multiple feature modules to the inputs and merges their outputs.
+  Prefixes are added based on the feature module keys to disambiguate features.
+
+  Args:
+    feature_modules: Dictionary mapping prefix strings to Transform objects.
+    always_add_prefix: If True, always prepends the prefix to the output keys.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2))}
+    >>> t1, t2 = transforms.SelectKeys('a'), transforms.RenameKeys({'a': 'b'})
+    >>> merged = transforms.Merge({'t1': t1, 't2': t2})(inputs)
+    >>> sorted(merged.keys())
+    ['a', 'b']
   """
 
   feature_modules: dict[str, Transform]
@@ -337,7 +455,20 @@ class Merge(TransformABC):
 
 @nnx_compat.dataclass
 class Isel(TransformABC):
-  """Slices all fields using indexers."""
+  """Applies ``isel(indexers)`` to all fields in ``inputs``.
+
+  Args:
+    indexers: A mapping from dimension names or coordinates to indices/slices.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.SizedAxis('x', 4)
+    >>> inputs = {'a': cx.field(jnp.arange(4), x)}
+    >>> transforms.Isel({'x': slice(0, 2)})(inputs)['a'].shape
+    (2,)
+  """
 
   indexers: dict[str | cx.Coordinate, Any]
 
@@ -360,11 +491,28 @@ class Isel(TransformABC):
 
 @nnx_compat.dataclass
 class ReduceMean(TransformABC):
-  """Computes mean over specified dims, accounting for grid geometry."""
+  """Computes mean over specified dims, using coordinate methods if available.
+
+  Takes the mean over the specified dimensions. If reducing over a coordinate
+  with specialized `mean` method, such as LonLatGrid, uses that method.
+
+  Args:
+    dims: Sequence of dimension names or coordinates to reduce over.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.SizedAxis('x', 4)
+    >>> inputs = {'a': cx.field(jnp.array([1., 2., 3., 4.]), x)}
+    >>> transforms.ReduceMean(('x',))(inputs)['a'].data
+    Array(2.5, dtype=float32)
+  """
 
   dims: tuple[str | cx.Coordinate, ...]
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    # TODO(dkochkov): Add more flexible support for custom reductions.
     outputs = {}
     for k, v in inputs.items():
       dim_names = set()
@@ -400,7 +548,22 @@ class ReduceMean(TransformABC):
 
 @nnx_compat.dataclass
 class Sel(TransformABC):
-  """Selects values using label indexers."""
+  """Applies ``sel(indexers, method=method)`` to all fields in ``inputs``.
+
+  Args:
+    indexers: A mapping from dimension names or coordinates to values/slices.
+    method: Optional method name (e.g., 'nearest') to use for inexact matching.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> import numpy as np
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.LabeledAxis('x', np.array([0.1, 0.5, 1.0]))
+    >>> inputs = {'a': cx.field(jnp.array([10., 20., 30.]), x)}
+    >>> transforms.Sel({'x': 0.5})(inputs)['a'].data
+    Array(20., dtype=float32)
+  """
 
   indexers: dict[str | cx.Coordinate, Any]
   method: Literal['nearest'] | None = None
@@ -424,12 +587,22 @@ class Sel(TransformABC):
 
 @nnx_compat.dataclass
 class ExpandDims(TransformABC):
-  """Returns `inputs` with expanded `axis` at `loc`, broadcasting if necessary.
+  """Returns inputs with expanded `axis` at `loc`, broadcasting if necessary.
 
-  Attributes:
-    axis: The axis to insert. If size is not 1, broadcasts over the axis.
-    loc: The location to insert the axis at. If an integer, inserts at the
-      given position. If a string or coordinate, inserts to the left of it.
+  Inserts a new axis into all input fields at the specified location.
+
+  Args:
+    axis: The coordinate of the axis to insert.
+    loc: The position to insert at. Can be an integer or string/coordinate.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.SizedAxis('x', 2)
+    >>> inputs = {'a': cx.field(jnp.ones((3,)))}
+    >>> transforms.ExpandDims(x, 0)(inputs)['a'].dims
+    ('x', None)
   """
 
   axis: cx.Coordinate
@@ -480,42 +653,39 @@ def _get_shared_axis(
 
 @nnx_compat.dataclass
 class ApplyToKeys(TransformABC):
-  """Wrapper transform that is applied to a subset of keys.
+  """Applies `transform` to a subset of keys and merges with unchanged keys.
 
-  This is a helper transform that applies `transform` to `keys` and keeps the
-  rest of the inputs unchanged. It is equivalent to:
-  merge(select(inputs, !keys), transform(select(inputs, keys)))
+  Applies the given transform to specific keys and merges the results with the
+  remaining keys.
+
+  Args:
+    transform: The ``Transform`` to apply to the selected keys.
+    keys: An arg to ``SelectKeys`` that selects keys to apply the transform to.
+    invert: If True, apply the transform to all keys except those in `keys`.
+    include_remaining: If ``True``, pass through fields not in `keys` to output.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2)), 'b': cx.field(jnp.ones(2))}
+    >>> double = transforms.ScaleFields(cx.field(2.0))
+    >>> out = transforms.ApplyToKeys(double, ['a'])(inputs)
+    >>> out['a'].data[0], out['b'].data[0]
+    (Array(2., dtype=float32), Array(1., dtype=float32))
   """
 
   transform: Transform
-  keys: Sequence[str]
+  keys: str | Sequence[str] | Callable[[str], bool]
+  invert: bool = False
+  include_remaining: bool = True
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    to_transform = {k: v for k, v in inputs.items() if k in self.keys}
-    keep_as_is = {k: v for k, v in inputs.items() if k not in self.keys}
-    return self.transform(to_transform) | keep_as_is
-
-
-@nnx_compat.dataclass
-class WithExemptKeys(TransformABC):
-  """Wrapper transform that is excludes `keys` from the wrapped transform.
-
-  This is a helper transform that passes through `keys` unchanged and applies
-  `transform` to the rest of the keys. This is equivalent to:
-
-      merge(select(inputs, keys), transform(select(inputs, keys, invert=True)))
-  """
-
-  transform: Transform
-  keys: str | Sequence[str]
-
-  def __post_init__(self):
-    keys = self.keys
-    self.keys = tuple([keys]) if isinstance(keys, str) else tuple(keys)
-
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    to_transform = {k: v for k, v in inputs.items() if k not in self.keys}
-    keep_as_is = {k: v for k, v in inputs.items() if k in self.keys}
+    to_transform = SelectKeys(self.keys, self.invert)(inputs)
+    if self.include_remaining:
+      keep_as_is = {k: v for k, v in inputs.items() if k not in to_transform}
+    else:
+      keep_as_is = {}
     return self.transform(to_transform) | keep_as_is
 
 
@@ -523,24 +693,60 @@ class WithExemptKeys(TransformABC):
 class ApplyFnToKeys(TransformABC):
   """Applies a Field -> Field function to a subset of keys.
 
-  This is a helper transform that applies `fn` to `keys`. If `include_remaining`
-  is set to True, outputs include the rest of the inptus unchanged.
+  Transforms specific fields using a provided function.
+
+  Args:
+    fn: A callable taking a coordax Field and returning a coordax Field.
+    keys: An arg to ``SelectKeys`` that selects keys to apply the function to.
+    invert: If True, apply the function to all keys except those in `keys`.
+    include_remaining: If ``True``, pass through fields not in `keys` to output.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2)), 'b': cx.field(jnp.ones(2))}
+    >>> fn = lambda f: f * 2.0
+    >>> out = transforms.ApplyFnToKeys(fn, ['a'], True)(inputs)
+    >>> out['a'].data[0], out['b'].data[0]
+    (Array(2., dtype=float32), Array(1., dtype=float32))
   """
 
   fn: Callable[[cx.Field], cx.Field]
-  keys: Sequence[str]
+  keys: str | Sequence[str] | Callable[[str], bool]
+  invert: bool = False
   include_remaining: bool = False
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    transformed = {k: self.fn(v) for k, v in inputs.items() if k in self.keys}
+    to_transform = SelectKeys(self.keys, self.invert)(inputs)
     if self.include_remaining:
-      transformed |= {k: v for k, v in inputs.items() if k not in self.keys}
-    return transformed
+      keep_as_is = {k: v for k, v in inputs.items() if k not in to_transform}
+    else:
+      keep_as_is = {}
+    return {k: self.fn(v) for k, v in to_transform.items()} | keep_as_is
 
 
 @nnx_compat.dataclass
 class ScanOverAxis(TransformABC):
-  """Wrapper transform that applies `transform` over `axis` using scan."""
+  """Wrapper transform that applies `transform` over `axis` using scan.
+
+  Runs a transform sequentially over slices along `axis` using ``nnx.scan``.
+
+  Args:
+    transform: The Transform to apply at each slice.
+    axis: The dimension name or coordinate to scan over.
+    apply_remat: If True, applies gradient rematerialization to the transform.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.SizedAxis('x', 3)
+    >>> inputs = {'a': cx.field(jnp.ones((3, 2)), x, 'y')}
+    >>> out = transforms.ScanOverAxis(transforms.Identity(), 'x')(inputs)
+    >>> out['a'].dims
+    ('x', 'y')
+  """
 
   transform: Transform
   axis: str | cx.Coordinate
@@ -589,7 +795,21 @@ class ScanOverAxis(TransformABC):
 
 @nnx_compat.dataclass
 class ShardFields(TransformABC):
-  """Adds a `schema` sharding constraint to all fields in `inputs`."""
+  """Adds `mesh.field_partitiotions[schema]` sharding constraint to ``inputs``.
+
+  Args:
+    mesh: The parallelism mesh defining device layout and sharding schemas.
+    schema: The partitioning schema name (or sequence) to apply.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import parallelism, transforms
+    >>> mesh = parallelism.Mesh()
+    >>> inputs = {'a': cx.field(jnp.ones(2))}
+    >>> transforms.ShardFields(mesh, 'data')(inputs)
+    {'a': <Field dims=(None,) shape=(2,) axes={} >}
+  """
 
   mesh: parallelism.Mesh
   schema: str | tuple[str, ...]
@@ -599,7 +819,20 @@ class ShardFields(TransformABC):
 
 
 class ScaleFields(TransformABC):
-  """Applies x * `self.scale` to all fields in inputs."""
+  """Applies x * `self.scale` to all fields in ``inputs``.
+
+  Args:
+    scale: The coordax Field used to scale the inputs.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2))}
+    >>> out = transforms.ScaleFields(cx.field(2.0))(inputs)
+    >>> out['a'].data[0]
+    Array(2., dtype=float32)
+  """
 
   def __init__(self, scale: cx.Field):
     self.scale = TransformParams(scale)
@@ -613,13 +846,22 @@ class ScaleFields(TransformABC):
 class StandardizeFields(TransformABC):
   """Shifts and scales inputs.
 
-  This transform applies shifts and scales. It can be applied globally
-  or on a per key basis.
+  Normalizes fields using provided shift (mean) and scale (std). Can be
+  applied globally or uniquely per key. Also supports inverse normalization.
 
-  Attributes:
-    shifts: The shifts to use for centering input fields.
-    scales: The scales to use for normalization.
-    from_normalized: Whether to invert the transform normalized --> original.
+  Args:
+    shifts: The shifts (or dict of shifts) used for centering input fields.
+    scales: The scales (or dict of scales) used for normalization.
+    from_normalized: If True, reverses the transformation (x * scale + shift).
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2))}
+    >>> out = transforms.StandardizeFields(cx.field(1.0), cx.field(2.0))(inputs)
+    >>> out['a'].data[0]
+    Array(0., dtype=float32)
   """
 
   def __init__(
@@ -654,11 +896,23 @@ class StandardizeFields(TransformABC):
 class ClipWavenumbers(TransformABC):
   """Clips wavenumbers in inputs for grids matching `wavenumbers_for_grid`.
 
-  Attributes:
-    wavenumbers_for_grid: A dictionary mapping grids to the number of wavenumber
-      to clip for that grid.
-    skip_missing: If True, grids without a matching coordinate will be skipped,
-      otherwise an error is raised.
+  Removes the highest wavenumbers (sets them to zero) for fields represented on
+  spherical harmonic grids.
+
+  Args:
+    wavenumbers_for_grid: Mapping from grids to the # of wavenumbers to clip.
+    skip_missing: If False, raises an error if encounters a grid that does not
+      have a corresponding entry in `wavenumbers_for_grid`.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import coordinates, transforms
+    >>> grid = coordinates.SphericalHarmonicGrid.T21()
+    >>> inputs = {'u': cx.field(jnp.ones(grid.shape), grid)}
+    >>> out = transforms.ClipWavenumbers({grid: 2})(inputs)
+    >>> out['u'].shape == grid.shape
+    True
   """
 
   wavenumbers_for_grid: dict[coordinates.SphericalHarmonicGrid, int]
@@ -709,19 +963,16 @@ class ClipWavenumbers(TransformABC):
 class InpaintHarmonics(TransformABC):
   """Inpaints `inputs` over `mask` with smoothed spherical harmonics.
 
-  A variation of PGA (Papoulis-Gerchberg Algorithm) that iteratively inpaints,
-  spatial signal imposing limited spherical harmonics bandwidth prior. It works
-  by repeatedly transforming to modal space, applying a low-pass filter,
-  transforming back to nodal space and restoring non masked entries to their
-  original values. At the start, masked values are initialized with
-  the mean of the valid values.
+  Iteratively fills masked regions of fields using a low-pass spherical
+  harmonics filter, similar to the Papoulis-Gerchberg Algorithm.
 
-  Attributes:
+  Args:
     ylm_map: Mapping between nodal and modal representations.
-    compute_masks: Transform that returns a mask for each input field. The True
-      mask values indicate entries to be inpainted.
-    lowpass_filter: Filter to apply in modal space to smooth the inpainting.
-    n_iter: Number of iterations to perform.
+    compute_masks: Transform returning masks indicating entries to inpaint.
+    lowpass_filter: Modal spatial filter to smooth the inpainting.
+    n_iter: Number of PGA iterations to perform.
+    default_mask_key: Optional fallback key for selecting mask for entries in
+      ``inputs`` that do not have a key-matching mask in `compute_masks` output.
   """
 
   ylm_map: spherical_harmonics.YlmMapper | spherical_harmonics.FixedYlmMapping
@@ -757,18 +1008,52 @@ class InpaintHarmonics(TransformABC):
 
 @nnx_compat.dataclass
 class Regrid(TransformABC):
-  """Applies `self.regridder` to `inputs`."""
+  """Applies `regridder` to all fields in `inputs`.
+
+  Args:
+    regridder: An interpolator object defining the regridding procedure.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import coordinates, interpolators
+    >>> from neuralgcm.experimental.core import transforms
+    >>> grid_in = coordinates.LonLatGrid.TL63()
+    >>> grid_out = coordinates.LonLatGrid.T21()
+    >>> inputs = {'u': cx.field(jnp.ones(grid_in.shape), grid_in)}
+    >>> regridder = interpolators.ConservativeRegridder(grid_out)
+    >>> out = transforms.Regrid(regridder)(inputs)
+    >>> out['u'].shape == grid_out.shape
+    True
+  """
 
   regridder: interpolators.BaseRegridder
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    """Returns `inputs` regridded with `self.regridder`."""
     return self.regridder(inputs)
 
 
 @nnx_compat.dataclass
 class ComputeMasks(TransformABC):
-  """Transforms inputs to boolean masks for keys in `mask_keys`."""
+  """Transforms inputs to boolean masks for keys in `mask_keys`.
+
+  Computes a boolean mask for specified fields based on conditions like
+  `isnan`, `above` threshold, or simply casting to boolean.
+
+  Args:
+    compute_mask_method: String specifying the method to compute bool mask.
+    threshold_value: Value used by threshold-based `compute_mask_method`s.
+    mask_keys: Keys to generate masks for. Defaults to all key in ``inputs``.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.array([1.0, jnp.nan, 3.0]))}
+    >>> out = transforms.ComputeMasks('isnan')(inputs)
+    >>> out['a'].data.tolist()
+    [False, True, False]
+  """
 
   compute_mask_method: ComputeMaskMethods = 'as_bool'
   threshold_value: float | None = None
@@ -789,12 +1074,24 @@ class ComputeMasks(TransformABC):
 class ApplyOverMasks(TransformABC):
   """Applies masking to `transform(inputs)` using `compute_masks(inputs)`.
 
-  Attributes:
-    transform: Transform to apply to inputs.
-    compute_masks: Transform that returns a mask for each input field.
-    apply_mask_method: Method to apply the mask to the input fields.
-    default_mask_key: Key of the default mask to use when compute_masks does not
-      produce a key matching mask for field in inputs.
+  Conditionally alters input fields based on computed masks. Can zero out,
+  replace with mean, or apply custom functions over the masked elements.
+
+  Args:
+    compute_masks: Transform that generates the masks.
+    apply_mask_method: String or callable specifying how to apply the mask.
+    transform: Optional transform to apply to inputs before masking.
+    default_mask_key: Fallback key for mask lookup.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.array([1., jnp.nan, 3.]))}
+    >>> mask_tx = transforms.ComputeMasks('isnan')
+    >>> out = transforms.ApplyOverMasks(mask_tx, 'nan_to_0')(inputs)
+    >>> out['a'].data.tolist()
+    [1.0, 0.0, 3.0]
   """
 
   compute_masks: TransformABC
@@ -820,7 +1117,22 @@ class ApplyOverMasks(TransformABC):
 
 
 class Nondimensionalize(TransformABC):
-  """Transform that nondimensionalizes inputs."""
+  """Nondimensionalizes ``inputs`` based on `sim_units` and expected units.
+
+  Converts ``inputs`` to nondimensional quantities by associating each key with
+  units specified in `inputs_to_units_mapping` and nondimensionalizing.
+
+  Args:
+    sim_units: Reference simulation units for nondimensionalization.
+    inputs_to_units_mapping: Dict mapping keys to their physical units.
+
+  Examples:
+    >>> from neuralgcm.experimental.core import transforms, units
+    >>> nondim = transforms.Nondimensionalize(units.SI_UNITS, {'x': 'inch'})
+    >>> inputs = {'x': cx.field(np.array([1.0, 2.0]), 'idx')}
+    >>> nondim(inputs)['x'].data.tolist()
+    [0.0254, 0.0508]
+  """
 
   def __init__(
       self,
@@ -852,7 +1164,22 @@ class Nondimensionalize(TransformABC):
 
 
 class Redimensionalize(TransformABC):
-  """Transform that redimensionalizes inputs."""
+  """Redimensionalizes nondimensional ``inputs`` to expected units.
+
+  Converts nondimensional quantities back into dimensional quantities using
+  the provided reference simulation units and key-to-units mapping.
+
+  Args:
+    sim_units: Reference simulation units for dimensionalization.
+    inputs_to_units_mapping: Dict mapping keys to their physical units.
+
+  Examples:
+    >>> from neuralgcm.experimental.core import transforms, units
+    >>> redim = transforms.Redimensionalize(units.SI_UNITS, {'x': 'inch'})
+    >>> inputs = {'x': cx.field(np.array([0.0254, 0.0508]), 'idx')}
+    >>> redim(inputs)['x'].data.tolist()
+    [1.0, 2.0]
+  """
 
   def __init__(
       self,
@@ -883,7 +1210,19 @@ class Redimensionalize(TransformABC):
 
 @nnx_compat.dataclass
 class StripPrefix(TransformABC):
-  """Transforms inputs by stripping `prefix` from the dictionary keys."""
+  """Strips `prefix` from the dictionary keys, leaving values unchanged.
+
+  Args:
+    prefix: The string prefix to remove from keys.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'pre_a': cx.field(jnp.ones(2))}
+    >>> list(transforms.StripPrefix('pre_')(inputs).keys())
+    ['a']
+  """
 
   prefix: str
 
@@ -893,7 +1232,19 @@ class StripPrefix(TransformABC):
 
 @nnx_compat.dataclass
 class RenameKeys(TransformABC):
-  """Renames keys in inputs based on rename_dict."""
+  """Renames keys in inputs based on rename_dict.
+
+  Args:
+    rename_dict: A dictionary mapping current keys to new keys.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.ones(2))}
+    >>> list(transforms.RenameKeys({'a': 'b'})(inputs).keys())
+    ['b']
+  """
 
   rename_dict: dict[str, str]
 
@@ -909,10 +1260,19 @@ class RenameKeys(TransformABC):
 
 @nnx_compat.dataclass
 class TanhClip(TransformABC):
-  """Clips inputs to (-scale, scale) range via tanh function.
+  """Clips inputs to ``(-scale, scale)`` range via tanh function.
 
-  Attributes:
-    scale: A positive float that determines the range of the outputs.
+  Args:
+    scale: A positive float determining the maximum and minimum output values.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.array([10.0, -10.0]))}
+    >>> out = transforms.TanhClip(1.0)(inputs)
+    >>> jnp.all(jnp.abs(out['a'].data) < 1.0).item()
+    True
   """
 
   scale: float
@@ -928,30 +1288,55 @@ class TanhClip(TransformABC):
 
 @nnx_compat.dataclass
 class Relu(TransformABC):
-  """Applies relu to fields specified in keys_to_apply_relu, or to all."""
+  """Equivalent to ApplyFnToKeys with `jax.nn.relu` for `fn`.
 
-  keys_to_apply_relu: Sequence[str] | None = None
+  Args:
+    keys: An arg to ``SelectKeys`` that selects keys to apply ReLU to.
+    invert: If True, apply the function to all keys except those in `keys`.
+    include_remaining: If ``True``, pass through fields not in `keys` to output.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.array([-1.0, 2.0]))}
+    >>> transforms.Relu()(inputs)['a'].data.tolist()
+    [0.0, 2.0]
+  """
+
+  keys: str | Sequence[str] | Callable[[str], bool] | None = None
+  invert: bool = False
+  include_remaining: bool = True
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    if self.keys_to_apply_relu is None:
-      return {k: cx.cmap(jax.nn.relu)(v) for k, v in inputs.items()}
-    outputs = {}
-    for k, v in inputs.items():
-      if k in self.keys_to_apply_relu:
-        outputs[k] = cx.cmap(jax.nn.relu)(v)
-      else:
-        outputs[k] = v
-    return outputs
+    return ApplyFnToKeys(
+        fn=jax.nn.relu,
+        keys=self.keys,
+        invert=self.invert,
+        include_remaining=self.include_remaining,
+    )(inputs)
 
 
 class StreamNorm(TransformABC):
   """Normalizes inputs using values from streaming mean and variances.
 
-  Attributes:
-    stream_norm: StreamNorm that performs the normalization.
-    update_stats: Whether to update the normalization statistics.
-    make_masks_transform: Optional transform that produces a mask indicating
-      which entries should contribute to the statistics updates.
+  Maintains and applies streaming statistics for normalization.
+
+  Args:
+    norm_coords: A dict mapping variable names to their normalization axes.
+    update_stats: Whether to update the normalization statistics on each call.
+    epsilon: A small float added to variance to avoid division by zero.
+    compute_masks: Optional transform to select entries for stat updates.
+    skip_nans: If True, ignores NaNs when updating statistics.
+    skip_unspecified: If True, passes through entries not in `norm_coords`.
+    allow_missing: If True, allows `norm_coords` be a superset of input keys.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> x = cx.SizedAxis('x', 2)
+    >>> norm = transforms.StreamNorm({'a': x}, epsilon=0.0)
   """
 
   def __init__(
@@ -959,7 +1344,7 @@ class StreamNorm(TransformABC):
       norm_coords: dict[str, cx.Coordinate],
       update_stats: bool = False,
       epsilon: float = 1e-11,
-      make_masks_transform: Transform | None = None,
+      compute_masks: Transform | None = None,
       skip_nans: bool = True,
       skip_unspecified: bool = False,
       allow_missing: bool = True,
@@ -971,7 +1356,7 @@ class StreamNorm(TransformABC):
         which the normalization is done independently.
       update_stats: Whether to update the normalization statistics.
       epsilon: A small float added to variance to avoid dividing by zero.
-      make_masks_transform: Optional transform that produces a mask indicating
+      compute_masks: Optional transform that produces a mask indicating
         which entries should contribute to the statistics updates.
       skip_nans: If True, ignores NaNs when updating the statistics.
       skip_unspecified: If True, input fields for which no normalization is
@@ -988,13 +1373,13 @@ class StreamNorm(TransformABC):
         allow_missing=allow_missing,
         skip_nans=skip_nans,
     )
-    self.make_masks_transform = make_masks_transform
+    self.compute_masks = compute_masks
     self.update_stats = update_stats
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     """Normalizes inputs and optionally updates statistics."""
-    if self.make_masks_transform is not None:
-      mask = self.make_masks_transform(inputs)
+    if self.compute_masks is not None:
+      mask = self.compute_masks(inputs)
       if len(mask) > 1:
         raise ValueError(
             f'Mask transform must contain at most 1 Field, got {len(mask)=}.'
@@ -1015,7 +1400,7 @@ class StreamNorm(TransformABC):
       exclude_regex: str | None = None,
       scalar_regex: str | None = None,
       update_stats: bool = False,
-      make_masks_transform: Transform | None = None,
+      compute_masks: Transform | None = None,
       epsilon: float = 1e-11,
       skip_unspecified: bool = False,
       skip_nans: bool = False,
@@ -1043,7 +1428,7 @@ class StreamNorm(TransformABC):
         norm_coords=norm_coords,
         update_stats=update_stats,
         epsilon=epsilon,
-        make_masks_transform=make_masks_transform,
+        compute_masks=compute_masks,
         skip_unspecified=skip_unspecified,
         skip_nans=skip_nans,
         allow_missing=allow_missing,
@@ -1052,7 +1437,11 @@ class StreamNorm(TransformABC):
 
 @nnx_compat.dataclass
 class ToModal(TransformABC):
-  """Transforms inputs from nodal to modal space."""
+  """Transforms inputs from nodal to modal space.
+
+  Args:
+    ylm_map: ``FixedYlmMapping`` or ``YlmMapper`` from `spherical_harmonics`.
+  """
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
 
@@ -1065,7 +1454,11 @@ class ToModal(TransformABC):
 
 @nnx_compat.dataclass
 class ToNodal(TransformABC):
-  """Transforms inputs from modal to nodal space."""
+  """Transforms inputs from modal to nodal space.
+
+  Args:
+    ylm_map: ``FixedYlmMapping`` or ``YlmMapper`` from `spherical_harmonics`.
+  """
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
 
@@ -1077,13 +1470,14 @@ class ToNodal(TransformABC):
 
 
 class ToModalWithDerivatives:
-  """Helper module that returns filtered grads and laplacians of inputs fields.
+  """Helper module that returns filtered grads and laplacians of input fields.
 
-  Gradients are filtered with an exponential filter of order 1 and provided
-  attentuations. If no attentuations are provided, then this transform returns
-  no gradient features. To avoid accidental accumulation of the cos(lat)
-  factors, features must be keyed using typing.KeyWithCosLatFactor namedtuple.
-  Gradient features are scaled by R^{m} where m is the diffentiation order.
+  Computes spatial derivatives in modal space, applying exponential
+  filters at specified attenuations.
+
+  Args:
+    ylm_map: The fixed spherical harmonics mapping configuration.
+    filter_attenuations: Tuple of attenuations to apply for the modal filters.
   """
 
   def __init__(
@@ -1145,21 +1539,20 @@ class ToModalWithDerivatives:
 class ConstrainToCoarse(TransformABC):
   """Constrains fields so that spatially-averaged values match coarse reference.
 
-  This transform applies scaling to higher-resolution fields such that their
-  spatial average, when regridded to a coarse grid, matches the average of
-  corresponding coarse-resolution fields. This is useful for enforcing additive
-  conservation laws across different resolutions.
+  Applies scaling to high-resolution fields such that their spatial average,
+  when regridded to a coarse grid, matches the coarse-resolution fields.
 
-  Note: due to regridding, conservation is not numerically exact.
+  Args:
+    raw_hres_transform: Transform generating high-resolution fields.
+    ref_coarse_transform: Transform generating coarse-resolution fields.
+    coarse_grid: Coarse target grid for comparison.
+    hres_grid: High-resolution source grid.
+    keys: Sequence of keys to apply conservation scaling to.
+    epsilon: Small value to avoid division by zero.
 
-  Attributes:
-    raw_hres_transform: Transform that generates high-resolution fields.
-    ref_coarse_transform: Transform that generates coarse-resolution fields.
-    coarse_grid: The coarse grid to which high-resolution fields are downsampled
-      for comparison.
-    hres_grid: The high-resolution grid.
-    keys: A sequence of keys for which to apply conservation.
-    epsilon: A small value to avoid division by zero.
+  Examples:
+    >>> # Detailed example omitted for brevity.
+    >>> pass
   """
 
   raw_hres_transform: TransformABC
@@ -1204,7 +1597,23 @@ class ConstrainToCoarse(TransformABC):
 
 @nnx_compat.dataclass
 class VelocityFromDivCurl(TransformABC):
-  """Transform divergence and vorticity in inputs to 2D velocity components."""
+  """Transform divergence and vorticity in inputs to 2D velocity components.
+
+  Computes u and v wind components from divergence and vorticity fields
+  using spherical harmonics.
+
+  Args:
+    ylm_map: ``FixedYlmMapping`` or ``YlmMapper`` from `spherical_harmonics`.
+    divergence_key: Key for divergence field in inputs.
+    vorticity_key: Key for vorticity field in inputs.
+    u_key: Key for the output u velocity field.
+    v_key: Key for the output v velocity field.
+    clip: Whether to apply clipping in the spectral transform.
+
+  Examples:
+    >>> # Requires SphericalHarmonics mapping object.
+    >>> pass
+  """
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
   divergence_key: str = 'divergence'
@@ -1224,7 +1633,23 @@ class VelocityFromDivCurl(TransformABC):
 
 @nnx_compat.dataclass
 class VelocityToDivCurl(TransformABC):
-  """Transform 2D velocity components to divergence and vorticity."""
+  """Transform 2D velocity components to divergence and vorticity.
+
+  Computes divergence and vorticity from u and v wind components
+  using spherical harmonics.
+
+  Args:
+    ylm_map: ``FixedYlmMapping`` or ``YlmMapper`` from `spherical_harmonics`.
+    divergence_key: Key for the output divergence field.
+    vorticity_key: Key for the output vorticity field.
+    u_key: Key for the input u velocity field.
+    v_key: Key for the input v velocity field.
+    clip: Whether to apply clipping in the spectral transform.
+
+  Examples:
+    >>> # Requires SphericalHarmonics mapping object.
+    >>> pass
+  """
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
   divergence_key: str = 'divergence'
@@ -1245,17 +1670,14 @@ class VelocityToDivCurl(TransformABC):
 class ExtractLocalPatchFromGrid(TransformABC):
   """Extracts a patch of neighbors from gridded fields around query points.
 
-  This transform splits inputs into two parts: query longitude/latitude fields
-  and gridded inputs. The query fields are used to determine the patch to
-  extract from the remaining gridded data. The gridded inputs are expected
-  to include longitude and latitude coordinate fields in degrees and be in the
-  ascending order, with longitudes in the range [-180, 180] and latitudes in
-  the range [-90, 90].
+  Splits inputs into query points and gridded data, then extracts local
+  patches from the gridded data centered around each query point.
 
-  Attributes:
-    width: The width of the square patch to extract. Default is 1.
+  Args:
+    width: The width of the square patch to extract. Defaults to 1.
     lon_query_key: Key for query longitudes in inputs.
     lat_query_key: Key for query latitudes in inputs.
+    include_offset: Whether to include coordinates offset relative to queries.
   """
 
   width: int = 1
@@ -1396,7 +1818,23 @@ def _sanitize_values(
 
 @nnx_compat.dataclass
 class SanitizeGradients(TransformABC):
-  """Wraps a transform to provide NaN-safe gradients."""
+  """Wraps a transform to provide NaN-safe gradients.
+
+  Uses a custom VJP to sanitize inputs and gradients by replacing NaNs with
+  zeros during the backward pass, ensuring stable learning, while preserving
+  the original transform's behavior in the forward pass to correctly inform NaN
+  locations for weighting, collecting statistics etc. This effectively results
+  in an additional forward pass in the backward propagation, similar to remat.
+
+  Args:
+    transform: The Transform to wrap.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> safe_tx = transforms.SanitizeGradients(transforms.Identity())
+  """
 
   transform: TransformABC
 
@@ -1439,14 +1877,20 @@ class SanitizeGradients(TransformABC):
 class NestedTransform(nnx.Module, pytree=False):
   """Wrapper that applies transforms to values of a nested dict[dict[Field]].
 
-  This module simplifies application of transforms to nested fields by assigning
-  a transform to each outer key in the nested dict. If provided with a single
-  transform, it will be applied to all keys. An ellipsis can be used to specify
-  a default transform for all keys that do not have an explicitly assigned
-  transform.
+  Simplifies applying transforms to a two-level nested dictionary by assigning
+  a specific or default transform to each top-level key.
 
-  If no transform is assigned to a key and no default transform is provided, a
-  `ValueError` is raised upon attempting to transform that key.
+  Args:
+    transform: A single Transform (applied to all) or a dict associating data
+      keys to Transforms. Ellipsis (...) can be used to set a default transform.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'level1': {'a': cx.field(jnp.zeros(2))}}
+    >>> transforms.NestedTransform(transforms.Identity())(inputs)
+    {'level1': {'a': <Field dims=(None,) shape=(2,) axes={} >}}
   """
 
   def __init__(

@@ -166,6 +166,40 @@ class GetSampleOriginsTest(absltest.TestCase):
 
     np.testing.assert_array_equal(out, expected)
 
+  def test_eval_sample_origins_none_batch_count(self):
+    stencil = xreader.TimeStencil(
+        start='0h', stop='6h', step='1h', closed='both'
+    )
+    time_axis = pd.date_range(start='2020-01-01', end='2020-01-02', freq='1h')
+    ds = xarray.Dataset(coords={'time': time_axis})
+    all_data = {'mock_ds': ds}
+
+    with self.subTest('no_remainder'):
+      out = data_loading._get_eval_sample_origins(
+          all_data=all_data,
+          time_slices=None,
+          stencil=stencil,
+          batch_count=None,
+          global_batch_size=1,
+          time_sample_offset=np.timedelta64(1, 'h'),
+      )
+      expected = time_axis[:-6]
+      np.testing.assert_array_equal(out, expected)
+
+    with self.subTest('remainder_is_trimmed'):
+      out = data_loading._get_eval_sample_origins(
+          all_data=all_data,
+          time_slices=None,
+          stencil=stencil,
+          batch_count=None,
+          global_batch_size=4,
+          time_sample_offset=np.timedelta64(1, 'h'),
+      )
+      # valid origins are time_axis[:-6], which has 25 - 6 = 19 elements.
+      # global_batch_size=4 --> we should trim to (19//4) * 4 = 16 elements.
+      expected = time_axis[:16]
+      np.testing.assert_array_equal(out, expected)
+
 
 class SelTimedeltaTest(absltest.TestCase):
 

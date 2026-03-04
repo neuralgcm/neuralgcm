@@ -179,12 +179,11 @@ def _get_eval_sample_origins(
     all_data: dict[str, xarray.Dataset],
     time_slices: tuple[str, str] | list[tuple[str, str]] | None,
     stencil: xreader.TimeStencil | dict[str, xreader.TimeStencil],
-    batch_count: int,
+    batch_count: int | None,
     global_batch_size: int,
     time_sample_offset: np.timedelta64,
 ) -> np.ndarray:
   """Get sample origins for evaluation."""
-  sample_count = global_batch_size * batch_count
   time = _get_shared_time_axis(all_data)
   sample_origins = _get_sample_origins(
       time_axis=time,
@@ -192,6 +191,17 @@ def _get_eval_sample_origins(
       stencil=stencil,
       time_sample_offset=time_sample_offset,
   )
+  if batch_count is None:
+    remainder = len(sample_origins) % global_batch_size
+    if remainder:
+      logging.warning(
+          'Dropping %d samples from eval due to non-divisible batch size.',
+          remainder,
+      )
+      sample_origins = sample_origins[:-remainder]
+    return sample_origins
+
+  sample_count = global_batch_size * batch_count
   # If 12hr are not divisible by the valid time sample offset, skip 12hr shifts,
   # as they would lead to invalid sample origins.
   _, reminder = divmod(pd.Timedelta('12h'), time_sample_offset)
@@ -1154,7 +1164,7 @@ class DataLoader:
       dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
-      batch_count: int = 1,
+      batch_count: int | None = 1,
       data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None = None,
   ) -> list[Any]:
     """Returns an iterable over the data for evaluation.

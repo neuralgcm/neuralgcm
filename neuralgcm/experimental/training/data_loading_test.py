@@ -31,7 +31,7 @@ class GetDatetimeForecastStartsTest(absltest.TestCase):
   def test_parity(self):
     candidates = pd.date_range(start='2020-01-01', end='2020-04-30', freq='12h')
 
-    out = data_loading._get_datetime_forecast_starts(20, candidates)
+    out = data_loading._get_datetime_forecast_starts(20, candidates, True)
     self.assertLen(out, 20)
     self.assertEqual(set(candidates).intersection(out), set(out))
 
@@ -49,16 +49,53 @@ class GetDatetimeForecastStartsTest(absltest.TestCase):
         pd.date_range(start='2020-10-01', end='2020-10-30', freq='8h'),
     ]
     candidates = pd.DatetimeIndex(pd.concat([pd.Series(r) for r in ranges]))
-    out = data_loading._get_datetime_forecast_starts(6, candidates)
-    self.assertLen(out, 6)
+    out = data_loading._get_datetime_forecast_starts(9, candidates, True)
+    self.assertLen(out, 9)
     self.assertEqual(set(candidates).intersection(out), set(out))
 
-    # should have 2 candidates from each of the months
+    # Because we group by 3 offsets (0h, 8h, 16h) and subsample 3 from each,
+    # we pick an early item (Jan) and a middle item (Jun) from each group.
     expected = np.array(
-        ['2020-01', '2020-01', '2020-06', '2020-06', '2020-10', '2020-10'],
+        ['2020-01'] * 3 + ['2020-06'] * 3 + ['2020-10'] * 3,
         dtype='datetime64[M]',
     )
     np.testing.assert_array_equal(out.astype('datetime64[M]'), expected)
+
+  def test_underrepresented_offset(self):
+    # 2 candidates at 00:00, 10 candidates at 12:00
+    # Total 12 candidates.
+    # 2 unique offsets.
+    # If we request 6 samples: 3 per offset.
+    # Offset 00:00 has 2 candidates, need 3. Should raise ValueError.
+    candidates_0 = pd.date_range('2020-01-01 00:00', periods=2, freq='24h')
+    candidates_12 = pd.date_range('2020-01-01 12:00', periods=10, freq='24h')
+    candidates = candidates_0.union(candidates_12)
+
+    with self.assertRaisesRegex(ValueError, 'Offset .* is underrepresented'):
+      data_loading._get_datetime_forecast_starts(6, candidates, True)
+
+  def test_sufficient_candidates(self):
+    # 2 candidates at 00:00, 10 candidates at 12:00
+    # Request 4 samples: 2 per offset. Should pass.
+    candidates_0 = pd.date_range('2020-01-01 00:00', periods=2, freq='24h')
+    candidates_12 = pd.date_range('2020-01-01 12:00', periods=10, freq='24h')
+    candidates = candidates_0.union(candidates_12)
+
+    out = data_loading._get_datetime_forecast_starts(4, candidates, True)
+    self.assertLen(out, 4)
+    out_idx = pd.DatetimeIndex(out)
+    self.assertLen(out_idx[out_idx.hour == 0], 2)
+    self.assertLen(out_idx[out_idx.hour == 12], 2)
+
+  def test_no_diurnal_balancing(self):
+    candidates = pd.date_range(
+        '2026-01-01', end='2026-01-30', freq='h', inclusive='left'
+    )
+    out = data_loading._get_datetime_forecast_starts(15, candidates, False)
+    out = out.astype('datetime64[D]')
+    self.assertLen(out, 15)
+    expected = pd.date_range('2026-01-01 00:00', periods=15, freq='48h')
+    np.testing.assert_array_equal(out, expected)
 
 
 class GetSampleOriginsTest(absltest.TestCase):
@@ -182,6 +219,7 @@ class GetSampleOriginsTest(absltest.TestCase):
           batch_count=None,
           global_batch_size=1,
           time_sample_offset=np.timedelta64(1, 'h'),
+          balance_diurnal_cycle=True,
       )
       expected = time_axis[:-6]
       np.testing.assert_array_equal(out, expected)
@@ -194,6 +232,7 @@ class GetSampleOriginsTest(absltest.TestCase):
           batch_count=None,
           global_batch_size=4,
           time_sample_offset=np.timedelta64(1, 'h'),
+          balance_diurnal_cycle=True,
       )
       # valid origins are time_axis[:-6], which has 25 - 6 = 19 elements.
       # global_batch_size=4 --> we should trim to (19//4) * 4 = 16 elements.

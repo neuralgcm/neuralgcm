@@ -94,58 +94,50 @@ def _transpose_for_to_global_array(
 def _get_datetime_forecast_starts(
     sample_count: int,
     candidates: pd.DatetimeIndex,
-    add_half_day_shifts: bool = True,
+    balance_diurnal_cycle: bool,
 ) -> np.ndarray:
   """Get equispaced forecast start times for evaluating against ERA5."""
+  if sample_count == 0:
+    return np.array([])
 
-  # To match ECMWF, all forecasts should be initialized at 0z or 12z. To
-  # approximate this, we round the candidates to whole days, shift every other
-  # one by 12 hours, and then find the closest times in the original candidate
-  # list.  This simple heuristic works well if there are a reasonable number
-  # more candidates than samples, which should always be true for practical
-  # uses.
-  if sample_count > len(candidates) / 5:
-    logging.warning(
-        'Too few candidate times to guarantee good mix of samples.  This is'
-        ' fine for tests, but probably not for real use cases.  sample_count=%d'
-        '  len(candidates)=%d',
-        sample_count,
-        len(candidates),
-    )
+  if not balance_diurnal_cycle:
+    indices = np.linspace(0, len(candidates) - 1, sample_count).astype(int)
+    return np.array(candidates[indices])
 
   candidates = pd.to_datetime(candidates)
-  rounded_candidates = candidates.ceil('1D').values
+  offsets = candidates - candidates.floor('1D')
+  unique_offsets = np.sort(pd.unique(offsets))
+  num_offsets = len(unique_offsets)
 
-  # pick samples evenly spaced from the candidates
-  if sample_count > len(rounded_candidates):
-    raise ValueError(
-        f'Too few candidate times to get {sample_count=}. '
-        f'Only {len(rounded_candidates)=} were available.'
-    )
-  stride = len(rounded_candidates) // sample_count
-  idx = np.round(np.arange(sample_count) * stride).astype(int)
-  ideal_start_times = rounded_candidates[idx]
+  if num_offsets == 0:
+    raise ValueError('No candidates available.')
 
-  if add_half_day_shifts:
-    # increment every other one by 12h
-    parity = np.arange(sample_count) % 2
-    ideal_start_times = ideal_start_times + parity * pd.Timedelta('12h')
+  # Distribute sample_count across the unique_offsets
+  counts = [
+      sample_count // num_offsets + (1 if i < sample_count % num_offsets else 0)
+      for i in range(num_offsets)
+  ]
 
-  indices = candidates.get_indexer(
-      ideal_start_times, method='nearest', tolerance='24h'
-  )
-  if (indices < 0).any():
-    raise ValueError(
-        'no matching times found for some start times: '
-        f'{ideal_start_times[indices < 0]}'
-    )
-  starts = candidates[indices]
+  starts = []
+  for offset, count in zip(unique_offsets, counts):
+    if count == 0:
+      continue
+    group_candidates = candidates[offsets == offset]
 
-  # In (presumably rare) cases where sample_count is close to len(candidates) or
-  # there are many items in candidates from the same day we might have
-  # duplicates at this point.
-  starts = np.unique(starts)
+    if count > len(group_candidates):
+      raise ValueError(
+          f'Offset {offset} is underrepresented: requested {count} samples but '
+          f'only {len(group_candidates)} are available.'
+      )
 
+    # Pick samples evenly spaced from the group candidates
+    stride = len(group_candidates) / count
+    idx = np.round(np.arange(count) * stride).astype(int)
+    idx = np.clip(idx, 0, len(group_candidates) - 1)
+    starts.append(group_candidates[idx])
+
+  starts = np.concatenate(starts)
+  starts = np.sort(starts)
   return starts
 
 
@@ -182,6 +174,7 @@ def _get_eval_sample_origins(
     batch_count: int | None,
     global_batch_size: int,
     time_sample_offset: np.timedelta64,
+    balance_diurnal_cycle: bool,
 ) -> np.ndarray:
   """Get sample origins for evaluation."""
   time = _get_shared_time_axis(all_data)
@@ -202,15 +195,8 @@ def _get_eval_sample_origins(
     return sample_origins
 
   sample_count = global_batch_size * batch_count
-  # If 12hr are not divisible by the valid time sample offset, skip 12hr shifts,
-  # as they would lead to invalid sample origins.
-  _, reminder = divmod(pd.Timedelta('12h'), time_sample_offset)
-  if reminder:
-    add_half_day_shifts = False
-  else:
-    add_half_day_shifts = True
   return _get_datetime_forecast_starts(
-      sample_count, sample_origins, add_half_day_shifts
+      sample_count, sample_origins, balance_diurnal_cycle
   )
 
 
@@ -1165,6 +1151,7 @@ class DataLoader:
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
       batch_count: int | None = 1,
+      balance_diurnal_cycle: bool = False,
       data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None = None,
   ) -> list[Any]:
     """Returns an iterable over the data for evaluation.
@@ -1176,6 +1163,8 @@ class DataLoader:
       batch_size_per_device: Number of samples per batch per device.
       time_sample_offset: Time between consecutive valid sample origins.
       batch_count: Number of batches of evaluation data to return.
+      balance_diurnal_cycle: Whether to attempt to balance diurnal variability
+        for finite `batch_count`.
       data_buffer: Buffer(s) to store loaded data. If provided, the data will be
         loaded via callback mechanism.
 
@@ -1201,6 +1190,7 @@ class DataLoader:
         batch_count,
         total_sample_count,
         time_sample_offset,
+        balance_diurnal_cycle,
     )
 
     if shard_count == 0:

@@ -834,6 +834,7 @@ class RolloutTrainer:
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
+          balance_diurnal_cycle=True,
           data_buffer=buffers,
       )
       train_data = self.data_loader.build_eval_inputs(
@@ -843,6 +844,7 @@ class RolloutTrainer:
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
           batch_count=eval_stage.num_batches,
+          balance_diurnal_cycle=True,
           data_buffer=buffers,
       )
     else:

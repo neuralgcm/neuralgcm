@@ -1310,7 +1310,7 @@ class Relu(TransformABC):
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return ApplyFnToKeys(
-        fn=jax.nn.relu,
+        fn=cx.cpmap(jax.nn.relu),
         keys=self.keys,
         invert=self.invert,
         include_remaining=self.include_remaining,

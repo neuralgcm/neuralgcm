@@ -939,6 +939,65 @@ class TransformsTest(parameterized.TestCase):
     np.testing.assert_array_less(inpainted_values, 50.0)
     np.testing.assert_allclose(inpainted_values, 1.0, atol=1e-5)
 
+  def test_wrap_fn(self):
+    inputs = {
+        'a': cx.field(jnp.array([1.0, 2.0])),
+        'b': cx.field(jnp.array([3.0, 4.0])),
+    }
+
+    with self.subTest('single_output'):
+
+      def f_out_fn(inputs, extra=1.0):
+        return inputs['a'] + extra
+
+      tx1 = transforms.WrapFn(f_out_fn, out_keys='c', kwargs={'extra': 2.0})
+      out1 = tx1(inputs)
+      self.assertSameElements(out1.keys(), ['c'])
+      np.testing.assert_allclose(out1['c'].data, jnp.array([3.0, 4.0]))
+
+    with self.subTest('dict_output_rename_keys'):
+
+      def dict_out_fn(u, v):
+        return {'u': u * 2, 'v': v * 2}
+
+      tx3 = transforms.WrapFn(
+          dict_out_fn,
+          out_keys={'u': 'new_u', 'v': 'new_v'},
+          pass_inputs=False,
+          bind_inputs={'u': 'a', 'v': 'b'}
+      )
+      out3 = tx3(inputs)
+      self.assertSameElements(out3.keys(), ['new_u', 'new_v'])
+      np.testing.assert_allclose(out3['new_u'].data, jnp.array([2.0, 4.0]))
+      np.testing.assert_allclose(out3['new_v'].data, jnp.array([6.0, 8.0]))
+
+    with self.subTest('tuple_output'):
+
+      def tuple_f_out_fn(inputs, v):
+        return inputs['a'] * 2, v * 2
+
+      tx4 = transforms.WrapFn(
+          tuple_f_out_fn,
+          out_keys=('new_a', 'new_b'),
+          pass_inputs=True,
+          bind_inputs={'v': 'b'}
+      )
+      out4 = tx4(inputs)
+      self.assertSameElements(out4.keys(), ['new_a', 'new_b'])
+      np.testing.assert_allclose(out4['new_a'].data, jnp.array([2.0, 4.0]))
+      np.testing.assert_allclose(out4['new_b'].data, jnp.array([6.0, 8.0]))
+
+    def pass_as_kwarg(state, factor=1.0):
+      return state['a'] * factor
+    tx5 = transforms.WrapFn(
+        pass_as_kwarg,
+        out_keys='scaled_a',
+        pass_inputs='state',
+        kwargs={'factor': 0.5}
+    )
+    out5 = tx5(inputs)
+    np.testing.assert_allclose(out5['scaled_a'].data, jnp.array([0.5, 1.0]))
+
 
 class ExtractLocalPatchFromGridTest(parameterized.TestCase):
 

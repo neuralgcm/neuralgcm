@@ -727,6 +727,92 @@ class ApplyFnToKeys(TransformABC):
 
 
 @nnx_compat.dataclass
+class WrapFn(TransformABC):
+  """Wraps a callable to conform to the Transform API.
+
+  Enables using functions that take individual fields and/or a dict of fields
+  as a `Transform`.
+
+  Args:
+    fn: The function or module to wrap.
+    out_keys: Specifies how to map the function's output to the output dict. If
+      `fn` returns a single `cx.Field`, this must be a string. If `fn` returns a
+      sequence of `cx.Field`s, this must be a sequence of strings of the same
+      length. If `fn` returns a dict, this can be `None` to return it as-is, or
+      it can be a dictionary mapping the returned keys to new keys.
+    pass_inputs: Whether to pass the entire `inputs` dict to `fn`. Can be a
+      boolean (True to pass as the first positional argument) or a string (to
+      pass as a keyword argument).
+    bind_inputs: A dictionary mapping argument names of `fn` to keys in the
+      `inputs` dictionary that are passed as kwargs and removed from `inputs`.
+
+  Examples:
+    >>> import coordax as cx
+    >>> import jax.numpy as jnp
+    >>> from neuralgcm.experimental.core import transforms
+    >>> inputs = {'a': cx.field(jnp.array([1.0, 2.0]))}
+    >>> def get_sum(inputs, scale=1.0):
+    ...   return inputs['a'] + scale
+    >>> tx = transforms.WrapFn(get_sum, out_keys='b', kwargs={'scale': 2.0})
+    >>> out = tx(inputs)
+    >>> out['b'].data
+    (Array([3., 4.], dtype=float32)
+  """
+
+  fn: Callable[..., Any]
+  out_keys: str | Sequence[str] | dict[str, str] | None = None
+  pass_inputs: bool | str = True
+  bind_inputs: dict[str, str] | None = None
+  kwargs: dict[str, Any] | None = None
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    inputs = inputs.copy()  # avoid mutating inputs when splitting keys.
+    fn_kwargs = dict(self.kwargs) if self.kwargs is not None else {}
+    if self.bind_inputs is not None:
+      for arg_name, input_key in self.bind_inputs.items():
+        if input_key not in inputs:
+          raise KeyError(f'Key {input_key} not found in inputs')
+        fn_kwargs[arg_name] = inputs.pop(input_key)
+
+    if isinstance(self.pass_inputs, str):
+      fn_kwargs[self.pass_inputs] = inputs
+      result = self.fn(**fn_kwargs)
+    elif self.pass_inputs:
+      result = self.fn(inputs, **fn_kwargs)
+    else:
+      result = self.fn(**fn_kwargs)
+
+    if isinstance(result, cx.Field):
+      if not isinstance(self.out_keys, str):
+        raise ValueError(
+            'out_keys must be a string when fn returns a single Field.'
+        )
+      outputs = {self.out_keys: result}
+    elif isinstance(result, dict):
+      if isinstance(self.out_keys, dict):
+        outputs = {self.out_keys.get(k, k): v for k, v in result.items()}
+      elif self.out_keys is None:
+        outputs = dict(result)
+      else:
+        raise ValueError(
+            'out_keys must be None or a dict when fn returns a dict, got'
+            f' {self.out_keys=}'
+        )
+    elif isinstance(result, (tuple, list)):
+      if not isinstance(self.out_keys, (tuple, list)) or len(
+          self.out_keys
+      ) != len(result):
+        raise ValueError(
+            'out_keys must be a sequence of the same length as the returned'
+            ' sequence.'
+        )
+      outputs = dict(zip(self.out_keys, result))
+    else:
+      raise TypeError(f'Unexpected return type {type(result)} from {self.fn}')
+    return outputs
+
+
+@nnx_compat.dataclass
 class ScanOverAxis(TransformABC):
   """Wrapper transform that applies `transform` over `axis` using scan.
 

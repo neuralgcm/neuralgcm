@@ -1,4 +1,4 @@
-![](https://github.com/neuralgcm/neuralgcm/raw/main/docs/_static/neuralgcm-logo-light.png)
+![](https://github.com/neuralgcm/neuralgcm/raw/main/docs/_static/neuralgcm-logo-dark.png)
 
 # Neural General Circulation Models for Weather and Climate
 

@@ -67,7 +67,7 @@ class Model(nnx.Module, abc.ABC):
   """Base class for stateful, modular forecast systems."""
 
   mesh: parallelism.Mesh = dataclasses.field(
-      default_factory=parallelism.Mesh, kw_only=True
+      default_factory=parallelism.default_mesh, kw_only=True
   )
   fiddle_config: fdl.Config[Model] | None = dataclasses.field(
       default=None, init=False

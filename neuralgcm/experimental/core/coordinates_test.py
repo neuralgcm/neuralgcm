@@ -405,8 +405,6 @@ class CoordinatesMethodsTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=grid,
         ylm_grid=ylm_grid,
-        mesh=parallelism.Mesh(),
-        partition_schema_key=None,
     )
     expected = ylm_map.to_modal(ylm_map.to_nodal(x) + c)
     actual = ylm_grid.add_constant(x, c)

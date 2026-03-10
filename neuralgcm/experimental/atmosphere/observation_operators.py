@@ -50,7 +50,9 @@ class StandardVariablesObservationOperator(
   levels: coordinates.PressureLevels | coordinates.SigmaLevels
   sim_units: units.SimUnits
   observation_correction: typing.Transform | None
-  mesh: parallelism.Mesh
+  mesh: parallelism.Mesh = dataclasses.field(
+      kw_only=True, default_factory=parallelism.default_mesh
+  )
 
   def observe(
       self,

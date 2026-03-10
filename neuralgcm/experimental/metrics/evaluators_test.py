@@ -21,7 +21,6 @@ import coordax as cx
 from flax import nnx
 import jax
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.metrics import aggregation
@@ -209,8 +208,6 @@ class EvaluatorsTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=grid,
         ylm_grid=ylm_grid,
-        mesh=parallelism.Mesh(),
-        partition_schema_key=None,
     )
     nodal_getter = transforms.Identity()
     modal_getter = transforms.Sequential([
@@ -326,9 +323,7 @@ class EvaluatorsTest(parameterized.TestCase):
         'timedelta': timedelta.untag(dt),
         'times': times.untag(dummy),
     }
-    evaluator_with_dt_context = evaluator.with_context(
-        context
-    )
+    evaluator_with_dt_context = evaluator.with_context(context)
     scanned_agg_states = evaluate_in_scan_fn(
         init_agg_states,
         cx.untag(predictions, dt),  # need to untag dt to be able to scan.

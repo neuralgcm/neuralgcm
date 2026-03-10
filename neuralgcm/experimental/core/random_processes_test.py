@@ -26,7 +26,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import module_utils
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
@@ -285,9 +284,7 @@ class BaseSphericalHarmonicRandomProcessTest(parameterized.TestCase):
 
     if run_correlation_length_check and variance is not None:
       with self.subTest('final_sample_correlation_len'):
-        self.check_correlation_length(
-            final_sample, correlation_length, ylm_map
-        )
+        self.check_correlation_length(final_sample, correlation_length, ylm_map)
 
     if run_mean_check:
       with self.subTest('final_sample_pointwise_mean'):
@@ -338,8 +335,6 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
           ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T42(),
               coordinates.SphericalHarmonicGrid.T42(),
-              partition_schema_key=None,
-              mesh=parallelism.Mesh(),
           ),
           correlation_length=0.15,
           correlation_time=3,
@@ -350,8 +345,6 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
           ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T21(),
               coordinates.SphericalHarmonicGrid.T21(),
-              partition_schema_key=None,
-              mesh=parallelism.Mesh(),
           ),
           correlation_length=0.15,
           correlation_time=3,
@@ -362,9 +355,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
           ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T42(),
               coordinates.SphericalHarmonicGrid.T42(),
-              partition_schema_key=None,
               radius=4.0,
-              mesh=parallelism.Mesh(),
           ),
           correlation_length=1.15,
           correlation_time=3,
@@ -375,8 +366,6 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
           ylm_map=spherical_harmonics.FixedYlmMapping(
               coordinates.LonLatGrid.T85(),
               coordinates.SphericalHarmonicGrid.T85(),
-              partition_schema_key=None,
-              mesh=parallelism.Mesh(),
           ),
           correlation_length=0.5,
           correlation_time=3,
@@ -434,8 +423,6 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     grf = random_processes.GaussianRandomField(
         ylm_map=ylm_map,
@@ -473,8 +460,6 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T85(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T85(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
 
   def _make_grf(
@@ -634,8 +619,6 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     grid = ylm_map.nodal_grid
     axis = cx.SizedAxis('grf', 2)  # 2 fields.
@@ -674,8 +657,6 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
 
     @nnx.jit

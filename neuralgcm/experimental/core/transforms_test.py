@@ -25,7 +25,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
@@ -512,16 +511,13 @@ class TransformsTest(parameterized.TestCase):
         clip_transform(inputs)
 
   def test_to_modal(self):
-    mesh = parallelism.Mesh()
     nodal_grid = coordinates.LonLatGrid.T21()
     inputs = {
         'u': cx.field(np.ones(nodal_grid.shape), nodal_grid),
     }
     with self.subTest('fixed_ylm_mapping_cubic'):
       ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          nodal_grid, ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(nodal_grid, ylm_grid)
       to_modal = transforms.ToModal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = ylm_grid
@@ -529,34 +525,27 @@ class TransformsTest(parameterized.TestCase):
 
     with self.subTest('fixed_ylm_mapping_linear'):
       ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          nodal_grid, ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(nodal_grid, ylm_grid)
       to_modal = transforms.ToModal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = ylm_grid
       self.assertEqual(actual_out_grid, expected_ylm_grid)
 
     with self.subTest('ylm_mapper_cubic'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='cubic', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='cubic')
       to_modal = transforms.ToModal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = coordinates.SphericalHarmonicGrid.T21()
       self.assertEqual(actual_out_grid, expected_ylm_grid)
 
     with self.subTest('ylm_mapper_linear'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='linear', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='linear')
       to_modal = transforms.ToModal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
       self.assertEqual(actual_out_grid, expected_ylm_grid)
 
   def test_to_nodal(self):
-    mesh = parallelism.Mesh()
     cubic_ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     linear_ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
     cubic_inputs = {
@@ -567,31 +556,23 @@ class TransformsTest(parameterized.TestCase):
     }
     grid = coordinates.LonLatGrid.T21()
     with self.subTest('fixed_ylm_mapping'):
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          grid, cubic_ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(grid, cubic_ylm_grid)
       to_nodal = transforms.ToNodal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_nodal(cubic_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
       # transforming from linear inputs.
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          grid, linear_ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(grid, linear_ylm_grid)
       to_nodal = transforms.ToNodal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_nodal(linear_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
 
     with self.subTest('ylm_mapper'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='cubic', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='cubic')
       to_nodal = transforms.ToNodal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_nodal(cubic_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
       # transforming from linear inputs.
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='linear', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='linear')
       to_nodal = transforms.ToNodal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_nodal(linear_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
@@ -669,9 +650,8 @@ class TransformsTest(parameterized.TestCase):
   def test_apply_over_axis_with_scan(self):
     nodal_grid = coordinates.LonLatGrid.T21()
     modal_grid = coordinates.SphericalHarmonicGrid.T21()
-    mesh = parallelism.Mesh()
     ylm_map = spherical_harmonics.FixedYlmMapping(
-        nodal_grid, modal_grid, mesh, None
+        nodal_grid, modal_grid
     )
     to_modal = transforms.ToModal(ylm_map)
     time = cx.SizedAxis('time', 5)
@@ -856,10 +836,8 @@ class TransformsTest(parameterized.TestCase):
         transform(inputs_missing)
 
   def test_velocity_div_curl_roundtrip(self):
-    mesh = parallelism.Mesh()
     ylm_map = spherical_harmonics.YlmMapper(
-        truncation_rule='cubic', mesh=mesh, partition_schema_key=None
-    )
+        truncation_rule='cubic',)
     modal_grid = coordinates.SphericalHarmonicGrid.T21()
     nodal_grid = coordinates.LonLatGrid.T21()
     rng = jax.random.PRNGKey(42)
@@ -900,10 +878,9 @@ class TransformsTest(parameterized.TestCase):
     )
 
   def test_inpaint_mask_for_harmonics(self):
-    mesh = parallelism.Mesh()
     grid = coordinates.LonLatGrid.T21()
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid, mesh, None)
+    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid)
 
     # Use a middle latitudinal band as a demo mask.
     mask_data = np.zeros(grid.shape, dtype=bool)

@@ -28,7 +28,6 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import feature_transforms
 from neuralgcm.experimental.core import field_utils
 from neuralgcm.experimental.core import learned_transforms
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import standard_layers
@@ -63,7 +62,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
             standard_layers.Mlp.uniform, hidden_size=6, hidden_layers=2
         ),
     )
-    self.mesh = parallelism.Mesh()
 
   def test_tower_transform_as_surface_embeddings(self):
     """Tests that ForwardTowerTransform can work as surface embeddings."""
@@ -86,7 +84,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
         concat_dims=(self.levels,),
-        mesh=self.mesh,
         rngs=nnx.Rngs(0),
     )
 
@@ -119,7 +116,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         target_split_axes=target_split_axes,
         tower_factory=self.tower_factory,
         concat_dims=('in_features',),
-        mesh=self.mesh,
         rngs=nnx.Rngs(0),
     )
 
@@ -160,7 +156,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         tower_factory=self.tower_factory,
         concat_dims=(self.levels,),
         inputs_transform=features,
-        mesh=self.mesh,
         rngs=nnx.Rngs(0),
     )
 
@@ -239,7 +234,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         tower_factory=self.tower_factory,
         concat_dims=(),
         inputs_transform=ice_features,
-        mesh=self.mesh,
         rngs=rngs,
     )
     land_transform = ForwardTowerTransform.build_using_factories(
@@ -248,7 +242,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         tower_factory=self.tower_factory,
         concat_dims=(),
         inputs_transform=land_features,
-        mesh=self.mesh,
         rngs=rngs,
     )
     sea_transform = ForwardTowerTransform.build_using_factories(
@@ -257,7 +250,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         tower_factory=self.tower_factory,
         concat_dims=(),
         inputs_transform=sea_features,
-        mesh=self.mesh,
         rngs=rngs,
     )
     land_sea_ice = learned_transforms.LandSeaIceTowersTransform(
@@ -266,7 +258,6 @@ class ForwardTowerTransformTest(parameterized.TestCase):
         sea_ice_transform=ice_transform,
         land_sea_mask_transform=land_mask_transform,
         sea_ice_value_transform=sea_ice_mask_transform,
-        mesh=self.mesh,
     )
     out = land_sea_ice(inputs)
     self.assertEqual(
@@ -285,7 +276,6 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
     self.levels = coordinates.SoilLevels.with_era5_levels()
     self.coord = cx.coords.compose(self.levels, self.grid)
     self.rnn_dim_axis = cx.SizedAxis('rnn_dim', 10)
-    self.mesh = parallelism.Mesh()
 
   @parameterized.parameters(
       dict(
@@ -334,7 +324,6 @@ class RecurrentTowerTransformTest(parameterized.TestCase):
             tower_factory=tower_factory,
             concat_dims=(self.levels,),
             state_keys=state_keys,
-            mesh=self.mesh,
             rngs=nnx.Rngs(0),
         )
     )
@@ -366,7 +355,6 @@ class TransformerTowerTransformTest(parameterized.TestCase):
     self.grid = coordinates.LonLatGrid.T21()
     self.levels = coordinates.SigmaLevels.equidistant(12)
     self.coord = cx.coords.compose(self.levels, self.grid)
-    self.mesh = parallelism.Mesh()
 
   def test_transformer_tower_predicts_surface_and_volume_targets(self):
     """Tests TransformerTowerTransform predicts surface & volume targets."""
@@ -390,9 +378,7 @@ class TransformerTowerTransformTest(parameterized.TestCase):
     # Configure the TransformerTower
     rngs = nnx.Rngs(0)
     num_heads = 2
-    ylm_mapper = spherical_harmonics.YlmMapper(
-        mesh=self.mesh, partition_schema_key=None
-    )
+    ylm_mapper = spherical_harmonics.YlmMapper()
     positional_encoder = transformer_layers.SphericalPositionalEncoder(
         ylm_mapper, l_max=4
     )
@@ -430,7 +416,6 @@ class TransformerTowerTransformTest(parameterized.TestCase):
             target_split_axes=target_split_axes,
             tower_factory=tower_factory,
             concat_dims=(self.levels,),
-            mesh=self.mesh,
             rngs=rngs,
         )
     )

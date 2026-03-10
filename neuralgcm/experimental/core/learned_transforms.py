@@ -97,7 +97,9 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
   out_transform: typing.Transform = transforms.Identity()
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+  mesh: parallelism.Mesh = dataclasses.field(
+      kw_only=True, default_factory=parallelism.default_mesh
+  )
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     tower_in_dims = self.tower.inputs_in_dims
@@ -129,7 +131,7 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
       feature_sharding_schema: str | None = None,
       result_sharding_schema: str | None = None,
       *,
-      mesh: parallelism.Mesh,
+      mesh: parallelism.Mesh | None = None,
       rngs,
   ):
     """Builds a ForwardTowerTransform using factories for submodules.
@@ -149,6 +151,8 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
     Returns:
       An instance of ForwardTowerTransform.
     """
+    if mesh is None:
+      mesh = parallelism.default_mesh()
     in_shapes = inputs_transform.output_shapes(input_shapes)
     in_field_shape = nnx.eval_shape(
         lambda s: _concat_fields(s, concat_dims),
@@ -235,7 +239,7 @@ class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
       feature_sharding_schema: str | None = None,
       result_sharding_schema: str | None = None,
       *,
-      mesh: parallelism.Mesh,
+      mesh: parallelism.Mesh | None = None,
       rngs,
   ):
     """Builds a RecurrentTowerTransform using factories for submodules.
@@ -256,7 +260,8 @@ class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
     Returns:
       An instance of RecurrentTowerTransform.
     """
-
+    if mesh is None:
+      mesh = parallelism.default_mesh()
     in_shapes = inputs_transform.output_shapes(input_shapes)
     in_shapes_for_combine = in_shapes.copy()
     for key in state_keys:
@@ -293,8 +298,8 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
     latents_transform: Transform to extract fields for latents input.
     mask_values_transform: Transform to extract fields for attention mask.
     out_transform: Transform to be applied to module outputs.
-    latents_concat_dims: Optional dimensions used to align fields when
-      combining latents.
+    latents_concat_dims: Optional dimensions used to align fields when combining
+      latents.
     feature_sharding_schema: Optional features sharding schema.
     result_sharding_schema: Optional result sharding schema.
     mesh: The `parallelism.Mesh` used for sharding.
@@ -310,7 +315,9 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
   latents_concat_dims: tuple[str | cx.Coordinate, ...] | None = None
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+  mesh: parallelism.Mesh = dataclasses.field(
+      kw_only=True, default_factory=parallelism.default_mesh
+  )
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     feature_schema = self.feature_sharding_schema
@@ -358,7 +365,7 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
       feature_sharding_schema: str | None = None,
       result_sharding_schema: str | None = None,
       *,
-      mesh: parallelism.Mesh,
+      mesh: parallelism.Mesh | None = None,
       rngs,
   ):
     """Builds a TransformerTowerTransform using factories for submodules.
@@ -382,6 +389,8 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
     Returns:
       An instance of TransformerTowerTransform.
     """
+    if mesh is None:
+      mesh = parallelism.default_mesh()
     inputs_in_shapes = inputs_transform.output_shapes(input_shapes)
     inputs_field_shape = nnx.eval_shape(
         lambda s: _concat_fields(s, concat_dims),
@@ -434,7 +443,9 @@ class LandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
   sea_ice_transform: ForwardTowerTransform
   land_sea_mask_transform: typing.Transform
   sea_ice_value_transform: typing.Transform
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+  mesh: parallelism.Mesh = dataclasses.field(
+      kw_only=True, default_factory=parallelism.default_mesh
+  )
 
   def __post_init__(self):
     # ensure that coords are the same for all transforms.

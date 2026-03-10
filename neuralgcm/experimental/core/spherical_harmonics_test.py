@@ -55,12 +55,9 @@ class SphericalTransformsTest(parameterized.TestCase):
       lon_lat_grid: coordinates.LonLatGrid,
   ):
     """Tests that SphericalHarmonicsTransform is equivalent to dinosaur."""
-    mesh = parallelism.Mesh(spmd_mesh=None)
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=lon_lat_grid,
         ylm_grid=ylm_grid,
-        mesh=mesh,
-        partition_schema_key='spatial',  # unused.
     )
     method = coordinates.SPHERICAL_HARMONICS_METHODS[
         ylm_grid.spherical_harmonics_method
@@ -102,7 +99,7 @@ class SphericalTransformsTest(parameterized.TestCase):
           spherical_harmonics.YlmMapper()
 
     with self.subTest('inside_context_explicit_ok'):
-      mesh = parallelism.Mesh()
+      mesh = parallelism.default_mesh()
       with parallelism.require_mesh:
         ylm_map = spherical_harmonics.FixedYlmMapping(
             lon_lat_grid, ylm_grid, mesh=mesh
@@ -164,17 +161,14 @@ class SphericalTransformsTest(parameterized.TestCase):
       expected_modal_shape: tuple[int, ...],
       expected_nodal_shape: tuple[int, ...],
   ):
-    with parallelism.require_mesh:
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule=truncation_rule,
-          spherical_harmonics_method=spherical_harmonics_method,
-          partition_schema_key=None,
-          mesh=parallelism.Mesh(spmd_mesh=None),
-      )
-      modal = ylm_mapper.to_modal(f)
-      nodal = ylm_mapper.to_nodal(modal)
-      self.assertEqual(modal.shape, expected_modal_shape)
-      self.assertEqual(nodal.shape, expected_nodal_shape)
+    ylm_mapper = spherical_harmonics.YlmMapper(
+        truncation_rule=truncation_rule,
+        spherical_harmonics_method=spherical_harmonics_method,
+    )
+    modal = ylm_mapper.to_modal(f)
+    nodal = ylm_mapper.to_nodal(modal)
+    self.assertEqual(modal.shape, expected_modal_shape)
+    self.assertEqual(nodal.shape, expected_nodal_shape)
 
   def test_ylm_mapper_with_padding(self):
     spmd_mesh = jax.sharding.Mesh(
@@ -241,17 +235,12 @@ class GeometryMethodsTest(chex.TestCase):
     self.dinosaur_grid = spherical_harmonic.Grid.T21(
         spherical_harmonics_impl=spherical_harmonics_impl
     )
-    mesh = parallelism.Mesh(spmd_mesh=None)
     self.fixed_ylm_mapping = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=self.lon_lat_grid,
         ylm_grid=self.ylm_grid,
-        mesh=mesh,
-        partition_schema_key=None,
     )
     self.ylm_mapper = spherical_harmonics.YlmMapper(
         truncation_rule='cubic',
-        partition_schema_key=None,
-        mesh=mesh,
     )
     key = jax.random.PRNGKey(42)
     # modal data needs to respect the mask

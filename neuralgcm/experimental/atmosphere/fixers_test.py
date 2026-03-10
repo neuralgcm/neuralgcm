@@ -24,7 +24,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.atmosphere import fixers
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
@@ -38,12 +37,9 @@ class EnergyFixersTest(parameterized.TestCase):
     self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     self.lon_lat_grid = coordinates.LonLatGrid.T21()
     self.sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
-    self.mesh = parallelism.Mesh()
     self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=self.lon_lat_grid,
         ylm_grid=self.ylm_grid,
-        partition_schema_key=None,
-        mesh=self.mesh,
     )
     full_modal = cx.coords.compose(self.sigma_levels, self.ylm_grid)
     ones_like = lambda c: cx.field(jnp.ones(c.shape), c)

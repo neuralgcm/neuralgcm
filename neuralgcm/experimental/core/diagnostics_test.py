@@ -26,7 +26,6 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import observation_operators
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 import numpy as np
@@ -386,9 +385,7 @@ class DiagnosticsTest(parameterized.TestCase):
   ):
     extract = lambda x, *args, **kwargs: x
     d_coords = {'x': cx.Scalar()}
-    with self.assertRaisesRegex(
-        ValueError, 'must be a multiple of'
-    ):
+    with self.assertRaisesRegex(ValueError, 'must be a multiple of'):
       diagnostics.IntervalDiagnostic(
           extract,
           d_coords,
@@ -400,10 +397,10 @@ class DiagnosticsTest(parameterized.TestCase):
 class ExtractModulesTest(parameterized.TestCase):
 
   def test_extract_transformed_outputs(self):
-    mesh = parallelism.Mesh()
+
     grid = coordinates.LonLatGrid.T21()
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid, mesh, None)
+    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid)
 
     to_nodal = transforms.ToNodal(ylm_map)
     extract = diagnostics.ExtractTransformedOutputs(to_nodal)

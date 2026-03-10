@@ -31,7 +31,7 @@ class MeshTest(parameterized.TestCase):
 
   def test_constructor(self):
     with self.subTest('no_sharding'):
-      no_sharding_mesh = parallelism.Mesh(spmd_mesh=None)
+      no_sharding_mesh = parallelism.default_mesh()
       self.assertIsNone(no_sharding_mesh.spmd_mesh)
       self.assertEqual(no_sharding_mesh.axis_names, ())
       self.assertEqual(no_sharding_mesh.shape, collections.OrderedDict())
@@ -199,7 +199,7 @@ class MeshTest(parameterized.TestCase):
 
   def test_raises_if_arrays_have_different_ranks(self):
     array_partitions = {'vertical': (('z', 'x', 'y'), None)}
-    mesh = parallelism.Mesh(spmd_mesh=None, array_partitions=array_partitions)
+    mesh = parallelism.Mesh(array_partitions=array_partitions)
     with self.assertRaisesRegex(
         ValueError,
         re.escape('All arrays in the pytree must have the same rank.'),

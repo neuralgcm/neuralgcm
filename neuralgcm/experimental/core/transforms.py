@@ -782,26 +782,25 @@ class WrapFn(TransformABC):
     else:
       result = self.fn(**fn_kwargs)
 
+    out_keys = self.out_keys
     if isinstance(result, cx.Field):
-      if not isinstance(self.out_keys, str):
+      if not isinstance(out_keys, str):
         raise ValueError(
             'out_keys must be a string when fn returns a single Field.'
         )
-      outputs = {self.out_keys: result}
+      outputs = {out_keys: result}
     elif isinstance(result, dict):
-      if isinstance(self.out_keys, dict):
-        outputs = {self.out_keys.get(k, k): v for k, v in result.items()}
-      elif self.out_keys is None:
+      if isinstance(out_keys, dict):
+        outputs = {out_keys.get(k, k): v for k, v in result.items()}
+      elif out_keys is None:
         outputs = dict(result)
       else:
         raise ValueError(
             'out_keys must be None or a dict when fn returns a dict, got'
-            f' {self.out_keys=}'
+            f' {out_keys=}'
         )
-    elif isinstance(result, (tuple, list)):
-      if not isinstance(self.out_keys, (tuple, list)) or len(
-          self.out_keys
-      ) != len(result):
+    elif isinstance(result, Sequence):
+      if not isinstance(out_keys, Sequence) or len(out_keys) != len(result):
         raise ValueError(
             'out_keys must be a sequence of the same length as the returned'
             ' sequence.'
@@ -891,7 +890,7 @@ class ShardFields(TransformABC):
     >>> import coordax as cx
     >>> import jax.numpy as jnp
     >>> from neuralgcm.experimental.core import parallelism, transforms
-    >>> mesh = parallelism.Mesh()
+    >>> mesh = parallelism.default_mesh()
     >>> inputs = {'a': cx.field(jnp.ones(2))}
     >>> transforms.ShardFields(mesh, 'data')(inputs)
     {'a': <Field dims=(None,) shape=(2,) axes={} >}

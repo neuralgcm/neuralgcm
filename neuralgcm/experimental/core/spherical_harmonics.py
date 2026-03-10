@@ -108,8 +108,10 @@ class FixedYlmMapping:
 
   lon_lat_grid: coordinates.LonLatGrid
   ylm_grid: coordinates.SphericalHarmonicGrid
-  mesh: parallelism.Mesh
-  partition_schema_key: parallelism.Schema | None
+  mesh: parallelism.Mesh = dataclasses.field(
+      default_factory=parallelism.default_mesh
+  )
+  partition_schema_key: parallelism.Schema | None = None
   level_key: str = 'level'
   longitude_key: str = 'longitude'
   latitude_key: str = 'latitude'
@@ -296,8 +298,10 @@ class YlmMapper:
 
   truncation_rule: TruncationRules = 'cubic'
   spherical_harmonics_method: SphericalHarmonicMethods = 'fast'
-  partition_schema_key: parallelism.Schema | None
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+  partition_schema_key: parallelism.Schema | None = None
+  mesh: parallelism.Mesh = dataclasses.field(
+      default_factory=parallelism.default_mesh
+  )
   level_key: str = 'level'
   longitude_key: str = 'longitude'
   latitude_key: str = 'latitude'

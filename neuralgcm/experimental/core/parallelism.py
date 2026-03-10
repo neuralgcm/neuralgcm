@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Utilities for implementing SPMD model parallelism."""
+from __future__ import annotations
 
 import collections
+import contextvars
 import copy
 import dataclasses
 import math
@@ -30,6 +32,7 @@ from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import typing
 import numpy as np
 import xarray
+
 
 P = jax.sharding.PartitionSpec
 
@@ -202,7 +205,6 @@ def rearrange_spmd_mesh(
 
 # TODO(dkochkov): drop array_partitions specification when partitions can be
 # specified using field_partitions.
-# TODO(dkochkov): consider making Mesh not an nnx.Module.
 
 
 @dataclasses.dataclass(frozen=True)
@@ -403,6 +405,32 @@ class Mesh:
     # supported by jax.make_array_from_single_device_arrays.
     array = jax.tree.map(make_array, *single_device_arrays)
     return cx.Field(array).tag(unsharded_coord)
+
+
+_REQUIRE_MESH = contextvars.ContextVar('require_mesh', default=False)
+
+
+class _RequireMeshContext:
+  """Context manager to enforce explicit mesh instantiation."""
+
+  def __enter__(self):
+    self._token = _REQUIRE_MESH.set(True)
+
+  def __exit__(self, exc_type, exc_val, exc_tb):
+    _REQUIRE_MESH.reset(self._token)
+
+
+require_mesh = _RequireMeshContext()
+
+
+def default_mesh() -> Mesh:
+  """Returns a default Mesh, or raises an error if require_mesh is active."""
+  if _REQUIRE_MESH.get():
+    raise ValueError(
+        'Implicit instantiation of default Mesh is prohibited in this context. '
+        'Please provide an explicit mesh.'
+    )
+  return Mesh()
 
 
 # TODO(dkochkov): Remove these temporary functions once we can rely on imposing

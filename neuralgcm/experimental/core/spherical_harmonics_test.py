@@ -84,6 +84,33 @@ class SphericalTransformsTest(parameterized.TestCase):
     expected_modal_array = dinosaur_grid.to_modal(expected_nodal_array)
     np.testing.assert_allclose(modal_array, expected_modal_array)
 
+  def test_require_mesh(self):
+    ylm_grid = coordinates.SphericalHarmonicGrid.T21()
+    lon_lat_grid = coordinates.LonLatGrid.T21()
+
+    with self.subTest('outside_context'):
+      ylm_map = spherical_harmonics.FixedYlmMapping(lon_lat_grid, ylm_grid)
+      self.assertIsInstance(ylm_map.mesh, parallelism.Mesh)
+      ylm_mapper = spherical_harmonics.YlmMapper()
+      self.assertIsInstance(ylm_mapper.mesh, parallelism.Mesh)
+
+    with self.subTest('inside_context_raises'):
+      with parallelism.require_mesh:
+        with self.assertRaisesRegex(ValueError, 'Implicit instantiation'):
+          spherical_harmonics.FixedYlmMapping(lon_lat_grid, ylm_grid)
+        with self.assertRaisesRegex(ValueError, 'Implicit instantiation'):
+          spherical_harmonics.YlmMapper()
+
+    with self.subTest('inside_context_explicit_ok'):
+      mesh = parallelism.Mesh()
+      with parallelism.require_mesh:
+        ylm_map = spherical_harmonics.FixedYlmMapping(
+            lon_lat_grid, ylm_grid, mesh=mesh
+        )
+        self.assertIsInstance(ylm_map.mesh, parallelism.Mesh)
+        ylm_mapper = spherical_harmonics.YlmMapper(mesh=mesh)
+        self.assertIsInstance(ylm_mapper.mesh, parallelism.Mesh)
+
   def test_modal_grid_property_is_padded(self):
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     lon_lat_grid = coordinates.LonLatGrid.T21()
@@ -137,16 +164,17 @@ class SphericalTransformsTest(parameterized.TestCase):
       expected_modal_shape: tuple[int, ...],
       expected_nodal_shape: tuple[int, ...],
   ):
-    ylm_mapper = spherical_harmonics.YlmMapper(
-        truncation_rule=truncation_rule,
-        spherical_harmonics_method=spherical_harmonics_method,
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(spmd_mesh=None),
-    )
-    modal = ylm_mapper.to_modal(f)
-    nodal = ylm_mapper.to_nodal(modal)
-    self.assertEqual(modal.shape, expected_modal_shape)
-    self.assertEqual(nodal.shape, expected_nodal_shape)
+    with parallelism.require_mesh:
+      ylm_mapper = spherical_harmonics.YlmMapper(
+          truncation_rule=truncation_rule,
+          spherical_harmonics_method=spherical_harmonics_method,
+          partition_schema_key=None,
+          mesh=parallelism.Mesh(spmd_mesh=None),
+      )
+      modal = ylm_mapper.to_modal(f)
+      nodal = ylm_mapper.to_nodal(modal)
+      self.assertEqual(modal.shape, expected_modal_shape)
+      self.assertEqual(nodal.shape, expected_nodal_shape)
 
   def test_ylm_mapper_with_padding(self):
     spmd_mesh = jax.sharding.Mesh(
@@ -164,40 +192,42 @@ class SphericalTransformsTest(parameterized.TestCase):
     }
     mesh = parallelism.Mesh(spmd_mesh, field_partitions=field_partitions)
     with self.subTest('cubic_truncation'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='cubic',
-          partition_schema_key='spatial',
-          mesh=mesh,
-      )
-      grid = coordinates.LonLatGrid.T21(
-          mesh=mesh, partition_schema_key='spatial'
-      )
-      f = cx.field(np.ones(grid.shape), grid)
-      modal_f = ylm_mapper.to_modal(f)
-      restored_nodal_f = ylm_mapper.to_nodal(modal_f)
-      expected_modal_grid = coordinates.SphericalHarmonicGrid.T21(
-          mesh=mesh, partition_schema_key='spatial'
-      )
-      self.assertEqual(cx.get_coordinate(modal_f), expected_modal_grid)
-      self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
+      with parallelism.require_mesh:
+        ylm_mapper = spherical_harmonics.YlmMapper(
+            truncation_rule='cubic',
+            partition_schema_key='spatial',
+            mesh=mesh,
+        )
+        grid = coordinates.LonLatGrid.T21(
+            mesh=mesh, partition_schema_key='spatial'
+        )
+        f = cx.field(np.ones(grid.shape), grid)
+        modal_f = ylm_mapper.to_modal(f)
+        restored_nodal_f = ylm_mapper.to_nodal(modal_f)
+        expected_modal_grid = coordinates.SphericalHarmonicGrid.T21(
+            mesh=mesh, partition_schema_key='spatial'
+        )
+        self.assertEqual(cx.get_coordinate(modal_f), expected_modal_grid)
+        self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
 
     with self.subTest('linear_truncation'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='linear',
-          partition_schema_key='spatial',
-          mesh=mesh,
-      )
-      grid = coordinates.LonLatGrid.T21(
-          mesh=mesh, partition_schema_key='spatial'
-      )
-      f = cx.field(np.ones(grid.shape), grid)
-      modal_f = ylm_mapper.to_modal(f)
-      restored_nodal_f = ylm_mapper.to_nodal(modal_f)
-      expected_modal_grid = coordinates.SphericalHarmonicGrid.TL31(
-          mesh=mesh, partition_schema_key='spatial'
-      )
-      self.assertEqual(cx.get_coordinate(modal_f), expected_modal_grid)
-      self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
+      with parallelism.require_mesh:
+        ylm_mapper = spherical_harmonics.YlmMapper(
+            truncation_rule='linear',
+            partition_schema_key='spatial',
+            mesh=mesh,
+        )
+        grid = coordinates.LonLatGrid.T21(
+            mesh=mesh, partition_schema_key='spatial'
+        )
+        f = cx.field(np.ones(grid.shape), grid)
+        modal_f = ylm_mapper.to_modal(f)
+        restored_nodal_f = ylm_mapper.to_nodal(modal_f)
+        expected_modal_grid = coordinates.SphericalHarmonicGrid.TL31(
+            mesh=mesh, partition_schema_key='spatial'
+        )
+        self.assertEqual(cx.get_coordinate(modal_f), expected_modal_grid)
+        self.assertEqual(cx.get_coordinate(restored_nodal_f), grid)
 
 
 class GeometryMethodsTest(chex.TestCase):

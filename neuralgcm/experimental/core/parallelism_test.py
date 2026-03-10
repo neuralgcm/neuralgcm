@@ -90,6 +90,22 @@ class MeshTest(parameterized.TestCase):
       ):
         parallelism.Mesh(spmd_mesh, field_partitions=field_partitions)
 
+  def test_require_mesh_context(self):
+    with self.subTest('outside_context'):
+      # Instantiation should succeed.
+      mesh = parallelism.default_mesh()
+      self.assertIsInstance(mesh, parallelism.Mesh)
+
+    with self.subTest('inside_context_raises'):
+      with parallelism.require_mesh:
+        with self.assertRaisesRegex(ValueError, 'Implicit instantiation'):
+          parallelism.default_mesh()
+
+    with self.subTest('inside_context_explicit_ok'):
+      with parallelism.require_mesh:
+        mesh = parallelism.Mesh()
+        self.assertIsInstance(mesh, parallelism.Mesh)
+
   def test_array_constraint(self):
     spmd_mesh = jax.sharding.Mesh(
         np.array(jax.devices()).reshape((2, 2, 2)), axis_names=['z', 'x', 'y']

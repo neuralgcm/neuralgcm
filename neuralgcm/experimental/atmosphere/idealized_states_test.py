@@ -20,7 +20,6 @@ import coordax as cx
 import jax
 from neuralgcm.experimental.atmosphere import idealized_states
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
 
@@ -35,8 +34,6 @@ class TestStatesTest(parameterized.TestCase):
     self.ylm_map = spherical_harmonics.FixedYlmMapping(
         self.grid,
         self.ylm_grid,
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     self.sim_units = units.get_si_units()
 
@@ -86,9 +83,7 @@ class TestStatesTest(parameterized.TestCase):
           coordinates.HybridLevels.with_n_levels(8),
       ],
   )
-  def test_steady_state_jw(
-      self, as_nodal, temperature_format, levels
-  ):
+  def test_steady_state_jw(self, as_nodal, temperature_format, levels):
     rng = jax.random.PRNGKey(42)
     state = idealized_states.steady_state_jw(
         self.ylm_map,
@@ -125,9 +120,7 @@ class TestStatesTest(parameterized.TestCase):
           coordinates.HybridLevels.with_n_levels(8),
       ],
   )
-  def test_perturbed_jw(
-      self, as_nodal, temperature_format, levels
-  ):
+  def test_perturbed_jw(self, as_nodal, temperature_format, levels):
     state = idealized_states.perturbed_jw(
         self.ylm_map,
         levels,

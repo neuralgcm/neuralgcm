@@ -22,7 +22,6 @@ import jax
 from neuralgcm.experimental.atmosphere import transforms as atmos_transforms
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
@@ -49,8 +48,6 @@ class AtmosphereTransformsTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     with_gradients_transform = transforms.ToModalWithDerivatives(
         ylm_map,
@@ -83,8 +80,6 @@ class AtmosphereTransformsTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=ylm_grid,
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(None),
     )
     pressure_features = atmos_transforms.PressureFeatures(
         ylm_map=ylm_map,
@@ -104,8 +99,6 @@ class AtmosphereTransformsTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=ylm_grid,
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(None),
     )
     pressure_features = atmos_transforms.PressureFeatures(
         ylm_map=ylm_map,

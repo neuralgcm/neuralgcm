@@ -24,7 +24,6 @@ import jax_datetime as jdt
 from neuralgcm.experimental.atmosphere import observation_operators
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import orographies
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import units
 import numpy as np
@@ -38,15 +37,12 @@ class ObservationOperatorsTest(parameterized.TestCase):
     self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     self.grid = coordinates.LonLatGrid.T21()
     self.in_sigma = coordinates.SigmaLevels.equidistant(n_sigma)
     self.source_coords = cx.coords.compose(self.in_sigma, self.ylm_grid)
     self.sim_units = units.DEFAULT_UNITS
-    self.mesh = parallelism.Mesh(None)
     self.orography_module = orographies.ModalOrography(
         ylm_map=self.ylm_map,
         rngs=nnx.Rngs(0),
@@ -71,7 +67,6 @@ class ObservationOperatorsTest(parameterized.TestCase):
         levels=pressure_levels,
         sim_units=self.sim_units,
         observation_correction=None,
-        mesh=self.mesh,
     )
     query = {
         'temperature': target_coords,
@@ -91,7 +86,6 @@ class ObservationOperatorsTest(parameterized.TestCase):
         levels=target_sigma_levels,
         sim_units=self.sim_units,
         observation_correction=None,
-        mesh=self.mesh,
     )
     query = {
         'temperature': target_coords,

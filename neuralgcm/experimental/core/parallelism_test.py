@@ -31,7 +31,7 @@ class MeshTest(parameterized.TestCase):
 
   def test_constructor(self):
     with self.subTest('no_sharding'):
-      no_sharding_mesh = parallelism.Mesh(spmd_mesh=None)
+      no_sharding_mesh = parallelism.default_mesh()
       self.assertIsNone(no_sharding_mesh.spmd_mesh)
       self.assertEqual(no_sharding_mesh.axis_names, ())
       self.assertEqual(no_sharding_mesh.shape, collections.OrderedDict())
@@ -89,6 +89,22 @@ class MeshTest(parameterized.TestCase):
           ValueError, re.escape(r'Encountered duplicate')
       ):
         parallelism.Mesh(spmd_mesh, field_partitions=field_partitions)
+
+  def test_require_mesh_context(self):
+    with self.subTest('outside_context'):
+      # Instantiation should succeed.
+      mesh = parallelism.default_mesh()
+      self.assertIsInstance(mesh, parallelism.Mesh)
+
+    with self.subTest('inside_context_raises'):
+      with parallelism.require_mesh:
+        with self.assertRaisesRegex(ValueError, 'Implicit instantiation'):
+          parallelism.default_mesh()
+
+    with self.subTest('inside_context_explicit_ok'):
+      with parallelism.require_mesh:
+        mesh = parallelism.Mesh()
+        self.assertIsInstance(mesh, parallelism.Mesh)
 
   def test_array_constraint(self):
     spmd_mesh = jax.sharding.Mesh(
@@ -183,7 +199,7 @@ class MeshTest(parameterized.TestCase):
 
   def test_raises_if_arrays_have_different_ranks(self):
     array_partitions = {'vertical': (('z', 'x', 'y'), None)}
-    mesh = parallelism.Mesh(spmd_mesh=None, array_partitions=array_partitions)
+    mesh = parallelism.Mesh(array_partitions=array_partitions)
     with self.assertRaisesRegex(
         ValueError,
         re.escape('All arrays in the pytree must have the same rank.'),

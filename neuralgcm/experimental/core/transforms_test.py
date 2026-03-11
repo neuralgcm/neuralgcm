@@ -25,7 +25,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
@@ -512,16 +511,13 @@ class TransformsTest(parameterized.TestCase):
         clip_transform(inputs)
 
   def test_to_modal(self):
-    mesh = parallelism.Mesh()
     nodal_grid = coordinates.LonLatGrid.T21()
     inputs = {
         'u': cx.field(np.ones(nodal_grid.shape), nodal_grid),
     }
     with self.subTest('fixed_ylm_mapping_cubic'):
       ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          nodal_grid, ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(nodal_grid, ylm_grid)
       to_modal = transforms.ToModal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = ylm_grid
@@ -529,34 +525,27 @@ class TransformsTest(parameterized.TestCase):
 
     with self.subTest('fixed_ylm_mapping_linear'):
       ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          nodal_grid, ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(nodal_grid, ylm_grid)
       to_modal = transforms.ToModal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = ylm_grid
       self.assertEqual(actual_out_grid, expected_ylm_grid)
 
     with self.subTest('ylm_mapper_cubic'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='cubic', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='cubic')
       to_modal = transforms.ToModal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = coordinates.SphericalHarmonicGrid.T21()
       self.assertEqual(actual_out_grid, expected_ylm_grid)
 
     with self.subTest('ylm_mapper_linear'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='linear', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='linear')
       to_modal = transforms.ToModal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_modal(inputs)['u'])
       expected_ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
       self.assertEqual(actual_out_grid, expected_ylm_grid)
 
   def test_to_nodal(self):
-    mesh = parallelism.Mesh()
     cubic_ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     linear_ylm_grid = coordinates.SphericalHarmonicGrid.TL31()
     cubic_inputs = {
@@ -567,31 +556,23 @@ class TransformsTest(parameterized.TestCase):
     }
     grid = coordinates.LonLatGrid.T21()
     with self.subTest('fixed_ylm_mapping'):
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          grid, cubic_ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(grid, cubic_ylm_grid)
       to_nodal = transforms.ToNodal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_nodal(cubic_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
       # transforming from linear inputs.
-      ylm_map = spherical_harmonics.FixedYlmMapping(
-          grid, linear_ylm_grid, mesh, None
-      )
+      ylm_map = spherical_harmonics.FixedYlmMapping(grid, linear_ylm_grid)
       to_nodal = transforms.ToNodal(ylm_map)
       actual_out_grid = cx.get_coordinate(to_nodal(linear_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
 
     with self.subTest('ylm_mapper'):
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='cubic', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='cubic')
       to_nodal = transforms.ToNodal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_nodal(cubic_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
       # transforming from linear inputs.
-      ylm_mapper = spherical_harmonics.YlmMapper(
-          truncation_rule='linear', mesh=mesh, partition_schema_key=None
-      )
+      ylm_mapper = spherical_harmonics.YlmMapper(truncation_rule='linear')
       to_nodal = transforms.ToNodal(ylm_mapper)
       actual_out_grid = cx.get_coordinate(to_nodal(linear_inputs)['u'])
       self.assertEqual(actual_out_grid, grid)
@@ -669,9 +650,8 @@ class TransformsTest(parameterized.TestCase):
   def test_apply_over_axis_with_scan(self):
     nodal_grid = coordinates.LonLatGrid.T21()
     modal_grid = coordinates.SphericalHarmonicGrid.T21()
-    mesh = parallelism.Mesh()
     ylm_map = spherical_harmonics.FixedYlmMapping(
-        nodal_grid, modal_grid, mesh, None
+        nodal_grid, modal_grid
     )
     to_modal = transforms.ToModal(ylm_map)
     time = cx.SizedAxis('time', 5)
@@ -856,10 +836,8 @@ class TransformsTest(parameterized.TestCase):
         transform(inputs_missing)
 
   def test_velocity_div_curl_roundtrip(self):
-    mesh = parallelism.Mesh()
     ylm_map = spherical_harmonics.YlmMapper(
-        truncation_rule='cubic', mesh=mesh, partition_schema_key=None
-    )
+        truncation_rule='cubic',)
     modal_grid = coordinates.SphericalHarmonicGrid.T21()
     nodal_grid = coordinates.LonLatGrid.T21()
     rng = jax.random.PRNGKey(42)
@@ -900,10 +878,9 @@ class TransformsTest(parameterized.TestCase):
     )
 
   def test_inpaint_mask_for_harmonics(self):
-    mesh = parallelism.Mesh()
     grid = coordinates.LonLatGrid.T21()
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid, mesh, None)
+    ylm_map = spherical_harmonics.FixedYlmMapping(grid, ylm_grid)
 
     # Use a middle latitudinal band as a demo mask.
     mask_data = np.zeros(grid.shape, dtype=bool)
@@ -938,6 +915,65 @@ class TransformsTest(parameterized.TestCase):
     inpainted_values = output['u'].data[mask_data]
     np.testing.assert_array_less(inpainted_values, 50.0)
     np.testing.assert_allclose(inpainted_values, 1.0, atol=1e-5)
+
+  def test_wrap_fn(self):
+    inputs = {
+        'a': cx.field(jnp.array([1.0, 2.0])),
+        'b': cx.field(jnp.array([3.0, 4.0])),
+    }
+
+    with self.subTest('single_output'):
+
+      def f_out_fn(inputs, extra=1.0):
+        return inputs['a'] + extra
+
+      tx1 = transforms.WrapFn(f_out_fn, out_keys='c', kwargs={'extra': 2.0})
+      out1 = tx1(inputs)
+      self.assertSameElements(out1.keys(), ['c'])
+      np.testing.assert_allclose(out1['c'].data, jnp.array([3.0, 4.0]))
+
+    with self.subTest('dict_output_rename_keys'):
+
+      def dict_out_fn(u, v):
+        return {'u': u * 2, 'v': v * 2}
+
+      tx3 = transforms.WrapFn(
+          dict_out_fn,
+          out_keys={'u': 'new_u', 'v': 'new_v'},
+          pass_inputs=False,
+          bind_inputs={'u': 'a', 'v': 'b'}
+      )
+      out3 = tx3(inputs)
+      self.assertSameElements(out3.keys(), ['new_u', 'new_v'])
+      np.testing.assert_allclose(out3['new_u'].data, jnp.array([2.0, 4.0]))
+      np.testing.assert_allclose(out3['new_v'].data, jnp.array([6.0, 8.0]))
+
+    with self.subTest('tuple_output'):
+
+      def tuple_f_out_fn(inputs, v):
+        return inputs['a'] * 2, v * 2
+
+      tx4 = transforms.WrapFn(
+          tuple_f_out_fn,
+          out_keys=('new_a', 'new_b'),
+          pass_inputs=True,
+          bind_inputs={'v': 'b'}
+      )
+      out4 = tx4(inputs)
+      self.assertSameElements(out4.keys(), ['new_a', 'new_b'])
+      np.testing.assert_allclose(out4['new_a'].data, jnp.array([2.0, 4.0]))
+      np.testing.assert_allclose(out4['new_b'].data, jnp.array([6.0, 8.0]))
+
+    def pass_as_kwarg(state, factor=1.0):
+      return state['a'] * factor
+    tx5 = transforms.WrapFn(
+        pass_as_kwarg,
+        out_keys='scaled_a',
+        pass_inputs='state',
+        kwargs={'factor': 0.5}
+    )
+    out5 = tx5(inputs)
+    np.testing.assert_allclose(out5['scaled_a'].data, jnp.array([0.5, 1.0]))
 
 
 class ExtractLocalPatchFromGridTest(parameterized.TestCase):

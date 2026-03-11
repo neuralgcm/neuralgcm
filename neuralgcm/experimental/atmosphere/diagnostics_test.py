@@ -28,7 +28,6 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import towers
@@ -74,8 +73,6 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     grid = coordinates.LonLatGrid.T21()
     sigma = coordinates.SigmaLevels.equidistant(layers=8)
@@ -90,12 +87,9 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
     chex.assert_trees_all_equal_shapes_and_dtypes(actual, expected_struct)
 
   def test_extract_precipitation_and_evaporation(self):
-    mesh = parallelism.Mesh()
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
-        partition_schema_key=None,
-        mesh=mesh,
     )
     grid = coordinates.LonLatGrid.T21()
     sigma = coordinates.SigmaLevels.equidistant(layers=8)
@@ -116,7 +110,6 @@ class PrecipitationPlusEvaporationTest(parameterized.TestCase):
             inputs_transform=transforms.ToNodal(ylm_map),
             feature_sharding_schema=None,
             result_sharding_schema=None,
-            mesh=mesh,
             rngs=nnx.Rngs(0),
         )
     )
@@ -152,12 +145,9 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
     self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     self.lon_lat_grid = coordinates.LonLatGrid.T21()
     self.sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
-    self.mesh = parallelism.Mesh()
     self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=self.lon_lat_grid,
         ylm_grid=self.ylm_grid,
-        partition_schema_key=None,
-        mesh=self.mesh,
     )
     full_modal = cx.coords.compose(self.sigma_levels, self.ylm_grid)
     ones_like = lambda c: cx.field(jnp.ones(c.shape), c)
@@ -201,9 +191,9 @@ class EnergyDiagnosticsTest(parameterized.TestCase):
         observation_operator=self.observation_operator,
         energy_fluxes_query=self.energy_query,
     )
-    imbalance = energy_residuals(
-        self.tendencies, prognostics=self.prognostics
-    )['imbalance']
+    imbalance = energy_residuals(self.tendencies, prognostics=self.prognostics)[
+        'imbalance'
+    ]
     self.assertEqual(imbalance.shape, self.lon_lat_grid.shape)
     self.assertEqual(imbalance.dtype, jnp.float32)
 
@@ -229,12 +219,9 @@ class DryAirMassDiagnosticsTest(parameterized.TestCase):
     self.ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     self.lon_lat_grid = coordinates.LonLatGrid.T21()
     self.sigma_levels = coordinates.SigmaLevels.equidistant(layers=8)
-    self.mesh = parallelism.Mesh()
     self.ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=self.lon_lat_grid,
         ylm_grid=self.ylm_grid,
-        partition_schema_key=None,
-        mesh=self.mesh,
     )
     full_modal = cx.coords.compose(self.sigma_levels, self.ylm_grid)
     ones_like = lambda c: cx.field(jnp.ones(c.shape), c)

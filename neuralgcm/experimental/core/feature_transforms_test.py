@@ -25,7 +25,6 @@ from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import feature_transforms
 from neuralgcm.experimental.core import orographies
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import spherical_harmonics
@@ -69,8 +68,6 @@ class FeatureTransformsTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     orography = orographies.ModalOrography(
         ylm_map=ylm_map,
@@ -85,8 +82,6 @@ class FeatureTransformsTest(parameterized.TestCase):
     ylm_map = spherical_harmonics.FixedYlmMapping(
         lon_lat_grid=coordinates.LonLatGrid.T21(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
-        partition_schema_key=None,
-        mesh=parallelism.Mesh(),
     )
     orography = orographies.ModalOrography(
         ylm_map=ylm_map,
@@ -184,8 +179,6 @@ class FeatureTransformsTest(parameterized.TestCase):
           ylm_map=spherical_harmonics.FixedYlmMapping(
               lon_lat_grid=coordinates.LonLatGrid.T21(),
               ylm_grid=coordinates.SphericalHarmonicGrid.T21(),
-              partition_schema_key=None,
-              mesh=parallelism.Mesh(None),
           ),
       ),
   )

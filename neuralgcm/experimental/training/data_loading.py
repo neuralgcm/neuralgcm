@@ -1150,7 +1150,7 @@ class DataLoader:
       dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
-      batch_count: int | None = 1,
+      batch_count: int | None = None,
       balance_diurnal_cycle: bool = False,
       data_buffer: HostDataBuffer | Sequence[HostDataBuffer] | None = None,
   ) -> list[Any]:
@@ -1162,7 +1162,8 @@ class DataLoader:
       dataset_time_slice: Time period(s) to select evaluation data from.
       batch_size_per_device: Number of samples per batch per device.
       time_sample_offset: Time between consecutive valid sample origins.
-      batch_count: Number of batches of evaluation data to return.
+      batch_count: Number of batches of evaluation data to return. Returns all
+        batches if None.
       balance_diurnal_cycle: Whether to attempt to balance diurnal variability
         for finite `batch_count`.
       data_buffer: Buffer(s) to store loaded data. If provided, the data will be

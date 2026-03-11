@@ -24,7 +24,6 @@ from jax import config  # pylint: disable=g-importing-member
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import learned_transforms
 from neuralgcm.experimental.core import observation_operators
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import towers
@@ -164,7 +163,6 @@ class TransformObservationOperatorTest(parameterized.TestCase):
             tower_factory=tower_factory,
             concat_dims=(sigma_levels.dims[0],),
             inputs_transform=feature_module,
-            mesh=parallelism.Mesh(None),
             rngs=nnx.Rngs(0),
         )
     )

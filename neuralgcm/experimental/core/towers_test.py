@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests that Towers can be instantiated with different networks."""
+
 import functools
 
 from absl.testing import absltest
@@ -23,7 +24,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import towers
@@ -408,9 +408,7 @@ class TransformerTowerTest(parameterized.TestCase):
     dense_factory = functools.partial(
         standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=8
     )
-    ylm_mapper = spherical_harmonics.YlmMapper(
-        mesh=parallelism.Mesh(), partition_schema_key=None
-    )
+    ylm_mapper = spherical_harmonics.YlmMapper()
     lmax = 4
     positional_encoder = transformer_layers.SphericalPositionalEncoder(
         ylm_mapper, lmax

@@ -2123,12 +2123,25 @@ class NestedTransform(nnx.Module, pytree=False):
   def __init__(
       self,
       transform: typing.Transform | dict[str | type(...), typing.Transform],
+      default_transform: typing.Transform | None = None,
   ):
     if isinstance(transform, dict):
       transforms_map = transform.copy()
-      self.default_transform = transforms_map.pop(..., None)
+      if ... in transforms_map:
+        if default_transform is not None:
+          raise ValueError(
+              'Cannot specify default_transform both via `...` in '
+              '`transform` dict and as a separate argument.'
+          )
+        self.default_transform = transforms_map.pop(...)
+      else:
+        self.default_transform = default_transform
       self.transforms = transforms_map
     else:
+      if default_transform is not None:
+        raise ValueError(
+            'Cannot specify default_transform when transform is not a dict.'
+        )
       self.default_transform = transform
       self.transforms = {}
 

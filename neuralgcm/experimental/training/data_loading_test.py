@@ -460,8 +460,50 @@ class DataLoaderTest(absltest.TestCase):
     devices = jax.local_devices()
     jax_mesh = jax.sharding.Mesh(np.array(devices), ('batch',))
     self.mesh = parallelism.Mesh(
-        spmd_mesh=jax_mesh, field_partitions={'data': {'batch': 'batch'}},
+        spmd_mesh=jax_mesh,
+        field_partitions={'data': {'batch': 'batch'}},
     )
+
+  def test_reader_single_spec(self):
+    loader = data_loading.DataLoader(
+        all_data=self.all_data,
+        parallelism_mesh=self.mesh,
+        loading_partition_schema='data',
+    )
+    iterator = loader.build_train_inputs(
+        self.input_data_specs,
+        batch_size_per_device=1,
+        shuffle_buffer_size_in_bytes=1000,
+        dataset_rng_seed=42,
+        time_sample_offset=np.timedelta64(24, 'h'),
+        dataset_time_slice=None,
+    )
+    batch = next(iterator)
+    self.assertIn('slow', batch)
+
+  def test_reader_multiple_specs(self):
+    loader = data_loading.DataLoader(
+        all_data=self.all_data,
+        parallelism_mesh=self.mesh,
+        loading_partition_schema='data',
+    )
+    third_spec = {'fast': {'y': coordinates.TimeDelta(self.fast_deltas)}}
+    iterator = loader.build_train_inputs(
+        self.input_data_specs,
+        self.dynamic_input_specs,
+        third_spec,
+        batch_size_per_device=1,
+        shuffle_buffer_size_in_bytes=1000,
+        dataset_rng_seed=42,
+        time_sample_offset=np.timedelta64(24, 'h'),
+        dataset_time_slice=None,
+    )
+    batch = next(iterator)
+    self.assertLen(batch, 3)
+    self.assertIn('slow', batch[0])
+    self.assertIn('fast', batch[0])
+    self.assertEmpty(batch[1])
+    self.assertIn('fast', batch[2])
 
   def test_batched_reader_produces(self):
     loader = data_loading.DataLoader(
@@ -470,8 +512,8 @@ class DataLoaderTest(absltest.TestCase):
         loading_partition_schema='data',
     )
     iterator = loader.build_train_inputs(
-        input_data_specs=self.input_data_specs,
-        dynamic_input_specs=self.dynamic_input_specs,
+        self.input_data_specs,
+        self.dynamic_input_specs,
         batch_size_per_device=1,
         shuffle_buffer_size_in_bytes=1000,
         dataset_rng_seed=42,
@@ -498,8 +540,8 @@ class DataLoaderTest(absltest.TestCase):
         loading_partition_schema='data',
     )
     iterator = loader.build_train_inputs(
-        input_data_specs=self.input_data_specs,
-        dynamic_input_specs=self.dynamic_input_specs,
+        self.input_data_specs,
+        self.dynamic_input_specs,
         batch_size_per_device=None,
         shuffle_buffer_size_in_bytes=1000,
         dataset_rng_seed=42,
@@ -523,8 +565,8 @@ class DataLoaderTest(absltest.TestCase):
 
     with self.subTest('batch_size_per_device=None'):
       iterator = loader.build_train_inputs(
-          input_data_specs=self.input_data_specs,
-          dynamic_input_specs=self.dynamic_input_specs,
+          self.input_data_specs,
+          self.dynamic_input_specs,
           batch_size_per_device=None,
           shuffle_buffer_size_in_bytes=1000,
           dataset_rng_seed=42,
@@ -542,8 +584,8 @@ class DataLoaderTest(absltest.TestCase):
 
     with self.subTest('batch_size_per_device=2'):
       iterator = loader.build_train_inputs(
-          input_data_specs=self.input_data_specs,
-          dynamic_input_specs=self.dynamic_input_specs,
+          self.input_data_specs,
+          self.dynamic_input_specs,
           batch_size_per_device=2,
           shuffle_buffer_size_in_bytes=1000,
           dataset_rng_seed=42,
@@ -565,14 +607,13 @@ class DataLoaderTest(absltest.TestCase):
         loading_partition_schema='data',
     )
     shared_args = dict(
-        input_data_specs=input_specs,
-        dynamic_input_specs=dynamic_specs,
         batch_size_per_device=batch_size_per_device,
         shuffle_buffer_size_in_bytes=1000,
         dataset_rng_seed=42,
         time_sample_offset=np.timedelta64(24, 'h'),
         dataset_time_slice=None,
     )
+    all_specs = (input_specs, dynamic_specs)
 
     nested_specs = scan_utils.nested_scan_specs(input_specs)
     nested_steps = scan_utils.nested_scan_steps(input_specs)
@@ -591,8 +632,10 @@ class DataLoaderTest(absltest.TestCase):
       retrieve_fns.append(jax.jit(retrieve_fn))
       buffers.append(data_buffer)
 
-    iter_std = loader.build_train_inputs(**shared_args)
-    iter_cb = loader.build_train_inputs(data_buffer=buffers, **shared_args)
+    iter_std = loader.build_train_inputs(*all_specs, **shared_args)
+    iter_cb = loader.build_train_inputs(
+        *all_specs, data_buffer=buffers, **shared_args
+    )
 
     # We need to call next on both: to get expected data and populate buffer.
     sample_std, _ = next(iter_std)
@@ -625,7 +668,9 @@ class TestTimedeltaSelectors(absltest.TestCase):
   def test_sel_init_and_target_drop_empty_fields(self):
 
     source_1 = {
-        'x': self._make_field([-1, 0],),
+        'x': self._make_field(
+            [-1, 0],
+        ),
         'y': self._make_field([-1, 0, 1]),
     }
 

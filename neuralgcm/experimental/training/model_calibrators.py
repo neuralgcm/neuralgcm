@@ -135,8 +135,8 @@ class CollectNormalizationStats(ModelCalibrator):
 
     train_stage = train_schedule.stages[self.train_stage_idx]
     data_iter = data_loader.build_eval_inputs(
-        input_data_specs=train_stage.inputs_spec,
-        dynamic_input_specs=train_stage.dynamic_inputs_spec,
+        train_stage.inputs_spec,
+        train_stage.dynamic_inputs_spec,
         dataset_time_slice=(self.time_start, self.time_end),
         batch_size_per_device=None,
         time_sample_offset=train_stage.time_sample_offset,

@@ -518,6 +518,13 @@ def slice_leading_timedelta(inputs: PyTree, length: int) -> PyTree:
   return jax.tree.map(_slice_field, inputs, is_leaf=cx.is_field)
 
 
+def _unpack_size_one_tuple(x: tuple[Any, ...]) -> tuple[Any, ...] | Any:
+  """If `x` is a tuple of size one, unpacks it."""
+  if len(x) == 1:
+    [x] = x
+  return x
+
+
 class HostDataBuffer:
   """Helper class to buffer data on host and stream slices to devices."""
 
@@ -636,28 +643,33 @@ class DataLoader:
 
   def _prep_data_stencils_and_shard_count(
       self,
-      input_data_specs: typing.Pytree,
-      dynamic_input_specs: typing.Pytree,
+      *input_specs: dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]],
       batch_size_per_device: int | None,
   ) -> tuple[dict[str, xarray.Dataset], dict[str, xreader.TimeStencil], int]:
     """Prepares data, stencils and shard count for train/eval data loading."""
-    get_var_names = lambda k: (
-        list(input_data_specs.get(k, [])) + list(dynamic_input_specs.get(k, []))
-    )
-    all_data = {k: v[get_var_names(k)] for k, v in self.all_data.items()}
+    def get_var_names(k):
+      return sum([list(spec.get(k, [])) for spec in input_specs], [])
+
+    all_request_keys = set().union(*[spec.keys() for spec in input_specs])
+    if not all_request_keys.issubset(set(self.all_data.keys())):
+      missing_keys = all_request_keys - set(self.all_data.keys())
+      raise ValueError(
+          f'Not all request keys are found in all_data: {missing_keys=}.'
+      )
+    all_data = {k: self.all_data[k][get_var_names(k)] for k in all_request_keys}
     # Remove datasets from which we are not loading any variables.
     all_data = {k: v for k, v in all_data.items() if v.data_vars}
 
-    inputs_stencils = infer_stencils(input_data_specs)
-    dynamic_stencils = infer_stencils(dynamic_input_specs)
-    stencils = inputs_stencils | dynamic_stencils
-    shared_keys = set(inputs_stencils) & set(dynamic_stencils)
-    for k in shared_keys:
-      if inputs_stencils[k] != dynamic_stencils[k]:
-        raise ValueError(
-            f'Stencil for {k} differs between inputs and dynamic inputs:'
-            f' {inputs_stencils[k]} vs {dynamic_stencils[k]}'
-        )
+    stencils = {}
+    for spec in input_specs:
+      spec_stencils = infer_stencils(spec)
+      for k, stencil in spec_stencils.items():
+        if k in stencils and stencils[k] != stencil:
+          raise ValueError(
+              f'Stencil for {k} differs between specs: '
+              f'{stencils[k]} vs {stencil}'
+          )
+        stencils[k] = stencil
 
     if batch_size_per_device is None:
       shard_count = 1
@@ -683,7 +695,10 @@ class DataLoader:
     This method sets up the mechanism to load data via a callback. It returns
     a `retrieve_fn` that can be used inside JIT-compiled code to fetch data
     for a given index, and a `data_buffer` that must be updated with the
-    corresponding data (e.g. by the iterator returned from `build_train_inputs`).
+    corresponding data (e.g. by the iterator from ``build_train_inputs``). Note
+    that when using multiple `*input_specs` in ``build_train_inputs`` or
+    ``build_eval_inputs``, loading via callbacks is only applied to the first
+    spec, which is generally sufficient and could be split downstream if needed.
 
     Args:
       data_slice_struct: Structure of the data slice to be retrieved.
@@ -815,7 +830,7 @@ class DataLoader:
           is_leaf=cx.is_field,
       )
       out = jax.tree.map(
-          cx.wrap,
+          cx.field,
           merged_shards,
           coords,
       )
@@ -859,10 +874,9 @@ class DataLoader:
   def _from_xarray_fn(
       self,
       data: dict[str, xarray.Dataset],
-      input_data_specs: typing.Pytree,
-      dynamic_input_specs: typing.Pytree,
+      *input_specs: typing.Pytree,
       stencils: dict[str, xreader.TimeStencil],
-  ) -> tuple[typing.Pytree, typing.Pytree]:
+  ) -> tuple[typing.Pytree, ...]:
     """Reads data from xarray datasets."""
     timedelta_origins = {
         k: v.start if v.closed in ['left', 'both'] else v.start + v.step
@@ -870,13 +884,8 @@ class DataLoader:
     }
     data = xarray_utils.ensure_timedelta_axis(data, timedelta_origins)
     if self.spmd_mesh is None:
-      inputs = xarray_utils.read_from_xarray(data, input_data_specs)
-      dynamic_inputs = xarray_utils.read_from_xarray(data, dynamic_input_specs)
-      return inputs, dynamic_inputs
-    return (
-        self._read_sharded_fields(data, input_data_specs),
-        self._read_sharded_fields(data, dynamic_input_specs),
-    )
+      return tuple(xarray_utils.read_from_xarray(data, spec) for spec in input_specs)
+    return tuple(self._read_sharded_fields(data, spec) for spec in input_specs)
 
   def to_global_array(self, pytree: PyTree) -> PyTree:
     """Create a pytree of global JAX arrays from a pytree of NumPy arrays."""
@@ -1036,25 +1045,25 @@ class DataLoader:
       if isinstance(data_buffer, HostDataBuffer):
         data_buffer = [data_buffer]
 
-    for batch, dynamic_data in data:
+    for batches in data:
       if data_buffer:
-        init_slice = slice_leading_timedelta(batch, 1)
+        buffer_batch, *other = batches
+        init_slice = slice_leading_timedelta(buffer_batch, 1)
         init_slice = self.to_global_array(init_slice)
         for buffer in data_buffer:
-          buffer.set_data(batch)
-        inputs = init_slice
+          buffer.set_data(buffer_batch)
+        yield _unpack_size_one_tuple((init_slice,) + tuple(other))
       else:
-        inputs = batch
-      yield inputs, dynamic_data
+        yield _unpack_size_one_tuple(tuple(batches))
 
-  def _to_global_dynamic(self, targets_and_dynamic_inputs):
-    targets, dynamic_inputs = targets_and_dynamic_inputs
-    return targets, self.to_global_array(dynamic_inputs)
+  def _to_global_except_first(self, targets_and_dynamic_inputs):
+    return tuple([targets_and_dynamic_inputs[0]] + [
+        self.to_global_array(b) for b in targets_and_dynamic_inputs[1:]
+    ])
 
   def build_train_inputs(
       self,
-      input_data_specs: typing.Pytree,
-      dynamic_input_specs: typing.Pytree,
+      *input_specs: typing.Pytree,
       batch_size_per_device: int | None,
       shuffle_buffer_size_in_bytes: int,
       dataset_rng_seed: int,
@@ -1065,24 +1074,21 @@ class DataLoader:
     """Loads the training dataset and returns a data iterator.
 
     Args:
-      input_data_specs: Specifications for input data fields.
-      dynamic_input_specs: Specifications for dynamic input fields.
+      *input_specs: Specifications for data fields to load.
       batch_size_per_device: Number of samples per batch per device.
       shuffle_buffer_size_in_bytes: Size of the shuffle buffer in bytes.
-      dataset_rng_seed: Seed for the random number generator used in the
-        dataset.
+      dataset_rng_seed: Seed to use for generating shuffle indices.
       time_sample_offset: Time between consecutive valid start times.
       dataset_time_slice: Time period(s) to select training data from.
-      data_buffer: Buffer(s) to store loaded data. If provided, the data will be
-        loaded via callback mechanism.
+      data_buffer: Buffer(s) to store loaded data for the first spec in
+        `input_specs`. If provided, the data for this spec will be loaded via
+        callback mechanism.
 
     Returns:
       An iterator over the training data.
     """
     all_data, stencils, shard_count = self._prep_data_stencils_and_shard_count(
-        input_data_specs,
-        dynamic_input_specs,
-        batch_size_per_device
+        *input_specs, batch_size_per_device=batch_size_per_device
     )
     if shard_count == 0:
       raise ValueError(
@@ -1120,11 +1126,8 @@ class DataLoader:
           seed=seed,
       )
 
-    from_xr = functools.partial(
-        self._from_xarray_fn,
-        input_data_specs=input_data_specs,
-        dynamic_input_specs=dynamic_input_specs,
-        stencils=stencils,
+    from_xr = lambda data: self._from_xarray_fn(
+        data, *input_specs, stencils=stencils
     )
 
     # Read a shard across space and initialization times.
@@ -1135,7 +1138,7 @@ class DataLoader:
         from_xarray_fn=from_xr,
     )
     if data_buffer is not None:
-      data = data.map(self._to_global_dynamic)
+      data = data.map(self._to_global_except_first)
     else:
       data = data.map(self.to_global_array)
     data = grain.experimental.ThreadPrefetchIterDataset(
@@ -1145,8 +1148,7 @@ class DataLoader:
 
   def build_eval_inputs(
       self,
-      input_data_specs: typing.Pytree,
-      dynamic_input_specs: typing.Pytree,
+      *input_specs: typing.Pytree,
       dataset_time_slice: tuple[str, str] | list[tuple[str, str]] | None,
       batch_size_per_device: int | None,
       time_sample_offset: np.timedelta64,
@@ -1157,23 +1159,23 @@ class DataLoader:
     """Returns an iterable over the data for evaluation.
 
     Args:
-      input_data_specs: Specifications for input data fields.
-      dynamic_input_specs: Specifications for dynamic input fields.
+      *input_specs: Specifications for data fields to load.
       dataset_time_slice: Time period(s) to select evaluation data from.
       batch_size_per_device: Number of samples per batch per device.
       time_sample_offset: Time between consecutive valid sample origins.
       batch_count: Number of batches of evaluation data to return. Returns all
-        batches if None.
+        batches if None. Default is None.
       balance_diurnal_cycle: Whether to attempt to balance diurnal variability
-        for finite `batch_count`.
-      data_buffer: Buffer(s) to store loaded data. If provided, the data will be
-        loaded via callback mechanism.
+        for finite `batch_count`. Default is False.
+      data_buffer: Buffer(s) to store loaded data for the first spec in
+        `input_specs`. If provided, the data for this spec will be loaded via
+        callback mechanism.
 
     Returns:
       A list of batches of evaluation data.
     """
     all_data, stencils, shard_count = self._prep_data_stencils_and_shard_count(
-        input_data_specs, dynamic_input_specs, batch_size_per_device
+        *input_specs, batch_size_per_device=batch_size_per_device
     )
 
     if batch_size_per_device is not None:
@@ -1207,11 +1209,8 @@ class DataLoader:
           origins[shard_index::shard_count],
       )
 
-    from_xr = functools.partial(
-        self._from_xarray_fn,
-        input_data_specs=input_data_specs,
-        dynamic_input_specs=dynamic_input_specs,
-        stencils=stencils,
+    from_xr = lambda data: self._from_xarray_fn(
+        data, *input_specs, stencils=stencils
     )
 
     data = self._read_model_parallel_dataset(
@@ -1221,7 +1220,7 @@ class DataLoader:
         from_xarray_fn=from_xr,
     )
     if data_buffer is not None:
-      data = data.map(self._to_global_dynamic)
+      data = data.map(self._to_global_except_first)
     else:
       data = data.map(self.to_global_array)
 

@@ -828,8 +828,8 @@ class RolloutTrainer:
 
     if eval_stage.num_batches:
       eval_data = self.data_loader.build_eval_inputs(
-          input_data_specs=eval_stage.inputs_spec,
-          dynamic_input_specs=eval_stage.dynamic_inputs_spec,
+          eval_stage.inputs_spec,
+          eval_stage.dynamic_inputs_spec,
           dataset_time_slice=eval_stage.eval_time_slice,
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
@@ -838,8 +838,8 @@ class RolloutTrainer:
           data_buffer=buffers,
       )
       train_data = self.data_loader.build_eval_inputs(
-          input_data_specs=eval_stage.inputs_spec,
-          dynamic_input_specs=eval_stage.dynamic_inputs_spec,
+          eval_stage.inputs_spec,
+          eval_stage.dynamic_inputs_spec,
           dataset_time_slice=eval_stage.train_time_slice,
           batch_size_per_device=eval_stage.batch_size_per_device,
           time_sample_offset=eval_stage.time_sample_offset,
@@ -909,8 +909,8 @@ class RolloutTrainer:
     self._eval_components_cache = new_eval_components_cache
 
     training_data = self.data_loader.build_train_inputs(
-        input_data_specs=train_stage.inputs_spec,
-        dynamic_input_specs=train_stage.dynamic_inputs_spec,
+        train_stage.inputs_spec,
+        train_stage.dynamic_inputs_spec,
         batch_size_per_device=train_stage.batch_size_per_device,
         shuffle_buffer_size_in_bytes=train_stage.shuffle_buffer_size,
         dataset_rng_seed=train_stage.dataset_rng_seed,

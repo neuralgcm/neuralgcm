@@ -370,6 +370,14 @@ def zero_mask_axis_outliers(
   return field * cx.field(mask, axis)
 
 
+def field_from_sequence(
+    sequence: Sequence[float],
+    *coordinates: cx.Coordinate,
+) -> cx.Field:
+  """Fiddle-serializable helper for constructing Field from a sequence."""
+  return cx.field(np.asarray(sequence), *coordinates)
+
+
 def reconstruct_1d_field_from_ref_values(
     axis: cx.Coordinate,
     ref_ticks: Sequence[float],

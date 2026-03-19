@@ -37,6 +37,8 @@ import jax
 import jax.nn
 import jax.numpy as jnp
 import jax_datetime as jdt
+import tree_math
+
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
@@ -2159,3 +2161,86 @@ class NestedTransform(nnx.Module, pytree=False):
   def output_shapes(self, input_shapes: dict[str, Any]) -> dict[str, Any]:
     call_dispatch = lambda nested_transform, inputs: nested_transform(inputs)
     return nnx.eval_shape(call_dispatch, self, input_shapes)
+
+
+@nnx_compat.dataclass
+class ElementwiseBinaryOp(TransformABC):
+  """Applies elementwise binary operation between input fields and other fields.
+
+  For each key in `operand_transform(inputs)`, applies `op` elementwise to
+  the fields `inputs[key]` and `operand_transform(inputs)[key]`.
+
+  Args:
+    op: A callable that takes two arrays and returns an array of same or
+      broadcastable shape, e.g., `jnp.add`, `jnp.subtract`.
+    operand_transform: A transform that returns the second operands for `op`,
+      as a dictionary of fields.
+    include_remaining: If True, fields in `inputs` whose keys are not in
+      `operand_transform(inputs)` are passed through to the output.
+  """
+
+  op: Callable[[Any, Any], Any]
+  operand_transform: Transform
+  include_remaining: bool = False
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    second_operand = self.operand_transform(inputs)
+    keys = second_operand.keys()
+    first_operand = {k: v for k, v in inputs.items() if k in keys}
+    mapped_op = cx.cpmap(self.op)
+    result = {k: mapped_op(first_operand[k], second_operand[k]) for k in keys}
+    if self.include_remaining:
+      for k in inputs.keys():
+        if k not in keys:
+          result[k] = inputs[k]
+    return result
+
+  @classmethod
+  def with_prescribed_fields(
+      cls, op, fields: dict[str, cx.Field], include_remaining: bool = False
+  ):
+    return cls(
+        op=op,
+        operand_transform=PrescribedFields(fields),
+        include_remaining=include_remaining,
+    )
+
+
+@nnx_compat.dataclass
+class ProjectOntoBasis(TransformABC):
+  """Projects inputs onto basis vectors and computes dot product.
+
+  Applies `inputs_transform` and `basis_transform` to inputs to obtain two
+  dictionaries of fields, and computes their dot product over
+  `dims_to_contract`.
+  Both dictionaries must have the exact same keys.
+  The dot product is interpreted as the sum of element-wise products of the
+  fields, summed over all elements in the resulting fields.
+  The result is stored as a field with key `out_key`.
+
+  Args:
+    to_basis_transform: Transform that returns a dictionary of basis fields.
+    inputs_transform: Transform that returns dictionary of fields to project.
+      Defaults to Identity.
+    dims_to_contract: Sequence of dimensions to contract during dot product.
+    out_key: The key for the output field containing the dot product.
+    allow_missing: If True, ignores dimensions in `dims_to_contract` that are
+      missing from individual fields.
+  """
+  to_basis_transform: Transform
+  inputs_transform: Transform = Identity()
+  dims_to_contract: Sequence[str | cx.Coordinate] = ()
+  out_key: str = 'projection'
+  allow_missing: bool = True
+
+  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+    basis_dict = self.to_basis_transform(inputs)
+    inputs_dict = self.inputs_transform(inputs)
+    tree_dot = cx.cmap(
+        lambda x, y: tree_math.numpy.dot(
+            tree_math.Vector(x), tree_math.Vector(y)
+        )
+    )
+    untag_fn = lambda f: cx.untag( f, *self.dims_to_contract, allow_missing=self.allow_missing )
+    result = tree_dot(untag_fn(inputs_dict), untag_fn(basis_dict))
+    return {self.out_key: result}

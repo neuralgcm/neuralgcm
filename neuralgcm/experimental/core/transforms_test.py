@@ -1466,8 +1466,10 @@ class NestedTransformTest(parameterized.TestCase):
     inputs = {'time': cx.field(time)}
     operands = {'time': cx.field(dt)}
 
-    op_transform = transforms.ElementwiseBinaryOp.with_prescribed_fields(
-        operator.add, operands
+    op_transform = (
+        transforms.EntrywiseBinaryOp.with_prescribed_fields(
+            operator.add, operands
+        )
     )
     actual = op_transform(inputs)
     expected_time = time + dt
@@ -1485,8 +1487,8 @@ class NestedTransformTest(parameterized.TestCase):
         'a': cx.field(jnp.array([10.0, 11.0]), x),
         'b': cx.field(jnp.array([12.0, 13.0]), x),
     }
-    op_transform = transforms.ElementwiseBinaryOp.with_prescribed_fields(
-        jnp.add, operands, include_remaining=True
+    op_transform = transforms.EntrywiseBinaryOp.with_prescribed_fields(
+        'add', operands, include_remaining=True
     )
     actual = op_transform(inputs)
     expected = {

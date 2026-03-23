@@ -28,6 +28,7 @@ import abc
 import collections
 import dataclasses
 import itertools
+import operator
 import re
 from typing import Any, Callable, Literal, Sequence, TypeAlias
 
@@ -49,6 +50,14 @@ from neuralgcm.experimental.core import spatial_filters
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
+
+
+_SUPPORTED_BINARY_OPS = {
+    'subtract': operator.sub,
+    'divide': operator.truediv,
+    'add': operator.add,
+    'multiply': operator.mul,
+}
 
 
 # pylint: disable=g-classes-have-attributes
@@ -2164,22 +2173,23 @@ class NestedTransform(nnx.Module, pytree=False):
 
 
 @nnx_compat.dataclass
-class ElementwiseBinaryOp(TransformABC):
+class EntrywiseBinaryOp(TransformABC):
   """Applies elementwise binary operation between input fields and other fields.
 
   For each key in `operand_transform(inputs)`, applies `op` elementwise to
   the fields `inputs[key]` and `operand_transform(inputs)[key]`.
 
   Args:
-    op: A callable that takes two arrays and returns an array of same or
-      broadcastable shape, e.g., `jnp.add`, `jnp.subtract`.
+    op: A string name of a supported operator ('subtract', 'divide', 'add',
+      'multiply') or a callable that takes two arrays and returns an array of
+      same or broadcastable shape, e.g., `jnp.add`, `jnp.subtract`.
     operand_transform: A transform that returns the second operands for `op`,
       as a dictionary of fields.
     include_remaining: If True, fields in `inputs` whose keys are not in
       `operand_transform(inputs)` are passed through to the output.
   """
 
-  op: Callable[[Any, Any], Any]
+  op: Callable[[Any, Any], Any] | str
   operand_transform: Transform
   include_remaining: bool = False
 
@@ -2187,7 +2197,12 @@ class ElementwiseBinaryOp(TransformABC):
     second_operand = self.operand_transform(inputs)
     keys = second_operand.keys()
     first_operand = {k: v for k, v in inputs.items() if k in keys}
-    mapped_op = cx.cpmap(self.op)
+    op = (
+        _SUPPORTED_BINARY_OPS.get(self.op, self.op)
+        if isinstance(self.op, str)
+        else self.op
+    )
+    mapped_op = cx.cpmap(op)
     result = {k: mapped_op(first_operand[k], second_operand[k]) for k in keys}
     if self.include_remaining:
       for k in inputs.keys():

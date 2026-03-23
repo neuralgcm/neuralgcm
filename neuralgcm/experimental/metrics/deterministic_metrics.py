@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 import dataclasses
+from typing import Sequence
 import coordax as cx
 import jax.numpy as jnp
 from neuralgcm.experimental.metrics import base
@@ -97,6 +98,72 @@ class RMSE(base.PerVariableMetric):
       statistic_values: dict[str, cx.Field],
   ) -> cx.Field:
     return cx.cmap(jnp.sqrt)(statistic_values['SquaredError'])
+
+
+@dataclasses.dataclass
+class ProductStatistic(base.PerVariableStatistic):
+  """Computes product between combinations of predictions and targets."""
+  x_is_prediction: bool = True
+  y_is_target: bool = True
+  product_dims: Sequence[str | cx.Coordinate] = tuple()
+
+  @property
+  def unique_name(self) -> str:
+    x_name = 'pred' if self.x_is_prediction else 'target'
+    y_name = 'target' if self.y_is_target else 'pred'
+    dim_names = []
+    for d in self.product_dims:
+      if isinstance(d, cx.Coordinate):
+        dim_names.extend(d.dims)
+      else:
+        dim_names.append(d)
+    dims_str = '_'.join(str(d) for d in dim_names)
+    return f'ProductStatistic_{x_name}_{y_name}_{dims_str}'
+
+  def _compute_per_variable(
+      self, predictions: cx.Field, targets: cx.Field
+  ) -> cx.Field:
+    x = predictions if self.x_is_prediction else targets
+    y = targets if self.y_is_target else predictions
+    if not self.product_dims:
+      return x * y
+    return cx.cmap(jnp.dot)(
+        x.untag(*self.product_dims), y.untag(*self.product_dims)
+    )
+
+
+@dataclasses.dataclass
+class CosineSimilarityMetric(base.Metric):
+  """Cosine Similarity metric."""
+
+  @property
+  def statistics(self) -> dict[str, base.Statistic]:
+    return {
+        'u_dot_v': ProductStatistic(True, True),
+        'u_dot_u': ProductStatistic(True, False),
+        'v_dot_v': ProductStatistic(False, True),
+    }
+
+  def _values_from_mean_statistics_with_internal_names(
+      self, mean_statistics: dict[str, dict[str, cx.Field]]
+  ) -> dict[str, cx.Field]:
+    u_dot_v_vars = mean_statistics['u_dot_v']
+    u_dot_u_vars = mean_statistics['u_dot_u']
+    v_dot_v_vars = mean_statistics['v_dot_v']
+
+    # Ensure all variables have the same coordinates before summing.
+    if len(set(v.coordinate for v in u_dot_v_vars.values())) > 1:
+      coords = {k: v.coordinate for k, v in u_dot_v_vars.items()}
+      raise ValueError(f'Variables have different coordinates: {coords}')
+
+    u_dot_v = sum(u_dot_v_vars.values())
+    u_norm_squared = sum(u_dot_u_vars.values())
+    v_norm_squared = sum(v_dot_v_vars.values())
+
+    denominator = cx.cmap(base.safe_sqrt)(u_norm_squared * v_norm_squared)
+    cosine_sim = u_dot_v / denominator
+
+    return {'cosine_similarity': cosine_sim}
 
 
 @dataclasses.dataclass

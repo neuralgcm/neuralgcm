@@ -80,6 +80,109 @@ class DeterministicMetricsTest(parameterized.TestCase):
       np.testing.assert_almost_equal(debug_terms['relative_x'].data, 0.4 / 2.6)
       np.testing.assert_almost_equal(debug_terms['relative_y'].data, 2.2 / 2.6)
 
+  def test_product_statistic(self):
+    time = cx.SizedAxis('time', 3)
+    x1_p = cx.field(np.array([1.0, -1.0, 0.5]), time)
+    x2_p = cx.field(np.array([2.0, 2.0, -0.5]), time)
+    x1_t = cx.field(np.array([0.5, -2.0, 1.0]), time)
+    x2_t = cx.field(np.array([1.5, 1.0, -1.0]), time)
+
+    x = {'x1': x1_p, 'x2': x2_p}
+    y = {'x1': x1_t, 'x2': x2_t}
+
+    stat_u_v = deterministic_metrics.ProductStatistic(True, True)
+    stat_u_u = deterministic_metrics.ProductStatistic(True, False)
+    stat_v_v = deterministic_metrics.ProductStatistic(False, True)
+
+    res_u_v = stat_u_v.compute(x, y)
+    res_u_u = stat_u_u.compute(x, y)
+    res_v_v = stat_v_v.compute(x, y)
+
+    cx.testing.assert_fields_allclose(res_u_v['x1'], x1_p * x1_t)
+    cx.testing.assert_fields_allclose(res_u_v['x2'], x2_p * x2_t)
+    cx.testing.assert_fields_allclose(res_u_u['x1'], x1_p**2)
+    cx.testing.assert_fields_allclose(res_u_u['x2'], x2_p**2)
+    cx.testing.assert_fields_allclose(res_v_v['x1'], x1_t**2)
+    cx.testing.assert_fields_allclose(res_v_v['x2'], x2_t**2)
+
+  def test_product_statistic_with_product_dims(self):
+    time = cx.SizedAxis('time', 3)
+    space = cx.SizedAxis('space', 2)
+
+    x_p_data = np.array([[1.0, 2.0], [-1.0, 0.5], [0.5, -0.5]])
+    y_p_data = np.array([[2.0, 1.0], [2.0, 1.0], [-0.5, 0.5]])
+
+    x_p = cx.field(x_p_data, time, space)
+    y_p = cx.field(y_p_data, time, space)
+
+    x = {'x1': x_p}
+    y = {'x1': y_p}
+
+    stat = deterministic_metrics.ProductStatistic(
+        x_is_prediction=True, y_is_target=True, product_dims=('space',)
+    )
+
+    res = stat.compute(x, y)
+
+    # Expected: dot product along the 'space' axis (axis 1)
+    expected_x1 = np.sum(x_p.data * y_p.data, axis=1)
+
+    np.testing.assert_allclose(res['x1'].data, expected_x1)
+    self.assertEqual(res['x1'].dims, ('time',))
+
+  def test_cosine_similarity(self):
+    time = cx.SizedAxis('time', 3)
+    rmm1_p = cx.field(np.array([1.0, -1.0, 0.5]), time)
+    rmm2_p = cx.field(np.array([2.0, 2.0, -0.5]), time)
+    rmm1_t = cx.field(np.array([0.5, -2.0, 1.0]), time)
+    rmm2_t = cx.field(np.array([1.5, 1.0, -1.0]), time)
+
+    x = {'rmm1': rmm1_p, 'rmm2': rmm2_p}
+    y = {'rmm1': rmm1_t, 'rmm2': rmm2_t}
+
+    metric = deterministic_metrics.CosineSimilarityMetric()
+    statistics = {
+        s.unique_name: s.compute(x, y) for s in metric.statistics.values()
+    }
+    metric_values = metric.values_from_mean_statistics(statistics)
+
+    expected_numerator = rmm1_p.data * rmm1_t.data + rmm2_p.data * rmm2_t.data
+    expected_denom_p = rmm1_p.data**2 + rmm2_p.data**2
+    expected_denom_t = rmm1_t.data**2 + rmm2_t.data**2
+    expected_cor = expected_numerator / np.sqrt(
+        expected_denom_p * expected_denom_t
+    )
+
+    cx.testing.assert_fields_allclose(
+        metric_values['cosine_similarity'],
+        cx.field(expected_cor, time),
+        atol=1e-6,
+    )
+
+  def test_cosine_similarity_raises_different_coordinates(self):
+    time = cx.SizedAxis('time', 3)
+    space = cx.SizedAxis('space', 2)
+    rmm1_p = cx.field(np.array([1.0, -1.0, 0.5]), time)
+    rmm2_p = cx.field(
+        np.array([[2.0, 1.0], [2.0, 1.0], [-0.5, 0.5]]), time, space
+    )
+    rmm1_t = cx.field(np.array([0.5, -2.0, 1.0]), time)
+    rmm2_t = cx.field(
+        np.array([[1.5, 0.5], [1.0, 1.0], [-1.0, 0.5]]), time, space
+    )
+
+    x = {'rmm1': rmm1_p, 'rmm2': rmm2_p}
+    y = {'rmm1': rmm1_t, 'rmm2': rmm2_t}
+
+    metric = deterministic_metrics.CosineSimilarityMetric()
+    statistics = {
+        s.unique_name: s.compute(x, y) for s in metric.statistics.values()
+    }
+    with self.assertRaisesRegex(
+        ValueError, 'Variables have different coordinates'
+    ):
+      metric.values_from_mean_statistics(statistics)
+
   def test_wind_vector_rmse(self):
     u_name = 'u'
     v_name = 'v'

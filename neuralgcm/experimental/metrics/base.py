@@ -20,6 +20,29 @@ import collections
 import dataclasses
 from typing import Iterator
 import coordax as cx
+import jax
+import jax.numpy as jnp
+from neuralgcm.experimental.core import typing
+
+
+@jax.custom_jvp
+def safe_sqrt(x: typing.Array) -> jax.Array:
+  """Sqrt(x) with gradient = 0 for x near 0."""
+  return jnp.sqrt(x)
+
+
+@safe_sqrt.defjvp
+def safe_sqrt_jvp(
+    primals: typing.Array,
+    tangents: typing.Array,
+) -> tuple[jax.Array, jax.Array]:
+  (x,) = primals
+  (x_dot,) = tangents
+  primal_out = safe_sqrt(x)
+  eps = jnp.finfo(x.dtype).eps
+  safe_x = jnp.where(x > eps, x, 1.0)
+  tangent_out = jnp.where(x > eps, x_dot / (2 * safe_sqrt(safe_x)), 0)
+  return primal_out, tangent_out
 
 
 @dataclasses.dataclass

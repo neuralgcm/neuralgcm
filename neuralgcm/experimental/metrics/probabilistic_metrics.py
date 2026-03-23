@@ -17,37 +17,15 @@
 from __future__ import annotations
 import dataclasses
 import coordax as cx
-import jax
 import jax.numpy as jnp
-from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.metrics import base
-
-
-@jax.custom_jvp
-def safe_sqrt(x: typing.Array) -> jax.Array:
-  """Sqrt(x) with gradient = 0 for x near 0."""
-  return jnp.sqrt(x)
-
-
-@safe_sqrt.defjvp
-def safe_sqrt_jvp(
-    primals: typing.Array,
-    tangents: typing.Array,
-) -> tuple[jax.Array, jax.Array]:
-  (x,) = primals
-  (x_dot,) = tangents
-  primal_out = safe_sqrt(x)
-  eps = jnp.finfo(x.dtype).eps
-  safe_x = jnp.where(x > eps, x, 1.0)
-  tangent_out = jnp.where(x > eps, x_dot / (2 * safe_sqrt(safe_x)), 0)
-  return primal_out, tangent_out
 
 
 def abs_beta(x: cx.Field, beta: float) -> cx.Field:
   if beta >= 1:
     abs_fn = cx.cmap(jnp.abs)
   else:
-    abs_fn = cx.cmap(lambda x: safe_sqrt(x**2))
+    abs_fn = cx.cmap(lambda x: base.safe_sqrt(x**2))
   return abs_fn(x) ** beta
 
 

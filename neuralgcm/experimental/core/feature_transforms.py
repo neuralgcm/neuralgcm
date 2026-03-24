@@ -21,6 +21,7 @@ from typing import Sequence
 import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
+import jax_datetime as jdt
 import jax_solar
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
@@ -32,6 +33,7 @@ from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 from neuralgcm.experimental.core import xarray_utils
+import numpy as np
 import xarray
 
 
@@ -113,10 +115,19 @@ class DynamicInputFeatures(transforms.TransformABC):
 
   keys: Sequence[str]
   dynamic_input_module: dynamic_io.DynamicInputSlice
+  time_offsets: dict[str, np.timedelta64] | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    data_features = self.dynamic_input_module(inputs['time'])
-    return {k: data_features[k] for k in self.keys}
+    if self.time_offsets is None:
+      data_features = self.dynamic_input_module(inputs['time'])
+      return {k: data_features[k] for k in self.keys}
+    features = {}
+    for suffix, offset in self.time_offsets.items():
+      offset_time = inputs['time'] + cx.field(jdt.to_timedelta(offset))
+      data_features = self.dynamic_input_module(offset_time)
+      for k in self.keys:
+        features[f'{k}_{suffix}'] = data_features[k]
+    return features
 
 
 @nnx_compat.dataclass

@@ -31,6 +31,18 @@ import numpy as np
 DynamicInput = typing.DynamicInput
 
 
+def slice_data_by_time(
+    time: typing.Array,
+    available_time: typing.Array,
+    array: typing.Array,
+) -> typing.Array:
+  """Returns slice of array at the time closest to `time`."""
+  time_indices = jnp.arange(available_time.size)
+  approx_index = jdt.interp(time, available_time, time_indices)
+  index = jnp.floor(approx_index).astype(int)
+  return jax.lax.dynamic_index_in_dim(array, index, keepdims=False)
+
+
 class TimedInputProtocol(Protocol):
   """Protocol for modules that provide inputs indexed by time.
 
@@ -106,48 +118,32 @@ class DynamicInputSlice(DynamicInputModule):
       )
     time = inputs['time']
     self.time.set_value(time)
+    timedelta = cx.coords.extract(time.coordinate, coordinates.TimeDelta)
     data_dict = {}
-    for k in self.keys_to_coords:
+    for k, c in self.keys_to_coords.items():
       if k not in inputs:
         # TODO(dkochkov): Consider allowing partial updates.
         raise ValueError(
             f'Key {k!r} not found in dynamic inputs: {inputs.keys()}'
         )
       v = inputs[k]
-      if v.axes.get('timedelta', None) != time.axes['timedelta']:
-        raise ValueError(f'{v.axes=} does not contain {time.axes=}.')
-      data_coord = cx.coords.compose(
-          *[v.axes[d] for d in v.dims if d != 'timedelta']
-      )
-      expected_coord = cx.coords.compose(
-          *[self.data.get_value()[k].axes[d] for d in v.dims if d != 'timedelta']
-      )
-      if data_coord != expected_coord:
+      v_timedelta = cx.coords.extract(v.coordinate, coordinates.TimeDelta)
+      if v_timedelta != timedelta:
+        raise ValueError(f'{v.coordinate=} does not contain {timedelta=}.')
+      data_coord = cx.coords.replace_axes(v.coordinate, timedelta, cx.Scalar())
+      if data_coord != c:
         raise ValueError(
             f'Coordinate mismatch for key {k!r}: {data_coord=} !='
-            f' {expected_coord=}'
+            f' expected_coord={c}'
         )
       data_dict[k] = v
     self.data.set_value(data_dict)
-
-  def _slice_data_at_time(
-      self,
-      time: typing.Array,
-      available_time: typing.Array,
-      array: typing.Array,
-  ) -> typing.Array:
-    """Returns slice of array ."""
-    time_indices = jnp.arange(available_time.size)
-    approx_index = jdt.interp(time, available_time, time_indices)
-    # TODO(shoyer): switch to jnp.floor?
-    index = jnp.round(approx_index).astype(int)
-    return jax.lax.dynamic_index_in_dim(array, index, keepdims=False)
 
   def __call__(self, time: cx.Field) -> typing.Fields:
     """Returns covariates at the specified time."""
     outputs = {}
     for k, v in self.data.get_value().items():
-      field_index_fn = cx.cmap(self._slice_data_at_time)
+      field_index_fn = cx.cmap(slice_data_by_time)
       outputs[k] = field_index_fn(
           time, self.time.get_value().untag('timedelta'), v.untag('timedelta')
       )

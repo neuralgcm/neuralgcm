@@ -127,6 +127,27 @@ class FeatureTransformsTest(parameterized.TestCase):
           {'time': cx.field(jdt.to_datetime('2000-01-01T06'))},
       )
 
+    with self.subTest('with_time_offsets'):
+      offsets = {'0h': np.timedelta64(0, 'h'), '12h': np.timedelta64(12, 'h')}
+      dynamic_input_features_with_offsets = (
+          feature_transforms.DynamicInputFeatures(
+              ('a', 'b'),
+              dynamic_input,
+              time_offsets=offsets,
+          )
+      )
+      self._test_feature_module(
+          dynamic_input_features_with_offsets,
+          {'time': cx.field(jdt.to_datetime('2000-01-01T00'))},
+      )
+      features = dynamic_input_features_with_offsets(
+          {'time': cx.field(jdt.to_datetime('2000-01-01T00'))}
+      )
+      self.assertIn('a_0h', features)
+      self.assertIn('b_0h', features)
+      self.assertIn('a_12h', features)
+      self.assertIn('b_12h', features)
+
   def test_dynamic_input_features_inder_jit(self):
     grid = coordinates.LonLatGrid.T21()
     dynamic_input = dynamic_io.DynamicInputSlice(

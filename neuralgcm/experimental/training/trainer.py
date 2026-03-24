@@ -1113,7 +1113,7 @@ class RolloutTrainer:
     length = nested_steps[nest_level]
     query_spec = nested_queries_spec[nest_level]
 
-    def _collect_stats(carry, model, loaded_targets_slice, evaluators_tuple):
+    def _collect_stats(carry, model, process_obs, loaded_targets_slice, evaluators_tuple):
       # Unpack carry: idx, then tuple of agg_state one per evaluator.
       step_idx, agg_states_tuple = carry
 
@@ -1131,6 +1131,7 @@ class RolloutTrainer:
       step_idx, inner_scan_agg_results = collect_inner(
           (step_idx, inner_scan_aggs_tuple),
           model,
+          process_obs,
           inner_scan_targets,
           inner_scan_evaluators,
       )  # step index is incremented at the lowest level.
@@ -1316,9 +1317,9 @@ class RolloutTrainer:
       )
 
       def collect_statistics_step(
-          carry, model, loaded_targets_slice, evaluator_slice
+          carry, model, process_obs, loaded_targets_slice, evaluator_slice
       ) -> tuple[int, tuple[tuple[aggregation.AggregationState, ...]]]:  # pylint: disable=g-one-element-tuple
-        del evaluator_slice, loaded_targets_slice
+        del evaluator_slice, loaded_targets_slice, process_obs
         idx, (agg,) = carry
         step_fn(model)  # advances model by 1 step.
         model_state = nnx.state(model, typing.SimulationVariable)
@@ -1330,7 +1331,7 @@ class RolloutTrainer:
 
       scan_fn = self._recursive_scan(
           collect_statistics_step,
-          in_axes=(nnx.Carry, model_state_scan_axes, 1, 0),
+          in_axes=(nnx.Carry, model_state_scan_axes, None, 1, 0),
           out_axes=nnx.Carry,
           nest_level=0,
           nested_steps=nested_steps,
@@ -1347,6 +1348,7 @@ class RolloutTrainer:
       _, (loss_agg_state_tuple,) = scan_fn(
           (0, (init_agg_states,)),
           eb_model,
+          process_obs,
           loaded_targets if loaded_targets else (None,) * len(nested_steps),
           (nested_evaluators,),
       )
@@ -1508,17 +1510,18 @@ class RolloutTrainer:
       def collect_statistics_step(
           carry,
           model,
+          process_obs,
           loaded_targets_slice,
           evaluators_tuple,
       ) -> tuple[int, tuple[NestedAggStates, ...]]:
-        del evaluators_tuple, loaded_targets_slice
+        del evaluators_tuple, loaded_targets_slice, process_obs
         idx, agg_states_tuples_seq = carry  # aggs here are empty tuples.
         step_fn(model)  # advances model by 1 step.
         return (idx + 1, agg_states_tuples_seq)
 
       scan_fn = self._recursive_scan(
           collect_statistics_step,
-          in_axes=(nnx.Carry, model_state_scan_axes, 1, 0),
+          in_axes=(nnx.Carry, model_state_scan_axes, None, 1, 0),
           out_axes=nnx.Carry,
           nest_level=0,
           nested_steps=nested_steps,
@@ -1535,6 +1538,7 @@ class RolloutTrainer:
       _, agg_states_tuples_seq = scan_fn(
           (0, agg_states_seq),
           eb_model,
+          process_obs,
           loaded_targets if loaded_targets else (None,) * len(nested_steps),
           evaluators_seq,
       )

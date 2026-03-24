@@ -193,10 +193,12 @@ class PrescribedFields(TransformABC):
   prescribed_fields: dict[str, cx.Field]
 
   def __init__(self, prescribed_fields: dict[str, cx.Field]):
-    self.prescribed_fields = prescribed_fields
+    self.prescribed_fields = nnx.Dict(
+        {k: TransformParams(v) for k, v in prescribed_fields.items()}
+    )
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    return self.prescribed_fields
+    return {k: v.get_value() for k, v in self.prescribed_fields.items()}
 
 
 class Broadcast(TransformABC):

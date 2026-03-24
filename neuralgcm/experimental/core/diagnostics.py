@@ -315,6 +315,7 @@ class ExtractFixedQueryObservations(nnx.Module):
   observation_operator: typing.ObservationOperator
   query: dict[str, cx.Coordinate | cx.Field]
   prognostics_arg_key: str | int = 'prognostics'
+  transform: typing.Transform | None = None
 
   def _extract_prognostics(self, *args, **kwargs) -> dict[str, cx.Field]:
     if isinstance(self.prognostics_arg_key, int):
@@ -330,4 +331,7 @@ class ExtractFixedQueryObservations(nnx.Module):
   def __call__(self, result, *args, **kwargs) -> dict[str, cx.Field]:
     del result  # unused.
     prognostics = self._extract_prognostics(*args, **kwargs)
-    return self.observation_operator.observe(prognostics, query=self.query)
+    extracted = self.observation_operator.observe(prognostics, query=self.query)
+    if self.transform is not None:
+      extracted = self.transform(extracted)
+    return extracted

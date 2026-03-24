@@ -548,9 +548,6 @@ def _construct_full_queries_spec(
   return targets
 
 
-
-
-
 @dataclasses.dataclass(frozen=True)
 class TrainStage:
   """Specifies a single stage of training."""
@@ -654,8 +651,6 @@ class RolloutTrainer:
   experiment_dir: str
   model: api.Model
   data_loader: data_loading.DataLoader
-  loss: EvaluatorLike
-  eval_metrics: EvaluatorLike
   process_observations: nnx.Module
   calibration_modules: Sequence[model_calibrators.ModelCalibrator] | None
   train_schedule: TrainSchedule
@@ -775,7 +770,7 @@ class RolloutTrainer:
       self, flat_spec: DataSpec
   ) -> tuple[tuple[int, ...], tuple[DataSpec, ...]]:
     """Returns nested steps and specs from `flat_spec` with timedelta coords."""
-    dt = self.model.timestep
+    dt = self.model.timestep  # pytype: disable=attribute-error
     t0 = np.timedelta64(0, 's')
     nested_specs = scan_utils.nested_scan_specs(flat_spec, dt=dt, ref_t0=t0)
     steps = scan_utils.nested_scan_steps(flat_spec, dt=dt, ref_t0=t0)
@@ -926,8 +921,6 @@ class RolloutTrainer:
     )
 
     return training_data, train_step_fn, evaluation_fns
-
-
 
   def _make_initial_experiment_state(
       self, init_params, non_params
@@ -1113,7 +1106,9 @@ class RolloutTrainer:
     length = nested_steps[nest_level]
     query_spec = nested_queries_spec[nest_level]
 
-    def _collect_stats(carry, model, process_obs, loaded_targets_slice, evaluators_tuple):
+    def _collect_stats(
+        carry, model, process_obs, loaded_targets_slice, evaluators_tuple
+    ):
       # Unpack carry: idx, then tuple of agg_state one per evaluator.
       step_idx, agg_states_tuple = carry
 
@@ -1275,7 +1270,7 @@ class RolloutTrainer:
       """Computes evaluation metrics for a batch of targets."""
       init_slice, loaded_targets = _prepare_inputs_and_targets(
           inputs,
-          self.model.timestep,
+          self.model.timestep,  # pytype: disable=attribute-error
           retrieve_fns,
           train_stage.queries_spec,
           batch_axis,
@@ -1305,7 +1300,9 @@ class RolloutTrainer:
       nnx.update(eb_model, eb_model_state)
 
       nested_evaluators = create_nested_evaluators(
-          loss_evaluator, nested_targets_spec, self.model.timestep
+          loss_evaluator,
+          nested_targets_spec,
+          self.model.timestep,  # pytype: disable=attribute-error
       )
       init_agg_states = self._create_initial_nested_agg_states(
           loss_evaluator,
@@ -1438,7 +1435,7 @@ class RolloutTrainer:
       """Computes evaluation statistics for a batch of targets."""
       init_slice, loaded_targets = _prepare_inputs_and_targets(
           inputs,
-          self.model.timestep,
+          self.model.timestep,  # pytype: disable=attribute-error
           retrieve_fns,
           eval_schema.queries_spec,
           batch_axis,
@@ -1477,7 +1474,7 @@ class RolloutTrainer:
         nested_metrics = create_nested_evaluators(
             eval_schema.metrics_evaluator,
             nested_targets_spec,
-            self.model.timestep,
+            self.model.timestep,  # pytype: disable=attribute-error
         )
         init_metrics_agg_states = self._create_initial_nested_agg_states(
             eval_schema.metrics_evaluator,
@@ -1491,7 +1488,9 @@ class RolloutTrainer:
         agg_states_seq.append(init_metrics_agg_states)
       if eval_schema.loss_evaluator:
         nested_losses = create_nested_evaluators(
-            eval_schema.loss_evaluator, nested_targets_spec, self.model.timestep
+            eval_schema.loss_evaluator,
+            nested_targets_spec,
+            self.model.timestep,  # pytype: disable=attribute-error
         )
         init_loss_agg_states = self._create_initial_nested_agg_states(
             eval_schema.loss_evaluator,

@@ -22,7 +22,6 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
@@ -35,9 +34,6 @@ class SpatialFilter(nnx.Module, abc.ABC):
   def __call__(self, inputs: typing.Pytree) -> typing.Pytree:
     """Returns filtered ``inputs``."""
 
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
-
 
 class ModalSpatialFilter(SpatialFilter):
   """Base class for filters."""
@@ -47,7 +43,7 @@ class ModalSpatialFilter(SpatialFilter):
     """Returns filtered modal ``inputs``."""
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExponentialModalFilter(ModalSpatialFilter):
   """Modal filter that removes high frequency components."""
 
@@ -105,11 +101,11 @@ class ExponentialModalFilter(ModalSpatialFilter):
     )
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class SequentialModalFilter(ModalSpatialFilter):
   """Modal filter that applies multiple filters sequentially."""
 
-  filters: Sequence[ModalSpatialFilter]
+  filters: Sequence[ModalSpatialFilter] = nnx.data()
   ylm_map: spherical_harmonics.FixedYlmMapping
 
   def filter_modal(self, inputs: typing.Pytree) -> typing.Pytree:

@@ -609,6 +609,43 @@ class TransformsTest(parameterized.TestCase):
       with self.assertRaisesRegex(ValueError, 'Axis z not present'):
         insert_y(inputs)
 
+  def test_split_axis(self):
+    x = cx.SizedAxis('x', 2)
+    y = cx.SizedAxis('y', 3)
+    inputs = {
+        'a': cx.field(np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]), y, x),
+        'b': cx.field(np.array([7.0, 8.0]), x),
+        'c': cx.field(np.array([9.0]), cx.SizedAxis('z', 1)),
+    }
+
+    with self.subTest('axis_and_specific_keys'):
+      tx1 = transforms.SplitAxis(
+          axis=x,
+          keys=['a', 'b'],
+          split_names=['d_0', 'd_1', 'g_0', 'g_1'],
+      )
+      out1 = tx1(inputs)
+      expected_keys = ['d_0', 'd_1', 'g_0', 'g_1']
+      self.assertCountEqual(list(out1.keys()), expected_keys)
+      cx.testing.assert_fields_allclose(
+          out1['d_0'], cx.field(np.array([1.0, 3.0, 5.0]), y)
+      )
+      cx.testing.assert_fields_allclose(out1['g_0'], cx.field(np.array(7.0)))
+
+    with self.subTest('string_axis_and_default_split_names'):
+      tx2 = transforms.SplitAxis(axis='x', keys='a', include_remaining=True)
+      out2 = tx2(inputs)
+      expected_keys = ['a_0', 'a_1', 'b', 'c']
+      self.assertCountEqual(list(out2.keys()), expected_keys)
+      cx.testing.assert_fields_allclose(
+          out2['a_0'], cx.field(np.array([1.0, 3.0, 5.0]), y)
+      )
+      cx.testing.assert_fields_allclose(
+          out2['a_1'], cx.field(np.array([2.0, 4.0, 6.0]), y)
+      )
+      cx.testing.assert_fields_allclose(out2['b'], inputs['b'])
+      cx.testing.assert_fields_allclose(out2['c'], inputs['c'])
+
   def test_apply_to_keys(self):
     x = cx.SizedAxis('x', 3)
     inputs = {
@@ -648,7 +685,7 @@ class TransformsTest(parameterized.TestCase):
     chex.assert_trees_all_close(actual_all, expected_all)
 
     # select only fields that have `y` axis (i.e. 'b').
-    apply_to_y = transforms.ApplyToFilteredKeys(transform=shift_and_norm, coords=y)
+    apply_to_y = transforms.ApplyToFilteredKeys(shift_and_norm, y)
     actual_y = apply_to_y(inputs)
     expected_y = {
         'a': inputs['a'],

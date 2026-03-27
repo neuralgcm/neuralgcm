@@ -154,6 +154,8 @@ class IntervalDiagnostic(DiagnosticModule):
       explicit `timedelta` is not provided in the inputs. If specified,
       `resolution` must be a multiple of `default_timedelta`.
     include_instant: Whether to include additional instantaneous diagnostics.
+    include_dt_offset: Whether to include an additional diagnostic for the time
+      since the last sub-interval update.
     dt_mod_freq: Time since the last interval update.
     since_last_update: The accumulated values since the last sub-interval.
     per_period: The accumulated values for each `resolution` sub-interval.
@@ -166,6 +168,7 @@ class IntervalDiagnostic(DiagnosticModule):
   resolution: np.timedelta64
   default_timedelta: np.timedelta64 | None = None
   include_instant: bool = False
+  include_dt_offset: bool = False
   dt_mod_freq: typing.Diagnostic = dataclasses.field(init=False)
   since_last_update: dict[str, typing.Diagnostic] = dataclasses.field(
       init=False
@@ -278,7 +281,8 @@ class IntervalDiagnostic(DiagnosticModule):
     if self.include_instant:
       for k, v in self.instants.items():
         values[k + '_instant'] = v.get_value()
-    values['timedelta_since_sub_interval'] = self.dt_mod_freq.get_value()
+    if self.include_dt_offset:
+      values['timedelta_since_sub_interval'] = self.dt_mod_freq.get_value()
     return values
 
   def __call__(self, inputs, *args, **kwargs):

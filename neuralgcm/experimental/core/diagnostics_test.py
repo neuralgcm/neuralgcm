@@ -184,6 +184,7 @@ class DiagnosticsTest(parameterized.TestCase):
         interval=interval,
         resolution=resolution,
         default_timedelta=default_timedelta,
+        include_dt_offset=True,
     )
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
@@ -300,6 +301,7 @@ class DiagnosticsTest(parameterized.TestCase):
         interval=np.timedelta64(5, 's'),
         resolution=np.timedelta64(5, 's'),
         default_timedelta=np.timedelta64(1, 's'),
+        include_dt_offset=True,
     )
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)

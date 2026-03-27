@@ -263,6 +263,30 @@ class TransformerLayersTest(parameterized.TestCase):
     self.assertEqual(pos_encoding.shape, (lmax**2 - lmin**2,) + grid.shape)
 
 
+
+  def test_pytree_no_duplicates(self):
+    dummy_att = transformer_layers.MultiHeadAttention(
+        num_heads=2,
+        in_features=4,
+        qkv_features=4,
+        out_features=4,
+        rngs=nnx.Rngs(0)
+    )
+    dummy_dense = standard_layers.Mlp.uniform(
+        input_size=4,
+        output_size=4,
+        hidden_size=4,
+        hidden_layers=1,
+        rngs=nnx.Rngs(0)
+    )
+    block = transformer_layers.TransformerBlocks(
+        attentions=[dummy_att],
+        dense_layers=[dummy_dense],
+        pre_norms=None,
+        post_norms=None,
+    )
+    self.assertEmpty(nnx.find_duplicates(block))
+
 if __name__ == '__main__':
   jax.config.parse_flags_with_absl()
   absltest.main()

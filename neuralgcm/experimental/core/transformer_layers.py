@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import abc
-import dataclasses
 import functools
 import itertools
 import math
@@ -29,7 +28,6 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import typing
@@ -328,7 +326,7 @@ NormalizationFactory = Callable[..., nnx.Module]
 # Examples include: nnx.LayerNorm, DyT.
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class TransformerBase(nnx.Module, abc.ABC):
   """Base class defining core transformer attributes and helper methods.
 
@@ -368,17 +366,17 @@ class TransformerBase(nnx.Module, abc.ABC):
     activation: Activation function to be applied to inputs of dense layers.
   """
 
-  input_size: int = dataclasses.field(init=False)
-  output_size: int = dataclasses.field(init=False)
-  n_layers: int = dataclasses.field(init=False)
-  attentions: Sequence[MultiHeadAttention]
-  dense_layers: Sequence[standard_layers.UnaryLayer]
-  pre_norms: Sequence[nnx.Module] | None
-  post_norms: Sequence[nnx.Module] | None
-  gating: Sequence[Gating] | Gating = dataclasses.field(
+  input_size: int = nnx.static(init=False)
+  output_size: int = nnx.static(init=False)
+  n_layers: int = nnx.static(init=False)
+  attentions: Sequence[MultiHeadAttention] = nnx.data()
+  dense_layers: Sequence[standard_layers.UnaryLayer] = nnx.data()
+  pre_norms: Sequence[nnx.Module] | None = nnx.data(default=None)
+  post_norms: Sequence[nnx.Module] | None = nnx.data(default=None)
+  gating: Sequence[Gating] | Gating = nnx.data(
       kw_only=True, default=lambda skip, x: x
   )
-  activation: Callable[[typing.Array], typing.Array] = dataclasses.field(
+  activation: Callable[[typing.Array], typing.Array] = nnx.static(
       kw_only=True, default=jax.nn.gelu
   )
 
@@ -816,16 +814,16 @@ class TransformerBlocks(TransformerBase):
     return attention(query, key, value, mask=mask)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class WindowTransformerBlocks(TransformerBase):
   """Transformer blocks that apply attention within windows."""
 
-  inputs_bc: boundaries.BoundaryCondition = dataclasses.field(kw_only=True)
-  kv_bc: boundaries.BoundaryCondition = dataclasses.field(kw_only=True)
-  inputs_window_shape: tuple[int, ...]
-  kv_window_shape: tuple[int, ...]
-  relative_bias_net: standard_layers.UnaryLayer
-  shift_windows: bool = False
+  inputs_bc: boundaries.BoundaryCondition = nnx.data(kw_only=True)
+  kv_bc: boundaries.BoundaryCondition = nnx.data(kw_only=True)
+  inputs_window_shape: tuple[int, ...] = nnx.static(kw_only=True)
+  kv_window_shape: tuple[int, ...] = nnx.static(kw_only=True)
+  relative_bias_net: standard_layers.UnaryLayer = nnx.data(kw_only=True)
+  shift_windows: bool = nnx.static(default=False, kw_only=True)
 
   def _window_rearrange_args(
       self,
@@ -1306,7 +1304,7 @@ def _dim_names(*dims: str | cx.Coordinate) -> tuple[str, ...]:
   return tuple(itertools.chain(*dim_tuples))
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class SphericalPositionalEncoder(nnx.Module):
   """Module that generates spherical positional encodings."""
 
@@ -1334,16 +1332,20 @@ class SphericalPositionalEncoder(nnx.Module):
     return cx.field(pe, encoding_dim_tag, grid)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class EpdTransformer(nnx.Module, pytree=False):
   """EPD layer with transformer process block."""
 
-  encode: standard_layers.UnaryLayer
-  decode: standard_layers.UnaryLayer
-  process_blocks: Sequence[TransformerLayer]
-  post_encode_activation: Callable[[Array], Array] | None = None
-  pre_decode_activation: Callable[[Array], Array] | None = None
-  final_activation: Callable[[Array], Array] | None = None
+  encode: standard_layers.UnaryLayer = nnx.data(kw_only=True)
+  decode: standard_layers.UnaryLayer = nnx.data(kw_only=True)
+  process_blocks: Sequence[TransformerLayer] = nnx.data(kw_only=True)
+  post_encode_activation: Callable[[Array], Array] | None = nnx.static(
+      default=None
+  )
+  pre_decode_activation: Callable[[Array], Array] | None = nnx.static(
+      default=None
+  )
+  final_activation: Callable[[Array], Array] | None = nnx.static(default=None)
 
   @property
   def input_size(self) -> int:

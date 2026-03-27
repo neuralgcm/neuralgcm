@@ -24,7 +24,6 @@ from flax.nnx.nn import recurrent as nnx_recurrent
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import boundaries
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 
 Array = typing.Array
@@ -63,7 +62,7 @@ class UnaryLayer(Protocol):
 UnaryLayerFactory = Callable[..., UnaryLayer]
 
 
-class Mlp(nnx.Module, pytree=False):
+class Mlp(nnx.Module):
   """Multi-layer-perceptron."""
 
   def __init__(
@@ -122,7 +121,7 @@ class Mlp(nnx.Module, pytree=False):
               rngs=rngs,
           )
       )
-    self.layers = tuple(layers)
+    self.layers = nnx.List(layers)
 
   def __call__(
       self,
@@ -171,10 +170,6 @@ class Mlp(nnx.Module, pytree=False):
         dtype=dtype,
         rngs=rngs,
     )
-
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
-
 
 class MlpUniform(Mlp):
   """Multi-layer perceptron module with uniform layer sizes."""
@@ -244,7 +239,7 @@ def conv_dilated_ncw(
 # TODO(dkochkov) Investigate performance of this layer.
 
 
-class LSTMCell(nnx_recurrent.LSTMCell, pytree=False):
+class LSTMCell(nnx_recurrent.LSTMCell):
   """LSTM cell layer."""
 
   def __init__(
@@ -262,11 +257,7 @@ class LSTMCell(nnx_recurrent.LSTMCell, pytree=False):
         **kwargs,
     )
 
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
-
-
-class OptimizedLSTMCell(nnx_recurrent.OptimizedLSTMCell, pytree=False):
+class OptimizedLSTMCell(nnx_recurrent.OptimizedLSTMCell):
   """Optimized LSTM cell layer."""
 
   def __init__(
@@ -284,11 +275,7 @@ class OptimizedLSTMCell(nnx_recurrent.OptimizedLSTMCell, pytree=False):
         **kwargs,
     )
 
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
-
-
-class GRUCell(nnx_recurrent.GRUCell, pytree=False):
+class GRUCell(nnx_recurrent.GRUCell):
   """GRU cell layer."""
 
   def __init__(
@@ -306,11 +293,7 @@ class GRUCell(nnx_recurrent.GRUCell, pytree=False):
         **kwargs,
     )
 
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
-
-
-class SimpleCell(nnx_recurrent.SimpleCell, pytree=False):
+class SimpleCell(nnx_recurrent.SimpleCell):
   """Simple cell layer."""
 
   def __init__(
@@ -327,10 +310,6 @@ class SimpleCell(nnx_recurrent.SimpleCell, pytree=False):
         rngs=rngs,
         **kwargs,
     )
-
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
-
 
 class ConvLevel(nnx.Conv):
   """1D convolution in the NCW data format that preserves tail axis shape."""
@@ -372,7 +351,7 @@ class ConvLevel(nnx.Conv):
     )
 
 
-class CnnLevel(nnx.Module, pytree=False):
+class CnnLevel(nnx.Module):
   """1D CNN in the NCW data format that preserves tail axis shape."""
 
   def __init__(
@@ -413,10 +392,10 @@ class CnnLevel(nnx.Module, pytree=False):
     w_inits = [w_init] * n_hidden + [w_init_final]
     b_inits = [b_init] * n_hidden + [b_init_final]
     params = zip(channels, kernel_sizes, kernel_dilations, w_inits, b_inits)
-    self.layers = []
+    layers = []
     din = input_size
     for dout, kernel, dilation, w_init_i, b_init_i in params:
-      self.layers.append(
+      layers.append(
           ConvLevel(
               input_size=din,
               output_size=dout,
@@ -433,6 +412,7 @@ class CnnLevel(nnx.Module, pytree=False):
           )
       )
       din = dout
+    self.layers = nnx.List(layers)
     self.activation = activation
     self.activate_final = activate_final
 
@@ -493,13 +473,13 @@ class ConvLonLat(nnx.Module):
     return trim(self.bc, outputs)
 
 
-@nnx_compat.dataclass
-class Epd(nnx.Module, pytree=False):
+@nnx.dataclass
+class Epd(nnx.Module):
   """EPD layer parameterized by encode/process/decode layers."""
 
   encode: UnaryLayer
   decode: UnaryLayer
-  process_blocks: Sequence[UnaryLayer]
+  process_blocks: Sequence[UnaryLayer] = nnx.data()
   post_encode_activation: Callable[[Array], Array] | None = None
   pre_decode_activation: Callable[[Array], Array] | None = None
   final_activation: Callable[[Array], Array] | None = None
@@ -559,11 +539,11 @@ class Epd(nnx.Module, pytree=False):
     return out
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Sequential(nnx.Module, pytree=False):
   """Layer that applies a collection of layers in sequence."""
 
-  layers: Sequence[UnaryLayer]
+  layers: Sequence[UnaryLayer] = nnx.data()
 
   @property
   def input_size(self) -> int:
@@ -604,11 +584,11 @@ class Sequential(nnx.Module, pytree=False):
     return current
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class CnnLonLat(nnx.Module, pytree=False):
   """CNN that uses ConvLonLat layers and preserves tail axis shape."""
 
-  conv_layers: Sequence[ConvLonLat]
+  conv_layers: Sequence[ConvLonLat] = nnx.data()
   activation: Callable[[Array], Array]
   activation_final: Callable[[Array], Array] = lambda x: x
 

@@ -66,6 +66,7 @@ class StandardLayersTest(parameterized.TestCase):
         use_bias=use_bias,
         rngs=nnx.Rngs(0),
     )
+    self.assertEmpty(nnx.find_duplicates(mlp))
     inputs = np.random.uniform(size=input_size)
     params = nnx.state(mlp, nnx.Param)
     out = mlp(inputs)
@@ -85,8 +86,8 @@ class StandardLayersTest(parameterized.TestCase):
     if num_hidden_layers > 1:
       with self.subTest('independent_params'):
         for previous_layer, layer in zip(mlp.layers[1:-3], mlp.layers[2:-2]):
-          kernel_diff = previous_layer.kernel.get_value() - layer.kernel.get_value()
-          self.assertGreater(jnp.linalg.norm(kernel_diff), 1e-1)
+          k_diff = previous_layer.kernel.get_value() - layer.kernel.get_value()
+          self.assertGreater(jnp.linalg.norm(k_diff), 1e-1)
 
   def test_sequential(self):
     input_size, latent_size, output_size = 3, 5, 4
@@ -155,6 +156,7 @@ class StandardLayersTest(parameterized.TestCase):
         output_size=output_size,
         rngs=nnx.Rngs(0),
     )
+    self.assertEmpty(nnx.find_duplicates(cell))
     inputs = jnp.ones((batch_size, input_size))
     carry = cell.initialize_carry(inputs.shape, rngs=nnx.Rngs(1))
     new_carry, output = cell(carry, inputs)
@@ -214,6 +216,7 @@ class StandardLayersTest(parameterized.TestCase):
         use_bias=use_bias,
         rngs=nnx.Rngs(0),
     )
+    self.assertEmpty(nnx.find_duplicates(conv_level_layer))
     params = nnx.state(conv_level_layer, nnx.Param)
     out = conv_level_layer(inputs)
     with self.subTest('output_shape'):
@@ -338,6 +341,7 @@ class StandardLayersTest(parameterized.TestCase):
         use_bias=use_bias,
         rngs=nnx.Rngs(0),
     )
+    self.assertEmpty(nnx.find_duplicates(conv_layer))
     params = nnx.state(conv_layer, nnx.Param)
 
     with self.subTest('output_shape'):

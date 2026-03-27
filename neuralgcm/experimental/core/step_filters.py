@@ -19,7 +19,6 @@ import abc
 import coordax as cx
 from flax import nnx
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 
 
 class StepFilter(nnx.Module, abc.ABC):
@@ -30,9 +29,6 @@ class StepFilter(nnx.Module, abc.ABC):
       self, state: dict[str, cx.Field], next_state: dict[str, cx.Field]
   ) -> dict[str, cx.Field]:
     """Returns filtered ``inputs``."""
-
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
 
 
 class NoFilter(StepFilter):
@@ -45,7 +41,7 @@ class NoFilter(StepFilter):
     return next_state
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ModalFixedGlobalMeanFilter(StepFilter):
   """Filter that removes the change in the global mean of certain keys."""
 

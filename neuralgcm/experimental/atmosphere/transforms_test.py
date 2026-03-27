@@ -51,7 +51,7 @@ class AtmosphereTransformsTest(parameterized.TestCase):
     )
     with_gradients_transform = transforms.ToModalWithDerivatives(
         ylm_map,
-        filter_attenuations=[2.0],
+        attenuations=[2.0],
     )
     features_grads = atmos_transforms.VelocityAndPrognosticsWithModalGradients(
         ylm_map,

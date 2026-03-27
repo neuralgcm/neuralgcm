@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import abc
 import collections
-import dataclasses
 import functools
 import itertools
 import operator
@@ -42,7 +41,6 @@ import jax_datetime as jdt
 from neuralgcm.experimental.core import boundaries
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import interpolators
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import normalizations
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spatial_filters
@@ -82,8 +80,15 @@ class TransformABC(nnx.Module, abc.ABC):
     call_dispatch = lambda transform, inputs: transform(inputs)
     return nnx.eval_shape(call_dispatch, self, input_shapes)
 
-  def __init_subclass__(cls, **kwargs):
-    super().__init_subclass__(pytree=False, **kwargs)
+  def __init_subclass__(cls, pytree: bool = False, **kwargs):
+    super().__init_subclass__(pytree=pytree, **kwargs)
+
+
+class PytreeTransformABC(TransformABC, pytree=True):
+  """Base class for transforms that are safe to be treated as pytrees."""
+
+  def __init_subclass__(cls, pytree: bool = True, **kwargs):
+    super().__init_subclass__(pytree=pytree, **kwargs)
 
 
 def _masked_nan_to_num(
@@ -144,7 +149,7 @@ def get_partial_jnp_fn(name, **kwargs):
   return functools.partial(fn, **kwargs)
 
 
-class Identity(TransformABC):
+class Identity(PytreeTransformABC):
   """Returns inputs as they are.
 
   Examples:
@@ -160,7 +165,7 @@ class Identity(TransformABC):
     return inputs
 
 
-class Empty(TransformABC):
+class Empty(PytreeTransformABC):
   """Returns an empty dict, regardless of inputs.
 
   Examples:
@@ -176,8 +181,8 @@ class Empty(TransformABC):
     return {}
 
 
-@nnx_compat.dataclass
-class PrescribedFields(TransformABC):
+@nnx.dataclass
+class PrescribedFields(PytreeTransformABC):
   """Returns a prescribed dict of fields, regardless of inputs.
 
   Args:
@@ -192,12 +197,12 @@ class PrescribedFields(TransformABC):
     {'b': <Field dims=(None,) shape=(2,) axes={} >}
   """
 
-  prescribed_fields: dict[str, cx.Field]
+  prescribed_fields: dict[str, TransformParams] = nnx.data()
 
   def __init__(self, prescribed_fields: dict[str, cx.Field]):
-    self.prescribed_fields = nnx.Dict(
-        {k: TransformParams(v) for k, v in prescribed_fields.items()}
-    )
+    self.prescribed_fields = {
+        k: TransformParams(v) for k, v in prescribed_fields.items()
+    }
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return {k: v.get_value() for k, v in self.prescribed_fields.items()}
@@ -218,7 +223,7 @@ class PrescribedFields(TransformABC):
         feature.set_value(candidate.order_as(feature.coordinate))
 
 
-class Broadcast(TransformABC):
+class Broadcast(PytreeTransformABC):
   """Broadcasts fields in ``inputs`` of congruent dimensions to the same coords.
 
   This transform ensures that all input fields are broadcasted to share the same
@@ -246,8 +251,8 @@ class Broadcast(TransformABC):
     return {k: v.broadcast_like(ref) for k, v in inputs.items()}
 
 
-@nnx_compat.dataclass
-class RavelDims(TransformABC):
+@nnx.dataclass
+class RavelDims(PytreeTransformABC):
   """Ravels specified dimensions into a new single dimension.
 
   Flattens a sequence of dims in each field into a single output dimension.
@@ -285,7 +290,7 @@ class RavelDims(TransformABC):
     return {k: ravel_fn(v).tag(self.out_dim) for k, v in untagged.items()}
 
 
-class SelectKeys(TransformABC):
+class SelectKeys(PytreeTransformABC):
   """Selects subset of keys from the ``inputs``.
 
   This transform filters the inputs dictionary based on key matching, regex, or
@@ -362,8 +367,8 @@ class SelectKeys(TransformABC):
     return {k: v for k, v in data.items() if k in final_keys}
 
 
-@nnx_compat.dataclass
-class FilterByCoord(TransformABC):
+@nnx.dataclass
+class FilterByCoord(PytreeTransformABC):
   """Selects subset of fields in ``inputs`` that match specified coord or type.
 
   Args:
@@ -420,7 +425,7 @@ class FilterByCoord(TransformABC):
     return {k: v for k, v in data.items() if k in final_keys}
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Sequential(TransformABC):
   """Applies sequence of transforms in order.
 
@@ -440,7 +445,7 @@ class Sequential(TransformABC):
     ['c']
   """
 
-  transforms: Sequence[Transform]
+  transforms: Sequence[Transform] = nnx.data()
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     for transform in self.transforms:
@@ -448,7 +453,7 @@ class Sequential(TransformABC):
     return inputs
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Merge(TransformABC):
   """Merges outputs of multiple transforms into a single dictionary.
 
@@ -470,7 +475,7 @@ class Merge(TransformABC):
     ['a', 'b']
   """
 
-  feature_modules: dict[str, Transform]
+  feature_modules: dict[str, Transform] = nnx.data()
   always_add_prefix: bool = False
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
@@ -488,8 +493,8 @@ class Merge(TransformABC):
     return all_features
 
 
-@nnx_compat.dataclass
-class Isel(TransformABC):
+@nnx.dataclass
+class Isel(PytreeTransformABC):
   """Applies ``isel(indexers)`` to all fields in ``inputs``.
 
   Args:
@@ -524,8 +529,8 @@ class Isel(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
-class ReduceMean(TransformABC):
+@nnx.dataclass
+class ReduceMean(PytreeTransformABC):
   """Computes mean over specified dims, using coordinate methods if available.
 
   Takes the mean over the specified dimensions. If reducing over a coordinate
@@ -581,8 +586,8 @@ class ReduceMean(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
-class Sel(TransformABC):
+@nnx.dataclass
+class Sel(PytreeTransformABC):
   """Applies ``sel(indexers, method=method)`` to all fields in ``inputs``.
 
   Args:
@@ -620,8 +625,8 @@ class Sel(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
-class ExpandDims(TransformABC):
+@nnx.dataclass
+class ExpandDims(PytreeTransformABC):
   """Returns inputs with expanded `axis` at `loc`, broadcasting if necessary.
 
   Inserts a new axis into all input fields at the specified location.
@@ -686,8 +691,8 @@ def _get_shared_axis(
   return ax
 
 
-@nnx_compat.dataclass
-class SplitAxis(TransformABC):
+@nnx.dataclass
+class SplitAxis(PytreeTransformABC):
   """Splits fields along an axis and assigns new names to the split fields.
 
   Args:
@@ -738,7 +743,7 @@ class SplitAxis(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ApplyToKeys(TransformABC):
   """Applies `transform` to a subset of keys and merges with unchanged keys.
 
@@ -762,7 +767,7 @@ class ApplyToKeys(TransformABC):
     (Array(2., dtype=float32), Array(1., dtype=float32))
   """
 
-  transform: Transform
+  transform: Transform = nnx.data()
   keys: str | Sequence[str] | Callable[[str], bool]
   invert: bool = False
   include_remaining: bool = True
@@ -776,7 +781,7 @@ class ApplyToKeys(TransformABC):
     return self.transform(to_transform) | keep_as_is
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ApplyToFilteredKeys(TransformABC):
   """Applies `transform` to a subset of fields matching coord or type.
 
@@ -802,7 +807,7 @@ class ApplyToFilteredKeys(TransformABC):
     (Array(2., dtype=float32), Array(1., dtype=float32))
   """
 
-  transform: Transform
+  transform: Transform = nnx.data()
   coords: cx.Coordinate | Sequence[cx.Coordinate] | None = None
   types: type[cx.Coordinate] | Sequence[type[cx.Coordinate]] | None = None
   invert: bool = False
@@ -822,8 +827,8 @@ class ApplyToFilteredKeys(TransformABC):
     return self.transform(to_transform) | keep_as_is
 
 
-@nnx_compat.dataclass
-class ApplyFnToKeys(TransformABC):
+@nnx.dataclass
+class ApplyFnToKeys(PytreeTransformABC):
   """Applies a Field -> Field function to a subset of keys.
 
   Transforms specific fields using a provided function.
@@ -859,7 +864,7 @@ class ApplyFnToKeys(TransformABC):
     return {k: self.fn(v) for k, v in to_transform.items()} | keep_as_is
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class WrapFn(TransformABC):
   """Wraps a callable to conform to the Transform API.
 
@@ -944,7 +949,7 @@ class WrapFn(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ScanOverAxis(TransformABC):
   """Wrapper transform that applies `transform` over `axis` using scan.
 
@@ -966,7 +971,7 @@ class ScanOverAxis(TransformABC):
     ('x', 'y')
   """
 
-  transform: Transform
+  transform: Transform = nnx.data()
   axis: str | cx.Coordinate
   apply_remat: bool = False
 
@@ -1011,8 +1016,8 @@ class ScanOverAxis(TransformABC):
     return scanned
 
 
-@nnx_compat.dataclass
-class ShardFields(TransformABC):
+@nnx.dataclass
+class ShardFields(PytreeTransformABC):
   """Adds `mesh.field_partitiotions[schema]` sharding constraint to ``inputs``.
 
   Args:
@@ -1036,7 +1041,7 @@ class ShardFields(TransformABC):
     return self.mesh.with_sharding_constraint(inputs, self.schema)
 
 
-class ScaleFields(TransformABC):
+class ScaleFields(PytreeTransformABC):
   """Applies x * `self.scale` to all fields in ``inputs``.
 
   Args:
@@ -1061,7 +1066,7 @@ class ScaleFields(TransformABC):
     return {k: scale_fn(v) for k, v in inputs.items()}
 
 
-class StandardizeFields(TransformABC):
+class StandardizeFields(PytreeTransformABC):
   """Shifts and scales inputs.
 
   Normalizes fields using provided shift (mean) and scale (std). Can be
@@ -1110,8 +1115,8 @@ class StandardizeFields(TransformABC):
       return {k: scale_fn(v, shifts, scales) for k, v in inputs.items()}
 
 
-@nnx_compat.dataclass
-class ClipWavenumbers(TransformABC):
+@nnx.dataclass
+class ClipWavenumbers(PytreeTransformABC):
   """Clips wavenumbers in inputs for grids matching `wavenumbers_for_grid`.
 
   Removes the highest wavenumbers (sets them to zero) for fields represented on
@@ -1177,7 +1182,7 @@ class ClipWavenumbers(TransformABC):
     )
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class InpaintHarmonics(TransformABC):
   """Inpaints `inputs` over `mask` with smoothed spherical harmonics.
 
@@ -1194,8 +1199,8 @@ class InpaintHarmonics(TransformABC):
   """
 
   ylm_map: spherical_harmonics.YlmMapper | spherical_harmonics.FixedYlmMapping
-  compute_masks: Transform
-  lowpass_filter: spatial_filters.ModalSpatialFilter
+  compute_masks: Transform = nnx.data()
+  lowpass_filter: spatial_filters.ModalSpatialFilter = nnx.data()
   n_iter: int = 2
   default_mask_key: str | None = None
 
@@ -1224,8 +1229,8 @@ class InpaintHarmonics(TransformABC):
     return current_guess
 
 
-@nnx_compat.dataclass
-class Regrid(TransformABC):
+@nnx.dataclass
+class Regrid(PytreeTransformABC):
   """Applies `regridder` to all fields in `inputs`.
 
   Args:
@@ -1251,8 +1256,8 @@ class Regrid(TransformABC):
     return self.regridder(inputs)
 
 
-@nnx_compat.dataclass
-class ComputeMasks(TransformABC):
+@nnx.dataclass
+class ComputeMasks(PytreeTransformABC):
   """Transforms inputs to boolean masks for keys in `mask_keys`.
 
   Computes a boolean mask for specified fields based on conditions like
@@ -1288,7 +1293,7 @@ class ComputeMasks(TransformABC):
     }
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ApplyOverMasks(TransformABC):
   """Applies masking to `transform(inputs)` using `compute_masks(inputs)`.
 
@@ -1312,9 +1317,9 @@ class ApplyOverMasks(TransformABC):
     [1.0, 0.0, 3.0]
   """
 
-  compute_masks: TransformABC
+  compute_masks: Transform = nnx.data()
   apply_mask_method: ApplyMaskMethods = 'zero_multiply'
-  transform: TransformABC | None = None
+  transform: Transform | None = nnx.data(default=None)
   default_mask_key: str | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
@@ -1334,7 +1339,7 @@ class ApplyOverMasks(TransformABC):
     return outputs
 
 
-class Nondimensionalize(TransformABC):
+class Nondimensionalize(PytreeTransformABC):
   """Nondimensionalizes ``inputs`` based on `sim_units` and expected units.
 
   Converts ``inputs`` to nondimensional quantities by associating each key with
@@ -1381,7 +1386,7 @@ class Nondimensionalize(TransformABC):
     return result
 
 
-class Redimensionalize(TransformABC):
+class Redimensionalize(PytreeTransformABC):
   """Redimensionalizes nondimensional ``inputs`` to expected units.
 
   Converts nondimensional quantities back into dimensional quantities using
@@ -1426,8 +1431,8 @@ class Redimensionalize(TransformABC):
     return result
 
 
-@nnx_compat.dataclass
-class StripPrefix(TransformABC):
+@nnx.dataclass
+class StripPrefix(PytreeTransformABC):
   """Strips `prefix` from the dictionary keys, leaving values unchanged.
 
   Args:
@@ -1448,8 +1453,8 @@ class StripPrefix(TransformABC):
     return {k.removeprefix(self.prefix): v for k, v in inputs.items()}
 
 
-@nnx_compat.dataclass
-class RenameKeys(TransformABC):
+@nnx.dataclass
+class RenameKeys(PytreeTransformABC):
   """Renames keys in inputs based on rename_dict.
 
   Args:
@@ -1476,8 +1481,8 @@ class RenameKeys(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
-class TanhClip(TransformABC):
+@nnx.dataclass
+class TanhClip(PytreeTransformABC):
   """Clips inputs to ``(-scale, scale)`` range via tanh function.
 
   Args:
@@ -1504,8 +1509,8 @@ class TanhClip(TransformABC):
     return {k: clip_fn(v) for k, v in inputs.items()}
 
 
-@nnx_compat.dataclass
-class Relu(TransformABC):
+@nnx.dataclass
+class Relu(PytreeTransformABC):
   """Equivalent to ApplyFnToKeys with `jax.nn.relu` for `fn`.
 
   Args:
@@ -1653,8 +1658,8 @@ class StreamNorm(TransformABC):
     )
 
 
-@nnx_compat.dataclass
-class ToModal(TransformABC):
+@nnx.dataclass
+class ToModal(PytreeTransformABC):
   """Transforms inputs from nodal to modal space.
 
   Args:
@@ -1670,8 +1675,8 @@ class ToModal(TransformABC):
     return modal_outputs
 
 
-@nnx_compat.dataclass
-class ToNodal(TransformABC):
+@nnx.dataclass
+class ToNodal(PytreeTransformABC):
   """Transforms inputs from modal to nodal space.
 
   Args:
@@ -1687,7 +1692,8 @@ class ToNodal(TransformABC):
     return nodal_outputs
 
 
-class ToModalWithDerivatives:
+@nnx.dataclass
+class ToModalWithDerivatives(nnx.Pytree):
   """Helper module that returns filtered grads and laplacians of input fields.
 
   Computes spatial derivatives in modal space, applying exponential
@@ -1698,22 +1704,21 @@ class ToModalWithDerivatives:
     filter_attenuations: Tuple of attenuations to apply for the modal filters.
   """
 
-  def __init__(
-      self,
-      ylm_map: spherical_harmonics.FixedYlmMapping,
-      filter_attenuations: tuple[float, ...] = tuple(),
-  ):
-    self.ylm_map = ylm_map
-    self.attenuations = filter_attenuations
-    modal_filters = [
+  ylm_map: spherical_harmonics.FixedYlmMapping
+  attenuations: tuple[float, ...] = tuple()
+  modal_filters: tuple[spatial_filters.ModalSpatialFilter, ...] = nnx.data(
+      init=False
+  )
+
+  def __post_init__(self):
+    self.modal_filters = tuple(
         spatial_filters.ExponentialModalFilter(
-            ylm_map,
+            self.ylm_map,
             attenuation=a,
             order=1,
         )
-        for a in filter_attenuations
-    ]
-    self.modal_filters = modal_filters
+        for a in self.attenuations
+    )
 
   def __call__(
       self,
@@ -1753,7 +1758,7 @@ class ToModalWithDerivatives:
     return nnx.eval_shape(self.__call__, input_shapes)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ConstrainToCoarse(TransformABC):
   """Constrains fields so that spatially-averaged values match coarse reference.
 
@@ -1773,12 +1778,14 @@ class ConstrainToCoarse(TransformABC):
     >>> pass
   """
 
-  raw_hres_transform: TransformABC
-  ref_coarse_transform: TransformABC
+  raw_hres_transform: Transform = nnx.data()
+  ref_coarse_transform: Transform = nnx.data()
   coarse_grid: coordinates.LonLatGrid
   hres_grid: coordinates.LonLatGrid
   keys: Sequence[str]
   epsilon: float = 1e-6
+  regrid_to_coarse: Regrid = nnx.static(init=False)
+  regrid_to_hres: Regrid = nnx.static(init=False)
 
   def __post_init__(self):
     self.regrid_to_coarse = Regrid(
@@ -1813,8 +1820,8 @@ class ConstrainToCoarse(TransformABC):
     return hres_outputs
 
 
-@nnx_compat.dataclass
-class VelocityFromDivCurl(TransformABC):
+@nnx.dataclass
+class VelocityFromDivCurl(PytreeTransformABC):
   """Transform divergence and vorticity in inputs to 2D velocity components.
 
   Computes u and v wind components from divergence and vorticity fields
@@ -1849,8 +1856,8 @@ class VelocityFromDivCurl(TransformABC):
     return {self.u_key: u, self.v_key: v}
 
 
-@nnx_compat.dataclass
-class VelocityToDivCurl(TransformABC):
+@nnx.dataclass
+class VelocityToDivCurl(PytreeTransformABC):
   """Transform 2D velocity components to divergence and vorticity.
 
   Computes divergence and vorticity from u and v wind components
@@ -1884,8 +1891,8 @@ class VelocityToDivCurl(TransformABC):
     return {self.divergence_key: div, self.vorticity_key: vorticity}
 
 
-@nnx_compat.dataclass
-class ExtractLocalPatchFromGrid(TransformABC):
+@nnx.dataclass
+class ExtractLocalPatchFromGrid(PytreeTransformABC):
   """Extracts a patch of neighbors from gridded fields around query points.
 
   Splits inputs into query points and gridded data, then extracts local
@@ -1902,10 +1909,8 @@ class ExtractLocalPatchFromGrid(TransformABC):
   lon_query_key: str = 'longitude'
   lat_query_key: str = 'latitude'
   include_offset: bool = True
-  boundary_condition: boundaries.BoundaryCondition = dataclasses.field(
-      init=False
-  )
-  padding: int = dataclasses.field(init=False)
+  boundary_condition: boundaries.BoundaryCondition = nnx.data(init=False)
+  padding: int = nnx.static(init=False)
 
   def __post_init__(self):
     self.boundary_condition = boundaries.LonLatBoundary()
@@ -2034,7 +2039,7 @@ def _sanitize_values(
   return jax.tree.map(_clean, values, masks)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class SanitizeGradients(TransformABC):
   """Wraps a transform to provide NaN-safe gradients.
 
@@ -2097,8 +2102,8 @@ class SanitizeGradients(TransformABC):
 #
 
 
-@nnx_compat.dataclass
-class FillNaNs(TransformABC):
+@nnx.dataclass
+class FillNaNs(PytreeTransformABC):
   """Replaces NaN values with a specified value for selected keys.
 
   Combines `SelectKeys`, `ComputeMask` and `ApplyOverMasks` transforms to fill
@@ -2140,8 +2145,8 @@ class FillNaNs(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
-class ApplyMask(TransformABC):
+@nnx.dataclass
+class ApplyMask(PytreeTransformABC):
   """Applies a boolean mask field to other fields.
 
   Args:
@@ -2187,7 +2192,7 @@ class ApplyMask(TransformABC):
     return outputs
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Where(TransformABC):
   """Applies one of two transforms based on a boolean mask.
 
@@ -2214,8 +2219,8 @@ class Where(TransformABC):
   """
 
   mask_key: str
-  true_transform: TransformABC
-  false_transform: TransformABC
+  true_transform: TransformABC = nnx.data()
+  false_transform: TransformABC = nnx.data()
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     if self.mask_key not in inputs:
@@ -2234,7 +2239,7 @@ class Where(TransformABC):
     return results
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class EntrywiseBinaryOp(TransformABC):
   """Applies binary operation entrywise between fields and operand fields.
 
@@ -2251,8 +2256,8 @@ class EntrywiseBinaryOp(TransformABC):
   """
 
   op: Callable[[Any, Any], Any] | str
-  operand_transform: Transform
-  inputs_transform: Transform = Identity()
+  operand_transform: Transform = nnx.data()
+  inputs_transform: Transform = nnx.data(default_factory=Identity)
   include_remaining: bool = False
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
@@ -2288,7 +2293,7 @@ class EntrywiseBinaryOp(TransformABC):
     )
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ProjectOntoBasis(TransformABC):
   """Projects inputs onto basis vectors and computes dot product.
 
@@ -2306,8 +2311,8 @@ class ProjectOntoBasis(TransformABC):
       missing from individual fields.
   """
 
-  to_basis_transform: Transform
-  inputs_transform: Transform = Identity()
+  to_basis_transform: Transform = nnx.data()
+  inputs_transform: Transform = nnx.data(default_factory=Identity)
   dims_to_contract: Sequence[str | cx.Coordinate] = ()
   out_key: str = 'projection'
   allow_missing: bool = True

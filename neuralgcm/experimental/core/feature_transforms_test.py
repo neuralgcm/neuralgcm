@@ -90,8 +90,7 @@ class FeatureTransformsTest(parameterized.TestCase):
     orography_features = feature_transforms.OrographyWithGradsFeatures(
         orography_module=orography,
         compute_gradients_transform=transforms.ToModalWithDerivatives(
-            ylm_map,
-            filter_attenuations=[2.0],
+            ylm_map, attenuations=[2.0]
         ),
     )
     self._test_feature_module(orography_features, None)

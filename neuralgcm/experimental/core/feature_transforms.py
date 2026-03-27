@@ -26,7 +26,6 @@ import jax_solar
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import dynamic_io
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import transforms
@@ -40,8 +39,8 @@ import xarray
 TransformParams = transforms.TransformParams
 
 
-@nnx_compat.dataclass
-class RadiationFeatures(transforms.TransformABC):
+@nnx.dataclass
+class RadiationFeatures(transforms.PytreeTransformABC):
   """Returns incident radiation flux Field."""
 
   grid: coordinates.LonLatGrid
@@ -65,8 +64,8 @@ class RadiationFeatures(transforms.TransformABC):
     return features
 
 
-@nnx_compat.dataclass
-class LatitudeFeatures(transforms.TransformABC):
+@nnx.dataclass
+class LatitudeFeatures(transforms.PytreeTransformABC):
   """Returns cos and sin of latitude features."""
 
   grid: coordinates.LonLatGrid
@@ -83,7 +82,7 @@ class LatitudeFeatures(transforms.TransformABC):
     return features
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class DiagnosticValueFeatures(transforms.TransformABC):
   """Returns diagnostic values to be used as features."""
 
@@ -94,7 +93,7 @@ class DiagnosticValueFeatures(transforms.TransformABC):
     return self.diagnostic_module.diagnostic_values()
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class RandomnessFeatures(transforms.TransformABC):
   """Returns values from a random process evaluated on a grid."""
 
@@ -109,7 +108,7 @@ class RandomnessFeatures(transforms.TransformABC):
     }
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class DynamicInputFeatures(transforms.TransformABC):
   """Returns subset of dynamic input values."""
 
@@ -130,7 +129,7 @@ class DynamicInputFeatures(transforms.TransformABC):
     return features
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class OrographyFeatures(transforms.TransformABC):
   """Returns elevation values in real space representing orography."""
 
@@ -141,8 +140,8 @@ class OrographyFeatures(transforms.TransformABC):
     return {'orography': self.orography_module.nodal_orography}
 
 
-@nnx_compat.dataclass
-class OrographyWithGradsFeatures(transforms.TransformABC):
+@nnx.dataclass
+class OrographyWithGradsFeatures(transforms.PytreeTransformABC):
   """Returns orography features and their gradients."""
 
   orography_module: orographies.ModalOrography
@@ -178,7 +177,7 @@ class OrographyWithGradsFeatures(transforms.TransformABC):
     return features
 
 
-class ParamFeatures(transforms.TransformABC):
+class ParamFeatures(transforms.PytreeTransformABC):
   """Returns, potentially learnable, features on fixed coordinates."""
 
   def __init__(
@@ -190,10 +189,10 @@ class ParamFeatures(transforms.TransformABC):
       rngs: nnx.Rngs,
   ):
     self.coords = coords
-    self.features = {
+    self.features = nnx.data({
         k: param_type(initializer(rngs.params(), c.shape))
         for k, c in coords.items()
-    }
+    })
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     del inputs  # unused.

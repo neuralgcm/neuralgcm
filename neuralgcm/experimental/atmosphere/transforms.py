@@ -20,10 +20,10 @@ Currently this includes both feature-generating transforms and state transforms.
 from __future__ import annotations
 
 import coordax as cx
+from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
@@ -31,8 +31,8 @@ from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
 
-@nnx_compat.dataclass
-class ToModalWithDivCurl(transforms.TransformABC):
+@nnx.dataclass
+class ToModalWithDivCurl(transforms.PytreeTransformABC):
   """Module that converts inputs to modal replacing velocity with div/curl."""
 
   ylm_map: spherical_harmonics.FixedYlmMapping
@@ -66,8 +66,8 @@ class ToModalWithDivCurl(transforms.TransformABC):
     return modal_outputs
 
 
-@nnx_compat.dataclass
-class PressureFeatures(transforms.TransformABC):
+@nnx.dataclass
+class PressureFeatures(transforms.PytreeTransformABC):
   """Feature module that computes pressure."""
 
   ylm_map: spherical_harmonics.FixedYlmMapping
@@ -94,7 +94,7 @@ class PressureFeatures(transforms.TransformABC):
     return {self.feature_name: pressure}
 
 
-class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
+class VelocityAndPrognosticsWithModalGradients(transforms.PytreeTransformABC):
   """Features module that returns prognostics + u,v and optionally gradients."""
 
   def __init__(
@@ -193,7 +193,7 @@ class VelocityAndPrognosticsWithModalGradients(transforms.TransformABC):
     return nodal_features
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ConstrainWaterBudget(transforms.TransformABC):
   """Constrains precipitation or evaporation based on precipitation+evaporation.
 

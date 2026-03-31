@@ -14,14 +14,12 @@
 
 """Transforms that are parameterized by learnable parameters like NN."""
 
-import dataclasses
 import math
 
 import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import field_utils
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import towers
 from neuralgcm.experimental.core import transforms
@@ -75,7 +73,7 @@ def _concat_fields(
   return cx.cpmap(lambda *vs: jnp.concatenate(vs))(*fields.values())
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
   """Transforms fields with ForwardTower and splits the output to fields.
 
@@ -91,13 +89,17 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
   """
 
   target_split_axes: dict[str, cx.Coordinate]
-  tower: towers.ForwardTower
+  tower: towers.ForwardTower = nnx.data()
   concat_dims: tuple[str | cx.Coordinate, ...]
-  inputs_transform: typing.Transform = transforms.Identity()
-  out_transform: typing.Transform = transforms.Identity()
+  inputs_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Identity
+  )
+  out_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Identity
+  )
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
-  mesh: parallelism.Mesh = dataclasses.field(
+  mesh: parallelism.Mesh = nnx.static(
       kw_only=True, default_factory=parallelism.default_mesh
   )
 
@@ -173,7 +175,7 @@ class ForwardTowerTransform(transforms.TransformABC, nnx.Module):
     )
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
   """Transforms fields with RecurrentTower and splits the output to fields.
 
@@ -190,14 +192,18 @@ class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
   """
 
   target_split_axes: dict[str, cx.Coordinate]
-  tower: towers.RecurrentTower
+  tower: towers.RecurrentTower = nnx.data()
   concat_dims: tuple[str | cx.Coordinate, ...]
-  inputs_transform: typing.Transform = transforms.Identity()
-  out_transform: typing.Transform = transforms.Identity()
+  inputs_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Identity
+  )
+  out_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Identity
+  )
   state_keys: tuple[str, ...] = ('lstm_c', 'lstm_h')
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
-  mesh: parallelism.Mesh = dataclasses.field(kw_only=True)
+  mesh: parallelism.Mesh = nnx.static(kw_only=True)
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     apply_sharding = self.mesh.with_sharding_constraint
@@ -286,7 +292,7 @@ class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
     )
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
   """Transforms fields with TransformerTower and splits the output to fields.
 
@@ -306,16 +312,24 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
   """
 
   target_split_axes: dict[str, cx.Coordinate]
-  tower: towers.TransformerTower
+  tower: towers.TransformerTower = nnx.data()
   concat_dims: tuple[str | cx.Coordinate, ...]
-  inputs_transform: typing.Transform = transforms.Identity()
-  latents_transform: typing.Transform = transforms.Empty()
-  mask_values_transform: typing.Transform = transforms.Empty()
-  out_transform: typing.Transform = transforms.Identity()
+  inputs_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Identity
+  )
+  latents_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Empty
+  )
+  mask_values_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Empty
+  )
+  out_transform: typing.Transform = nnx.data(
+      default_factory=transforms.Identity
+  )
   latents_concat_dims: tuple[str | cx.Coordinate, ...] | None = None
   feature_sharding_schema: str | None = None
   result_sharding_schema: str | None = None
-  mesh: parallelism.Mesh = dataclasses.field(
+  mesh: parallelism.Mesh = nnx.static(
       kw_only=True, default_factory=parallelism.default_mesh
   )
 
@@ -414,7 +428,7 @@ class TransformerTowerTransform(transforms.TransformABC, nnx.Module):
     )
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class LandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
   """Combines FieldTowerTransforms for land, sea and sea ice.
 
@@ -437,13 +451,13 @@ class LandSeaIceTowersTransform(transforms.TransformABC, nnx.Module):
     mesh: The `parallelism.Mesh` used for sharding.
   """
 
-  target_split_axes: dict[str, cx.Coordinate] = dataclasses.field(init=False)
-  land_transform: ForwardTowerTransform
-  sea_transform: ForwardTowerTransform
-  sea_ice_transform: ForwardTowerTransform
-  land_sea_mask_transform: typing.Transform
-  sea_ice_value_transform: typing.Transform
-  mesh: parallelism.Mesh = dataclasses.field(
+  target_split_axes: dict[str, cx.Coordinate] = nnx.static(init=False)
+  land_transform: ForwardTowerTransform = nnx.data()
+  sea_transform: ForwardTowerTransform = nnx.data()
+  sea_ice_transform: ForwardTowerTransform = nnx.data()
+  land_sea_mask_transform: typing.Transform = nnx.data()
+  sea_ice_value_transform: typing.Transform = nnx.data()
+  mesh: parallelism.Mesh = nnx.static(
       kw_only=True, default_factory=parallelism.default_mesh
   )
 

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dataclasses
 from absl.testing import absltest
 from absl.testing import parameterized
 import coordax as cx
@@ -25,19 +24,18 @@ from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import module_utils
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import typing
 import numpy as np
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class MockModel(api.Model):
   """A mock model for testing purposes."""
 
   x: cx.Coordinate
-  steady_increment: nnx.Param[jax.Array] = dataclasses.field(
+  steady_increment: nnx.Param[jax.Array] = nnx.data(
       default_factory=lambda: nnx.Param(0.0)
   )
   modulation_factor: dynamic_io.DynamicInputSlice | None = None

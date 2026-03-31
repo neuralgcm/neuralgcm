@@ -17,7 +17,7 @@
 from typing import Sequence
 
 import coordax as cx
-from neuralgcm.experimental.core import nnx_compat
+from flax import nnx
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import time_integrators
 from neuralgcm.experimental.core import typing
@@ -39,11 +39,11 @@ class SimTimeEquation(time_integrators.ExplicitODE):
     return from_dict_fn(terms)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExplicitTransformEquation(time_integrators.ExplicitODE):
   """Explicit equation whose terms are parameterized by a transform."""
 
-  explicit_terms_transform: typing.Transform
+  explicit_terms_transform: typing.Transform = nnx.data()
 
   def explicit_terms(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     tendencies = self.explicit_terms_transform(inputs)
@@ -58,11 +58,11 @@ def _sum_non_nones(*args: cx.Field | None) -> cx.Field:
   return sum(terms) if terms else cx.field(0.0)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ComposedODE(ImplicitExplicitODE):
   """Composed equation with exactly one ImplicitExplicitODE instance."""
 
-  equations: Sequence[ExplicitODE | ImplicitExplicitODE]
+  equations: Sequence[ExplicitODE | ImplicitExplicitODE] = nnx.data()
 
   def __post_init__(self):
     imex_equations = [
@@ -78,10 +78,12 @@ class ComposedODE(ImplicitExplicitODE):
 
   def explicit_terms(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
     explicit_tendencies = [fn.explicit_terms(x) for fn in self.equations]
+    # pylint: disable=undefined-variable
     return {
         k: _sum_non_nones(*(et.get(k, None) for et in explicit_tendencies))
         for k in x.keys()
     }
+    # pylint: enable=undefined-variable
 
   def implicit_terms(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
     return self.implicit_explicit_equation.implicit_terms(x)
@@ -95,15 +97,17 @@ class ComposedODE(ImplicitExplicitODE):
     super().__init_subclass__(pytree=False, **kwargs)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ComposedExplicitODE(ExplicitODE):
   """Composed explicit equation."""
 
-  equations: Sequence[ExplicitODE]
+  equations: Sequence[ExplicitODE] = nnx.data()
 
   def explicit_terms(self, x: dict[str, cx.Field]) -> dict[str, cx.Field]:
     explicit_tendencies = [fn.explicit_terms(x) for fn in self.equations]
+    # pylint: disable=undefined-variable
     return {
         k: _sum_non_nones(*(et.get(k, None) for et in explicit_tendencies))
         for k in x.keys()
     }
+    # pylint: enable=undefined-variable

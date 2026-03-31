@@ -13,8 +13,6 @@
 # limitations under the License.
 """Tests that normalization modules work as expected."""
 
-import dataclasses
-
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
@@ -25,7 +23,6 @@ from jax import config  # pylint: disable=g-importing-member
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import module_utils
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -198,9 +195,7 @@ class ModuleUtilsTest(parameterized.TestCase):
     with self.subTest('untag_batch_axis'):
       module_utils.untag_module_state(module, b, vectorization_specs)
       self.assertEqual(module.u_sum.coordinate, e)
-      self.assertEqual(
-          module.u.coordinate, cx.coords.compose(pos_b, u_coord)
-      )
+      self.assertEqual(module.u.coordinate, cx.coords.compose(pos_b, u_coord))
       self.assertEqual(
           module.u_trajectory.coordinate,
           cx.coords.compose(pos_b, e, u_traj_coord),  # None, e, ...
@@ -531,9 +526,9 @@ class VectorizeModuleFnTest(parameterized.TestCase):
 
   def test_vectorize_module_fn_with_args(self):
 
-    @nnx_compat.dataclass
+    @nnx.dataclass
     class ScaleDemoModule(nnx.Module):
-      param: nnx.Param = dataclasses.field(
+      param: nnx.Param = nnx.data(
           default_factory=lambda: nnx.Param(cx.field(2.0))
       )
 

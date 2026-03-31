@@ -15,8 +15,6 @@
 
 from __future__ import annotations
 
-import dataclasses
-
 import coordax as cx
 from flax import nnx
 import jax
@@ -24,18 +22,17 @@ import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import module_utils
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 import numpy as np
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class InstantDataCoupler(nnx.Module, pytree=False):
   """Coupler that stores instant field values copied from model components."""
 
   field_coords: dict[str, cx.Coordinate]  # coordinates for stored variables.
   var_to_data_keys: dict[str, str]  # field_name to data_key.
-  coupling_fields: nnx.Dict = dataclasses.field(init=False)
+  coupling_fields: nnx.Dict = nnx.data(init=False)
 
   def __post_init__(self):
     missing_data_keys = set(self.field_coords) - set(self.var_to_data_keys)
@@ -54,9 +51,7 @@ class InstantDataCoupler(nnx.Module, pytree=False):
     for k, _ in (self.field_coords).items():
       data_key = self.var_to_data_keys[k]
       if data_key not in nested_inputs:
-        raise ValueError(
-            f'missing Fields for "{data_key}" needed for "{k}"'
-        )
+        raise ValueError(f'missing Fields for "{data_key}" needed for "{k}"')
       self.coupling_fields[k].set_value(nested_inputs[data_key][k])
 
   def __call__(self, time: jdt.Datetime) -> dict[str, cx.Field]:
@@ -64,7 +59,7 @@ class InstantDataCoupler(nnx.Module, pytree=False):
     return {k: v.get_value() for k, v in self.coupling_fields.items()}
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class MultiTimeDataCoupler(nnx.Module, pytree=False):
   """Coupler that stores coupling field over multiple time slices.
 
@@ -79,8 +74,8 @@ class MultiTimeDataCoupler(nnx.Module, pytree=False):
   var_to_data_keys: dict[str, str]  # field_name to data_key.
   time_data_key: str  # data_key for time.
   n_time_slices: int
-  coupling_fields: nnx.Dict = dataclasses.field(init=False)
-  times: typing.Coupling = dataclasses.field(init=False)
+  coupling_fields: nnx.Dict = nnx.data(init=False)
+  times: typing.Coupling = nnx.data(init=False)
 
   def __post_init__(self):
     missing_data_keys = set(self.field_coords) - set(self.var_to_data_keys)
@@ -121,9 +116,7 @@ class MultiTimeDataCoupler(nnx.Module, pytree=False):
     for k, _ in self.field_coords.items():
       data_key = self.var_to_data_keys[k]
       if data_key not in nested_inputs:
-        raise ValueError(
-            f'missing Fields for "{data_key}" needed for "{k}"'
-        )
+        raise ValueError(f'missing Fields for "{data_key}" needed for "{k}"')
       previous = self.coupling_fields[k].get_value()
       latest_f = nested_inputs[data_key][k]
       new_values = update_fn(previous.untag(idx_ax), latest_f).tag(idx_ax)

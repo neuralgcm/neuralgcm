@@ -14,14 +14,12 @@
 
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
-import dataclasses
 from typing import Literal, Protocol
 
 import coordax as cx
 from flax import nnx
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
@@ -43,7 +41,7 @@ class EnergyBalanceModule(Protocol):
     """Adjusts tendencies based on energy imbalance."""
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractPrecipitationPlusEvaporation(nnx.Module):
   """Diagnoses precipitation plus evaporation rate from physics tendencies.
 
@@ -99,7 +97,7 @@ class ExtractPrecipitationPlusEvaporation(nnx.Module):
 PrecipitationScales = Literal['rate', 'cumulative', 'mass_rate']
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractPrecipitationAndEvaporation(nnx.Module):
   """Extracts balanced precipitation and evaporation values.
 
@@ -134,7 +132,7 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
       output.
   """
 
-  observation_operator: observation_operators.ObservationOperatorABC
+  observation_operator: typing.ObservationOperator = nnx.data()
   operator_query: dict[str, cx.Coordinate]
   extract_p_plus_e: ExtractPrecipitationPlusEvaporation
   prognostics_arg_key: str | int = 'prognostics'
@@ -143,7 +141,7 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
   dt: float | None = None
   precipitation_key: str = 'precipitation'
   evaporation_key: str = 'evaporation'
-  sim_units: units.SimUnits = dataclasses.field(kw_only=True)
+  sim_units: units.SimUnits = nnx.static(kw_only=True)
 
   def __post_init__(self):
     valid_keys = set([self.precipitation_key, self.evaporation_key])
@@ -203,7 +201,7 @@ class ExtractPrecipitationAndEvaporation(nnx.Module):
     return self._apply_scaling(precipitation_and_evaporation)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractPrecipitationAndEvaporationWithConstraints(
     ExtractPrecipitationAndEvaporation
 ):
@@ -251,7 +249,7 @@ class ExtractPrecipitationAndEvaporationWithConstraints(
     return self._apply_scaling(precipitation_and_evaporation)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractColumnDryAirMass(nnx.Module):
   """Extracts column dry air mass from prognostics."""
 
@@ -293,7 +291,7 @@ class ExtractColumnDryAirMass(nnx.Module):
     return {'column_dry_air_mass': column_dry_air_mass}
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractEnergyResiduals(nnx.Module):
   """Computes column energy imbalance based on moist enthalpy formulation.
 
@@ -324,7 +322,7 @@ class ExtractEnergyResiduals(nnx.Module):
   levels: coordinates.SigmaLevels | coordinates.HybridLevels
   sim_units: units.SimUnits
   model_orography: orographies.ModalOrography
-  observation_operator: observation_operators.ObservationOperatorABC
+  observation_operator: typing.ObservationOperator = nnx.data()
   energy_fluxes_query: dict[str, cx.Coordinate]
   prognostics_arg_key: str | int = 'prognostics'
   use_evaporation_for_latent_heat: bool = False
@@ -358,9 +356,7 @@ class ExtractEnergyResiduals(nnx.Module):
       prognostics: dict[str, cx.Field],
   ) -> tuple[cx.Field, cx.Field]:
     """Computes nodal kinetic energy and its tendency."""
-    velocity_from_div_curl = transforms.VelocityFromDivCurl(
-        self.ylm_map
-    )
+    velocity_from_div_curl = transforms.VelocityFromDivCurl(self.ylm_map)
     winds = velocity_from_div_curl({
         'vorticity': prognostics['vorticity'],
         'divergence': prognostics['divergence'],
@@ -480,10 +476,7 @@ class ExtractEnergyResiduals(nnx.Module):
     if self.use_evaporation_for_latent_heat:
       # mean_evaporation_rate is mass rate per second, in SI: (kg/m^2/s).
       # Multiplying by Lv gives nondim equivalent of W/m^2.
-      fs += (
-          net_energy_terms['mean_evaporation_rate']
-          * self.sim_units.Lv
-      )
+      fs += net_energy_terms['mean_evaporation_rate'] * self.sim_units.Lv
     else:
       fs += net_energy_terms['surface_latent_heat_flux'] * sec_in_hour_inv
     if self.use_liquid_ice_moist_static_energy:
@@ -502,7 +495,7 @@ class ExtractEnergyResiduals(nnx.Module):
     return {'imbalance': imbalance}
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractColumnEnergyBudget(nnx.Module):
   """Computes column energy and adds TOA and surface fluxes.
 
@@ -526,8 +519,8 @@ class ExtractColumnEnergyBudget(nnx.Module):
   levels: coordinates.SigmaLevels | coordinates.HybridLevels
   sim_units: units.SimUnits
   model_orography: orographies.ModalOrography
-  observation_operator: observation_operators.ObservationOperatorABC | None = (
-      None
+  observation_operator: typing.ObservationOperator | None = nnx.data(
+      default=None
   )
   energy_fluxes_query: dict[str, cx.Coordinate] | None = None
   dt: float | None = None
@@ -576,9 +569,7 @@ class ExtractColumnEnergyBudget(nnx.Module):
     q_nodal_field = to_nodal(prognostics['specific_humidity'])
 
     if self.use_liquid_ice_moist_static_energy:
-      qi_nodal_field = to_nodal(
-          prognostics['specific_cloud_ice_water_content']
-      )
+      qi_nodal_field = to_nodal(prognostics['specific_cloud_ice_water_content'])
     else:
       qi_nodal_field = 0.0
 

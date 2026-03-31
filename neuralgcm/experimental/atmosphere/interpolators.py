@@ -14,14 +14,12 @@
 
 """Modules for interpolating between atmosphere specific coordinates."""
 
-import dataclasses
 from typing import Literal, Sequence
 import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 
@@ -88,7 +86,7 @@ def conservative_regrid_weights(
   return weights
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class LinearOnPressure(nnx.Module):
   """Regridder that linearly interpolates between vertical levels using pressure.
 
@@ -118,7 +116,7 @@ class LinearOnPressure(nnx.Module):
   include_surface_pressure_in_output: bool = False
   sim_units: units.SimUnits | None = None
   allow_no_levels: bool = False
-  supported_level_types: Sequence[cx.Coordinate] = dataclasses.field(
+  supported_level_types: Sequence[cx.Coordinate] = nnx.static(
       default=(
           coordinates.PressureLevels,
           coordinates.SigmaLevels,
@@ -201,9 +199,7 @@ class LinearOnPressure(nnx.Module):
         )
     else:
       raise ValueError(f'Unsupported {type(target_levels)=}.')
-    out_coord = cx.coords.replace_axes(
-        f.coordinate, level, target_levels
-    )
+    out_coord = cx.coords.replace_axes(f.coordinate, level, target_levels)
     # we specify out_axes to preserve the dimension order in the output.
     out_axes = {d: i for i, d in enumerate(out_coord.dims)}
     regrid_fn = cx.cmap(self.interpolate_array, out_axes)
@@ -223,7 +219,7 @@ class LinearOnPressure(nnx.Module):
     return out
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ConservativeOnPressure(nnx.Module):
   """Regridder that interpolates vertically to sigma levels via pressure.
 
@@ -242,12 +238,13 @@ class ConservativeOnPressure(nnx.Module):
       If False, an error is raised.
     supported_level_types: A sequence of supported vertical coordinate types.
   """
-  #TODO(janniyuval): add support for hybrid levels.
+
+  # TODO(janniyuval): add support for hybrid levels.
   target_levels: coordinates.SigmaLevels
   include_surface_pressure_in_output: bool = False
   sim_units: units.SimUnits | None = None
   allow_no_levels: bool = False
-  supported_level_types: Sequence[cx.Coordinate] = dataclasses.field(
+  supported_level_types: Sequence[cx.Coordinate] = nnx.static(
       default=(coordinates.PressureLevels, coordinates.SigmaLevels),
       kw_only=True,
   )
@@ -284,9 +281,7 @@ class ConservativeOnPressure(nnx.Module):
       centers = level.fields['pressure'].data * 100  # In Pascal.
       if self.sim_units is not None:
         assert isinstance(self.sim_units, units.SimUnits)
-        centers = self.sim_units.nondimensionalize(
-            centers * typing.units.Pa
-        )
+        centers = self.sim_units.nondimensionalize(centers * typing.units.Pa)
       midpoints = (centers[:-1] + centers[1:]) / 2
       first = centers[0] - (centers[1] - centers[0]) / 2
       last = centers[-1] + (centers[-1] - centers[-2]) / 2

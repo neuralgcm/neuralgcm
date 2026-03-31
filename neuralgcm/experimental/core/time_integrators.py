@@ -18,12 +18,10 @@ from typing import Callable
 
 from dinosaur import time_integration
 from flax import nnx
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 import tree_math
 
 
-# nnx_compat is not recognized as a dataclass decorator raising lint errors.
 # pylint: disable=unexpected-keyword-arg
 
 
@@ -89,11 +87,11 @@ def rk4(equation: ExplicitODE, time_step: float) -> typing.StepFn:
   return step_fn
 
 
-@nnx_compat.dataclass
-class DinosaurIntegrator(nnx.Module, pytree=False):
+@nnx.dataclass
+class DinosaurIntegrator(nnx.Module):
   """Module that wraps time integrators from dinosaur package."""
 
-  equation: ExplicitODE | ImplicitExplicitODE
+  equation: ExplicitODE | ImplicitExplicitODE = nnx.data()
   time_step: float
   integrator: Callable[
       [ExplicitODE | ImplicitExplicitODE, float], typing.StepFn

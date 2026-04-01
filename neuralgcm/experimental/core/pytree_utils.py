@@ -144,7 +144,7 @@ def flatten_dict(
   if (counts > 1).any():
     raise ValueError(f'got duplicate keys {unique_keys[counts > 1]}')
   unique_empty_keys, counts = np.unique(
-      np.array([x[0] for x in empty_keys]), return_counts=True
+      np.array(empty_keys), return_counts=True
   )
   if (counts > 1).any():
     raise ValueError(f'got duplicate keys {unique_empty_keys[counts > 1]}')

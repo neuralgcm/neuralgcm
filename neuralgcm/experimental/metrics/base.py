@@ -69,6 +69,14 @@ class Metric(abc.ABC):
     Returns:
       A dictionary mapping metric names to the computed final metric values.
     """
+    required_statistics = {v.unique_name for v in self.statistics.values()}
+    missing_statistics = required_statistics - statistic_values.keys()
+    if missing_statistics:
+      raise ValueError(
+          'Provided statistic values do not contain all required statistics'
+          f' for Metric {self=}: {missing_statistics=}, {required_statistics=}'
+          f' and provided {statistic_values.keys()=}.'
+      )
     statistic_values = {
         k: statistic_values[v.unique_name] for k, v in self.statistics.items()
     }

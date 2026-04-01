@@ -20,6 +20,7 @@ from typing import Any, TypeAlias
 import coordax as cx
 from flax import nnx
 import jax
+from neuralgcm.experimental.core import checkpointing
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import transforms
@@ -162,4 +163,37 @@ class CollectNormalizationStats(ModelCalibrator):
     for m in stats_modules:
       m.update_stats = False
 
+    return model
+
+
+@dataclasses.dataclass
+class LoadModelComponentParams(ModelCalibrator):
+  """Loads parameters for a specific model component from a checkpoint."""
+
+  component_key: str | None
+  params_file_path: str
+  param_types: tuple[Any, ...] = (nnx.Param,)
+
+  def __call__(
+      self,
+      model: Model,
+      data_loader: DataLoader,
+      train_schedule: TrainSchedule,
+  ) -> Model:
+    del data_loader, train_schedule  # Unused.
+    component = checkpointing.load_model_checkpoint(self.params_file_path)
+    loaded_state = nnx.state(component, *self.param_types)
+    key = self.component_key
+    to_update = getattr(model, key) if key else model
+    target_state = nnx.state(to_update, *self.param_types)
+    # Ensure there are no discrepancies between the parameter structures
+    loaded_struct = jax.tree.structure(loaded_state)
+    target_struct = jax.tree.structure(target_state)
+    if loaded_struct != target_struct:
+      raise ValueError(
+          f'Parameter structures do not match for component {key}.\n'
+          f'Loaded structure: {loaded_struct}\n'
+          f'Target structure: {target_struct}'
+      )
+    nnx.update(to_update, loaded_state)
     return model

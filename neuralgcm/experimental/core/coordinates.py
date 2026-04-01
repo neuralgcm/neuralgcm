@@ -1407,13 +1407,13 @@ class PressureLevels(cx.Coordinate):
           'pressure coordinate is not a 1D array'
       )
     centers = coords[dim].data
-    if not 0 < centers[0] < 100:
+    if centers[0] < 0:
       return cx.coords.NoCoordinateMatch(
-          f'pressure levels must start between 0 and 100, got: {centers}'
+          f'pressure levels cannot be negative, got: {centers}'
       )
-    if not 900 < centers[-1] < 1025:
+    if centers[-1] > 1025:
       return cx.coords.NoCoordinateMatch(
-          f'pressure levels must end between 900 and 1025, got: {centers}'
+          f'pressure levels must end before 1025, got: {centers}'
       )
     return cls(centers=centers)
 

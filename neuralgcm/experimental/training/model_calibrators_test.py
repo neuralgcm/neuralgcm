@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest import mock
+
 from absl.testing import absltest
 from flax import nnx
 from neuralgcm.experimental.training import model_calibrators
@@ -38,7 +40,58 @@ class Model(nnx.Module, pytree=False):
     self.submodule_c = MockModule()
 
 
+@nnx.dataclass
+class MockModelParams(nnx.Module):
+  l1: nnx.Param = nnx.data(default_factory=lambda: nnx.Param(1.0))
+  l2: nnx.Param = nnx.data(default_factory=lambda: nnx.Param(2.0))
+
+
+@nnx.dataclass
+class MockModelSubsetParams(nnx.Module):
+  l1: nnx.Param = nnx.data(default_factory=lambda: nnx.Param(1.0))
+
+
+@nnx.dataclass
+class MockLargeModel(nnx.Module):
+  l1: nnx.Param = nnx.data(default_factory=lambda: nnx.Param(1.0))
+  l2: nnx.Param = nnx.data(init=False)
+  l3: nnx.Param = nnx.data(default_factory=lambda: nnx.Param(3.0))
+
+  def __post_init__(self):
+    self.l2 = self.l1  # l2 is an alias of l1
+
+
+class ParentModel(nnx.Module):
+  """Mock module for testing component update."""
+
+  def __init__(self, val1=1.0, val2=2.0):
+    self.my_component = MockModelParams(l1=nnx.Param(val1), l2=nnx.Param(val2))
+
+
+@nnx.dataclass
+class MockSmallModel(nnx.Module):
+  l2: nnx.Param = nnx.data(default_factory=lambda: nnx.Param(0.0))
+
+
 class ModelCalibratorsTest(absltest.TestCase):
+
+  def test_shared_params_subset(self):
+    model = MockSmallModel(l2=nnx.Param(0.0))
+    loaded_model = MockLargeModel(l1=nnx.Param(42.0), l3=nnx.Param(99.0))
+
+    with mock.patch.object(
+        model_calibrators.checkpointing, 'load_model_checkpoint'
+    ) as mock_load:
+      mock_load.return_value = loaded_model
+
+      calibrator = model_calibrators.LoadModelComponentParams(
+          component_key=None,
+          ckpt_path_or_dir='/dummy/path',
+          load_subset=True,
+      )
+      calibrator(model, None, None)
+
+      self.assertEqual(model.l2.get_value(), 42.0)
 
   def test_update_submodules_from_xarray(self):
     model = Model()
@@ -93,6 +146,78 @@ class ModelCalibratorsTest(absltest.TestCase):
     calibrator = model_calibrators.UpdateSubmodulesFromXarray(specs)
 
     with self.assertRaisesRegex(ValueError, 'No module of type .* found'):
+      calibrator(model, None, None)
+
+  @mock.patch.object(model_calibrators.checkpointing, 'load_model_checkpoint')
+  def test_load_model_component_params(self, mock_load):
+    mock_load.return_value = MockModelParams(
+        l1=nnx.Param(3.0), l2=nnx.Param(4.0)
+    )
+    model = MockModelParams(l1=nnx.Param(1.0), l2=nnx.Param(2.0))
+
+    calibrator = model_calibrators.LoadModelComponentParams(
+        component_key=None,
+        ckpt_path_or_dir='/dummy/path',
+        is_training_checkpoint=False,
+    )
+    calibrator(model, None, None)
+
+    self.assertEqual(model.l1.get_value(), 3.0)
+    self.assertEqual(model.l2.get_value(), 4.0)
+    mock_load.assert_called_once_with(path='/dummy/path')
+
+  @mock.patch.object(model_calibrators.checkpointing, 'load_model_checkpoint')
+  def test_load_model_component_params_with_key(self, mock_load):
+    mock_load.return_value = MockModelParams(
+        l1=nnx.Param(3.0), l2=nnx.Param(4.0)
+    )
+    model = ParentModel(1.0, 2.0)
+
+    calibrator = model_calibrators.LoadModelComponentParams(
+        component_key='my_component',
+        ckpt_path_or_dir='/dummy/path',
+        is_training_checkpoint=False,
+    )
+    calibrator(model, None, None)
+
+    self.assertEqual(model.my_component.l1.get_value(), 3.0)
+    self.assertEqual(model.my_component.l2.get_value(), 4.0)
+    mock_load.assert_called_once_with(path='/dummy/path')
+
+  @mock.patch.object(model_calibrators.checkpointing, 'load_model_checkpoint')
+  def test_load_model_component_params_subset(self, mock_load):
+    mock_load.return_value = MockModelParams(
+        l1=nnx.Param(3.0), l2=nnx.Param(4.0)
+    )
+    model = MockModelSubsetParams(l1=nnx.Param(1.0))
+
+    calibrator = model_calibrators.LoadModelComponentParams(
+        component_key=None,
+        ckpt_path_or_dir='/dummy/path',
+        load_subset=True,
+    )
+    calibrator(model, None, None)
+
+    self.assertEqual(model.l1.get_value(), 3.0)
+
+  @mock.patch.object(model_calibrators.checkpointing, 'load_model_checkpoint')
+  def test_load_model_component_params_subset_raises_when_false(
+      self, mock_load
+  ):
+    mock_load.return_value = MockModelParams(
+        l1=nnx.Param(3.0), l2=nnx.Param(4.0)
+    )
+    model = MockModelSubsetParams(l1=nnx.Param(1.0))
+
+    calibrator = model_calibrators.LoadModelComponentParams(
+        component_key=None,
+        ckpt_path_or_dir='/dummy/path',
+        load_subset=False,
+    )
+
+    with self.assertRaisesRegex(
+        ValueError, 'Parameter structures do not match'
+    ):
       calibrator(model, None, None)
 
 

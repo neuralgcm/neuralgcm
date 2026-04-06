@@ -20,9 +20,11 @@ from typing import Any, TypeAlias
 import coordax as cx
 from flax import nnx
 import jax
+from neuralgcm.experimental.core import checkpointing
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import transforms
+from neuralgcm.experimental.training import checkpointing as training_checkpointing
 from neuralgcm.experimental.training import data_loading
 import xarray
 
@@ -162,4 +164,75 @@ class CollectNormalizationStats(ModelCalibrator):
     for m in stats_modules:
       m.update_stats = False
 
+    return model
+
+
+@dataclasses.dataclass
+class LoadModelComponentParams(ModelCalibrator):
+  """Loads parameters for a specific model component from a checkpoint."""
+
+  component_key: str | None
+  ckpt_path_or_dir: str
+  ckpt_step: int | None = None  # only used for training checkpoints.
+  param_types: tuple[Any, ...] = (nnx.Param,)
+  is_training_checkpoint: bool = False
+  load_subset: bool = False
+
+  def __call__(
+      self,
+      model: Model,
+      data_loader: DataLoader,
+      train_schedule: TrainSchedule,
+  ) -> Model:
+    del data_loader, train_schedule  # Unused.
+    # TODO(dkochkov): Consider if we need to provide spmd_mesh updates. For
+    # standard model parameters this should not be necessary, since we tend to
+    # store them in a non-padded format, but this might be safer or useful in
+    # other cases.
+    if self.is_training_checkpoint:
+      component = training_checkpointing.model_from_training_checkpoint(
+          checkpoints_dir=self.ckpt_path_or_dir, step=self.ckpt_step
+      )
+    else:
+      component = checkpointing.load_model_checkpoint(
+          path=self.ckpt_path_or_dir
+      )
+
+    loaded_state = nnx.state(component, *self.param_types)
+    key = self.component_key
+    to_update = getattr(model, key) if key else model
+    target_state = nnx.state(to_update, *self.param_types)
+
+    if self.load_subset:
+      loaded_vars = {
+          path: node
+          for path, node in nnx.graph.iter_graph(component)
+          if isinstance(node, self.param_types)
+      }
+      # Expanding loaded_vars to include duplicate aliases.
+      for group in nnx.graph.find_duplicates(component):
+        canonical = next((p for p in group if p in loaded_vars), None)
+        if canonical is not None:
+          val = loaded_vars[canonical]
+          for p in group:
+            loaded_vars[p] = val
+      target_vars = {
+          path: node
+          for path, node in nnx.graph.iter_graph(to_update)
+          if isinstance(node, self.param_types)
+      }
+      common_keys = set(loaded_vars.keys()).intersection(target_vars.keys())
+      for path in common_keys:
+        target_vars[path].set_value(loaded_vars[path].get_value())
+    else:
+      # Ensure there are no discrepancies between the parameter structures.
+      loaded_struct = jax.tree.structure(loaded_state)
+      target_struct = jax.tree.structure(target_state)
+      if loaded_struct != target_struct:
+        raise ValueError(
+            f'Parameter structures do not match for component {key}.\n'
+            f'Loaded structure: {loaded_struct}\n'
+            f'Target structure: {target_struct}'
+        )
+      nnx.update(to_update, loaded_state)
     return model

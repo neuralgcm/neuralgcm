@@ -114,14 +114,17 @@ class DynamicInputFeatures(transforms.TransformABC):
 
   keys: Sequence[str]
   dynamic_input_module: dynamic_io.DynamicInputSlice
-  time_offsets: dict[str, np.timedelta64] | None = None
+  time_offsets: np.timedelta64 | dict[str, np.timedelta64] | None = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    if self.time_offsets is None:
-      data_features = self.dynamic_input_module(inputs['time'])
+    time_offsets = self.time_offsets or np.timedelta64(0, 's')
+    if isinstance(time_offsets, np.timedelta64):
+      time = cx.field(jdt.to_timedelta(time_offsets)) + inputs['time']
+      data_features = self.dynamic_input_module(time)
       return {k: data_features[k] for k in self.keys}
+    assert isinstance(time_offsets, dict)  # Make pytype happy.
     features = {}
-    for suffix, offset in self.time_offsets.items():
+    for suffix, offset in time_offsets.items():
       offset_time = inputs['time'] + cx.field(jdt.to_timedelta(offset))
       data_features = self.dynamic_input_module(offset_time)
       for k in self.keys:

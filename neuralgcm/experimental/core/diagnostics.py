@@ -310,11 +310,27 @@ class ExtractTransformedOutputs(nnx.Module):
 
 @nnx_compat.dataclass
 class ExtractFixedQueryObservations(nnx.Module):
-  """Extract module that evaluates observation operator with a fixed query."""
+  """Extract module that evaluates observation operator with a fixed query.
+
+  This module extracts values by calling `observation_operator` with a fixed
+  `query`. The prognostics data is extracted from the arguments passed to the
+  `__call__` method, based on `prognostics_arg_key`. An optional `transform` can
+  be applied to the results of the observation.
+
+  Args:
+    observation_operator: An ObservationOperator module to be evaluated.
+    query: A fixed query for the `observation_operator` to generate outputs.
+    prognostics_arg_key: The key or index used to extract the prognostics
+      dictionary from the arguments passed to `__call__`. Prognostics are
+      passed to the observation operator together with the `query`.
+    transform: An optional function to apply to the outputs returned by the
+      `observation_operator`.
+  """
 
   observation_operator: typing.ObservationOperator
   query: dict[str, cx.Coordinate | cx.Field]
   prognostics_arg_key: str | int = 'prognostics'
+  transform: typing.Transform | None = None
 
   def _extract_prognostics(self, *args, **kwargs) -> dict[str, cx.Field]:
     if isinstance(self.prognostics_arg_key, int):
@@ -330,4 +346,7 @@ class ExtractFixedQueryObservations(nnx.Module):
   def __call__(self, result, *args, **kwargs) -> dict[str, cx.Field]:
     del result  # unused.
     prognostics = self._extract_prognostics(*args, **kwargs)
-    return self.observation_operator.observe(prognostics, query=self.query)
+    extracted = self.observation_operator.observe(prognostics, query=self.query)
+    if self.transform is not None:
+      extracted = self.transform(extracted)
+    return extracted

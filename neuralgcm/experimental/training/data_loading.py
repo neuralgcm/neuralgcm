@@ -587,13 +587,14 @@ class DataLoader:
       schemas. If specified, the data will be loaded in a sharded manner and
       converted to global jax arrays as a part of the input pipeline. To support
       batching, a sharding rule for 'batch' dimension name should be present in
-      `parallelism_mesh.field_partitions[loading_partition_schema]`.
+      `parallelism_mesh.field_partitions[loading_partition_schema]`. Default is
+      None, which means no sharding.
     loading_partition_schema: The partition schema to use when loading data.
     shardable_dims: The dimensions to consider for loading in shards.
   """
 
   all_data: dict[str, xarray.Dataset]
-  parallelism_mesh: parallelism.Mesh | None
+  parallelism_mesh: parallelism.Mesh | None = None
   loading_partition_schema: str | None = None
   shardable_dims: tuple[str, ...] = ()
 
@@ -884,8 +885,12 @@ class DataLoader:
     }
     data = xarray_utils.ensure_timedelta_axis(data, timedelta_origins)
     if self.spmd_mesh is None:
-      return tuple(xarray_utils.read_from_xarray(data, spec) for spec in input_specs)
-    return tuple(self._read_sharded_fields(data, spec) for spec in input_specs)
+      read_fn = functools.partial(
+          xarray_utils.read_from_xarray, strict_matches=False
+      )
+    else:
+      read_fn = self._read_sharded_fields
+    return tuple(read_fn(data, spec) for spec in input_specs)
 
   def to_global_array(self, pytree: PyTree) -> PyTree:
     """Create a pytree of global JAX arrays from a pytree of NumPy arrays."""

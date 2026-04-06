@@ -100,6 +100,11 @@ class CoordSpec:
           f'{self.dim_match_rules=} contains dimensions not present in'
           f' {self.coord=}.'
       )
+    canonicalized = cx.coords.canonicalize(self.coord)
+    selected_axes = [x for x in canonicalized if isinstance(x, cx.SelectedAxis)]
+    for ax in selected_axes:
+      if ax.dims[0] not in self.dim_match_rules:
+        self.dim_match_rules[ax.dims[0]] = AxisMatchRules.REPLACED
 
   def validate_compatible(self, coord: cx.Coordinate):
     """Raises an informative error if not compatible with inferred candidate."""
@@ -386,6 +391,9 @@ def get_coord_types(
   if cx.LabeledAxis in types:
     types.remove(cx.LabeledAxis)
     types.append(cx.LabeledAxis)
+  # If selected axis is present, remove it as it does not implement from xarray.
+  if cx.SelectedAxis in types:
+    types.remove(cx.SelectedAxis)
   return tuple(types)
 
 

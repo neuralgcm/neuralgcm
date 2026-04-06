@@ -210,17 +210,34 @@ class PrescribedFields(PytreeTransformABC):
   def update_from_xarray(
       self,
       dataset: xarray.Dataset,
+      sim_units: units.SimUnits,
+      strict_matches: bool = True,
       **kwargs,
   ):
     """Updates `self.prescribed_fields` with data from dataset."""
-    sim_units = kwargs['sim_units']
-    for key, feature in self.prescribed_fields.items():
+    del kwargs  # Unused.
+    extra_types = (cx.LabeledAxis,) if not strict_matches else ()
+    for key, f in self.prescribed_fields.items():
       if key in dataset:
         da = dataset[key]
         data_units = units.parse_units(da.attrs['units'])
         da = da.copy(data=sim_units.nondimensionalize(da.values * data_units))
-        candidate = xarray_utils.field_from_xarray(da)
-        feature.set_value(candidate.order_as(feature.coordinate))
+        candidate = xarray_utils.field_from_xarray(da, extra_types)
+        candidate = candidate.order_as(*f.dims)
+        if strict_matches:
+          candidate = candidate.untag(f.coordinate).tag(f.coordinate)
+        else:
+          candidate = candidate.untag(*f.dims).tag(f.coordinate)
+        f.set_value(candidate)
+
+  @classmethod
+  def zeros_like(
+      cls,
+      coords: dict[str, cx.Coordinate],
+  ):
+    """Returns a PrescribedFields instance with given shapes and zero values."""
+    zeros_like = lambda c: cx.field(jnp.zeros(c.shape), c)
+    return cls({k: zeros_like(c) for k, c in coords.items()})
 
 
 class Broadcast(PytreeTransformABC):

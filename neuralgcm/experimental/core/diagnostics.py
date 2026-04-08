@@ -140,7 +140,9 @@ class IntervalDiagnostic(DiagnosticModule):
     two_hr = np.timedelta64(2, 'h')
     IntervalDiagnostic(get_precip, precip_coords, six_hr, resolution=two_hr)
 
-    # weekly average temperature, with output resolution of up to 1 day.
+    # weekly accumulated temperature, with output resolution of up to 1 day.
+    # Note: To obtain a weekly mean, you must explicitly divide the result
+    # by the number of accumulation steps (7 in this case) downstream.
     seven_days = np.timedelta64(7, 'D')
     one_day = np.timedelta64(1, 'D')
     IntervalDiagnostic(get_temp, temp_coords, seven_days, resolution=one_day)

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Implementation of the Lorenz96 model components for demostration purposes."""
+"""Implementation of the Lorenz96 model components."""
 
 from collections.abc import Sequence
 import dataclasses

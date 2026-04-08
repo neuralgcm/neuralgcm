@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import diagnostics
+from neuralgcm.experimental.core import feature_transforms
 from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import spherical_harmonics
@@ -392,6 +393,225 @@ class DiagnosticsTest(parameterized.TestCase):
           extract,
           d_coords,
           interval=np.timedelta64(3, 's'),
+          resolution=np.timedelta64(2, 's'),
+      )
+
+  def test_time_offset_diagnostic(self):
+    x_coord, y_coord = cx.SizedAxis('x', 3), cx.SizedAxis('y', 5)
+    diagnostic = diagnostics.TimeOffsetDiagnostic(
+        extract=lambda x, *args, **kwargs: x,
+        extract_coords={'fixed': x_coord, 'increasing': y_coord},
+        offset={
+            '4h_ago': np.timedelta64(4, 'h'),
+            '2h_ago': np.timedelta64(2, 'h'),
+        },
+        resolution=np.timedelta64(2, 'h'),
+        default_timedelta=np.timedelta64(1, 'h'),
+        include_dt_offset=True,
+    )
+    module = MockMethod()
+    module_with_diagnostic = module_utils.with_callback(module, diagnostic)
+    module_with_diagnostic = module_utils.with_callback(
+        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+    )
+    inputs = {
+        'fixed': cx.field(jnp.arange(3.0), x_coord),
+        'increasing': cx.field(jnp.zeros(5), y_coord),
+    }
+
+    with self.subTest('produces_expected_values'):
+      diagnostic.reset_diagnostic_state()
+      output = inputs.copy()
+      for _ in range(10):
+        output = module_with_diagnostic(output)
+
+      actual = diagnostic.diagnostic_values()
+      # The resolution is 2h, so updates happen at steps 2, 4, 6, 8, 10.
+      # Tracked "increasing" values from 4h ago and 2h ago are: 6*2=12, 8*2=16.
+      expected_increasing_4h = cx.field(jnp.ones(5) * 12.0, y_coord)
+      expected_increasing_2h = cx.field(jnp.ones(5) * 16.0, y_coord)
+      expected_fixed = cx.field(jnp.arange(3.0), x_coord)  # remains unchanged.
+
+      cx.testing.assert_fields_allclose(actual['fixed_2h_ago'], expected_fixed)
+      cx.testing.assert_fields_allclose(actual['fixed_4h_ago'], expected_fixed)
+      cx.testing.assert_fields_allclose(
+          actual['increasing_2h_ago'], expected_increasing_2h
+      )
+      cx.testing.assert_fields_allclose(
+          actual['increasing_4h_ago'], expected_increasing_4h
+      )
+      self.assertEqual(
+          actual['timedelta_since_sub_interval'].data,
+          jdt.to_timedelta(np.timedelta64(0, 'h')),
+      )
+
+    with self.subTest('resets_values'):
+      diagnostic.reset_diagnostic_state()
+      actual = diagnostic.diagnostic_values()
+      expected_zeros = {
+          'fixed_2h_ago': cx.field(jnp.zeros(3), x_coord),
+          'fixed_4h_ago': cx.field(jnp.zeros(3), x_coord),
+          'increasing_2h_ago': cx.field(jnp.zeros(5), y_coord),
+          'increasing_4h_ago': cx.field(jnp.zeros(5), y_coord),
+          'timedelta_since_sub_interval': cx.field(jdt.Timedelta(0)),
+      }
+      chex.assert_trees_all_close(actual, expected_zeros)
+
+  def test_chained_interval_and_time_offset(self):
+    y_coord = cx.SizedAxis('y', 5)
+    interval_diag = diagnostics.IntervalDiagnostic(
+        extract=lambda x, *args, **kwargs: {'increasing': x['increasing']},
+        extract_coords={'increasing': y_coord},
+        interval=np.timedelta64(4, 'h'),
+        resolution=np.timedelta64(2, 'h'),
+        default_timedelta=np.timedelta64(1, 'h'),
+    )
+    time_offset_diag = diagnostics.TimeOffsetDiagnostic(
+        extract=diagnostics.ExtractTransformedOutputs(
+            feature_transforms.DiagnosticValueFeatures(interval_diag)
+        ),
+        extract_coords={'increasing': y_coord},
+        offset={'2h_ago': np.timedelta64(2, 'h')},
+        resolution=np.timedelta64(2, 'h'),
+        default_timedelta=np.timedelta64(1, 'h'),
+    )
+
+    module = MockMethod()
+    # The goal is to get offset interval, so we ensure that interval diagnostics
+    # is computed first (i.e. first callback).
+    module = module_utils.with_callback(module, interval_diag)
+    module = module_utils.with_callback(
+        module, (interval_diag, 'advance_diagnostic_clock')
+    )
+    module = module_utils.with_callback(module, time_offset_diag)
+    module = module_utils.with_callback(
+        module, (time_offset_diag, 'advance_diagnostic_clock')
+    )
+
+    inputs = {'increasing': cx.field(jnp.zeros(5), y_coord)}
+
+    output = inputs.copy()
+    for _ in range(8):
+      output = module(output)
+
+    # At t=8h with -2h offset and 4h interval, we expect values from (2-6].
+    # Steps 3, 4, 5, 6 have values: 6, 8, 10, 12.
+    # Sum over steps 3, 4, 5, 6 is 6 + 8 + 10 + 12 = 36.
+    expected = cx.field(jnp.ones(5) * 36.0, y_coord)
+
+    actual = time_offset_diag.diagnostic_values()
+    cx.testing.assert_fields_allclose(actual['increasing_2h_ago'], expected)
+
+  def test_time_offset_with_explicit_timedelta_in_advance_clock(self):
+    y_coord = cx.SizedAxis('y', 5)
+    diagnostic = diagnostics.TimeOffsetDiagnostic(
+        extract=lambda x, *args, **kwargs: {'increasing': x['increasing']},
+        extract_coords={'increasing': y_coord},
+        offset=np.timedelta64(8, 'h'),
+        resolution=np.timedelta64(4, 'h'),
+    )
+    module = MockMethod()
+    module_with_diagnostic = module_utils.with_callback(module, diagnostic)
+    module_with_diagnostic = module_utils.with_callback(
+        module_with_diagnostic,
+        (diagnostic, 'advance_diagnostic_clock'),
+        method_name='pass_through',
+    )
+    state = {'increasing': cx.field(jnp.zeros(5), y_coord)}
+    explicit_timedelta = jdt.to_timedelta(np.timedelta64(1, 'h'))
+    for _ in range(12):
+      state = module_with_diagnostic(state)
+      _ = module_with_diagnostic.pass_through({'timedelta': explicit_timedelta})
+
+    actual = diagnostic.diagnostic_values()
+    # 12 steps of 1h. Resolution is 4h, so updates at steps 4, 8, 12.
+    # offset is 8h (which means we check the value from step 4).
+    # Values at steps 4 is 8.0.
+    expected = cx.field(jnp.ones(5) * 8.0, y_coord)
+    cx.testing.assert_fields_allclose(actual['increasing'], expected)
+
+  def test_time_offset_values_returns_complete_intervals(self):
+    y_coord = cx.SizedAxis('y', 5)
+    diagnostic = diagnostics.TimeOffsetDiagnostic(
+        extract=lambda x, *args, **kwargs: {'increasing': x['increasing']},
+        extract_coords={'increasing': y_coord},
+        offset={'10s_ago': np.timedelta64(10, 's')},
+        resolution=np.timedelta64(5, 's'),
+        default_timedelta=np.timedelta64(1, 's'),
+        include_dt_offset=True,
+    )
+    module = MockMethod()
+    module_with_diagnostic = module_utils.with_callback(module, diagnostic)
+    module_with_diagnostic = module_utils.with_callback(
+        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+    )
+    output = {'increasing': cx.field(jnp.zeros(5), y_coord)}
+
+    for _ in range(15):
+      output = module_with_diagnostic(output)
+
+    values = diagnostic.diagnostic_values()
+    # After 15s, the value from (15-10)=5 is 10 (2 per step)
+    expected = cx.field(jnp.ones(5) * 10.0, y_coord)
+    cx.testing.assert_fields_allclose(values['increasing_10s_ago'], expected)
+
+    for _ in range(3):
+      output = module_with_diagnostic(output)
+
+    values = diagnostic.diagnostic_values()
+    # At 18s, past values haven't shifted. It still returns the value from 5s.
+    # Which represents 13s ago (10s + 3s).
+    cx.testing.assert_fields_allclose(values['increasing_10s_ago'], expected)
+    self.assertEqual(
+        values['timedelta_since_sub_interval'].data,
+        jdt.to_timedelta(np.timedelta64(3, 's')),
+    )
+
+  def test_time_offset_nnx_jit_compatible(self):
+    y_coord = cx.SizedAxis('y', 1)
+    diagnostic = diagnostics.TimeOffsetDiagnostic(
+        extract=lambda x, *args, **kwargs: {'increasing': x['increasing']},
+        extract_coords={'increasing': y_coord},
+        offset=np.timedelta64(2, 's'),
+        resolution=np.timedelta64(1, 's'),
+        default_timedelta=np.timedelta64(1, 's'),
+    )
+    module = MockMethod()
+    module_with_diagnostic = module_utils.with_callback(module, diagnostic)
+    module_with_diagnostic = module_utils.with_callback(
+        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+    )
+    inputs = {'increasing': cx.field(jnp.zeros(1), y_coord)}
+
+    @nnx.jit
+    def run_step(model, inputs):
+      return model(inputs)
+
+    for _ in range(3):
+      inputs = run_step(module_with_diagnostic, inputs)
+
+    actual = diagnostic.diagnostic_values()
+    # offset 2s, current time 3s. So we want value at 1s. Value is 2.0.
+    expected = cx.field(jnp.array([2.0]), y_coord)
+    cx.testing.assert_fields_allclose(actual['increasing'], expected)
+
+  def test_time_offset_resolution_not_int_seconds_raises_error(self):
+    with self.assertRaisesRegex(
+        ValueError, 'resolution must be an integer number of seconds'
+    ):
+      diagnostics.TimeOffsetDiagnostic(
+          extract=lambda x, *args, **kwargs: x,
+          extract_coords={'x': cx.Scalar()},
+          offset=np.timedelta64(3, 's'),
+          resolution=np.timedelta64(1500, 'ms'),
+      )
+
+  def test_time_offset_offset_not_multiple_of_resolution_raises_error(self):
+    with self.assertRaisesRegex(ValueError, 'must be a multiple of'):
+      diagnostics.TimeOffsetDiagnostic(
+          extract=lambda x, *args, **kwargs: x,
+          extract_coords={'x': cx.Scalar()},
+          offset=np.timedelta64(3, 's'),
           resolution=np.timedelta64(2, 's'),
       )
 

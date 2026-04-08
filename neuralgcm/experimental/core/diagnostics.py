@@ -15,7 +15,7 @@
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
 import dataclasses
-from typing import Protocol
+from typing import Any, Protocol
 
 import coordax as cx
 from flax import nnx
@@ -61,6 +61,59 @@ class Extract(Protocol):
       **kwargs,
   ) -> dict[str, cx.Field]:
     """Extracts diagnostic fields from the callback method result and args."""
+
+
+def _check_and_get_periods(
+    interval: np.timedelta64, resolution: np.timedelta64, name: str = 'interval'
+) -> int:
+  """Checks interval bounds and returns the number of periods."""
+  if interval % resolution != np.timedelta64(0):
+    raise ValueError(
+        f'{name}({interval}) must be a multiple of resolution({resolution}).'
+    )
+  periods = interval // resolution
+  float_seconds = resolution / np.timedelta64(1, 's')
+  if float_seconds != np.floor(float_seconds):
+    raise ValueError(
+        'resolution must be an integer number of seconds, but '
+        f'resolution({resolution}) has {float_seconds} seconds.'
+    )
+  return int(periods)
+
+
+def _get_timedelta(
+    inputs: dict[str, Any],
+    default_timedelta: np.timedelta64 | None,
+) -> jdt.Timedelta:
+  """Extracts timedelta from inputs or defaults."""
+  timedelta = inputs.get('timedelta')
+  if timedelta is None:
+    if default_timedelta is None:
+      raise ValueError(
+          'Missing both `timedelta` in `inputs` and `default_timedelta` '
+          f'got {inputs.keys()=}'
+      )
+    timedelta = jdt.to_timedelta(default_timedelta)
+  else:
+    if default_timedelta is not None:
+      raise ValueError(
+          'Specifying both `timedelta` in `inputs` and `default_timedelta` '
+          f'is error-prone and not supported {inputs.keys()=}'
+      )
+  if not isinstance(timedelta, jdt.Timedelta):
+    raise ValueError(f'timedelta must be Timedelta, got {type(timedelta)}')
+  return timedelta
+
+
+def _update_clock(
+    dt: jdt.Timedelta, resolution: np.timedelta64
+) -> tuple[jdt.Timedelta, jax.Array]:
+  """Returns updated clock and a boolean indicating if resolution was reached."""
+  is_update_step = (dt >= resolution).data  # pytype: disable=attribute-error
+  recenter_timedelta = lambda t: t - resolution
+  keep_timedelta = lambda t: t
+  new_dt = jax.lax.cond(is_update_step, recenter_timedelta, keep_timedelta, dt)
+  return new_dt, is_update_step
 
 
 @nnx_compat.dataclass
@@ -179,18 +232,7 @@ class IntervalDiagnostic(DiagnosticModule):
   per_period: dict[str, typing.Diagnostic] = dataclasses.field(init=False)
 
   def __post_init__(self):
-    if self.interval % self.resolution != np.timedelta64(0):
-      raise ValueError(
-          f'interval({self.interval}) must be a multiple of '
-          f'resolution({self.resolution}).'
-      )
-    periods = self.interval // self.resolution
-    float_seconds = self.resolution / np.timedelta64(1, 's')
-    if float_seconds != np.floor(float_seconds):
-      raise ValueError(
-          'resolution must be an integer number of seconds, but '
-          f'resolution({self.resolution}) has {float_seconds} seconds.'
-      )
+    periods = _check_and_get_periods(self.interval, self.resolution)
     self.dt_mod_freq = typing.Diagnostic(cx.field(jdt.Timedelta()))
     self.since_last_update = {
         k: Diagnostic(cx.field(jnp.zeros(c.shape), c))
@@ -224,30 +266,10 @@ class IntervalDiagnostic(DiagnosticModule):
   def advance_diagnostic_clock(self, inputs, *args, **kwargs):
     """Advances the internal clock and updates interval accumulations."""
     del args, kwargs  # unused.
-    timedelta = inputs.get('timedelta')
-    if timedelta is None:
-      if self.default_timedelta is None:
-        raise ValueError(
-            'Missing both `timedelta` in `inputs` and `default_timedelta`'
-            f'got {inputs.keys()=}'
-        )
-      timedelta = jdt.to_timedelta(self.default_timedelta)
-    else:
-      if self.default_timedelta is not None:
-        raise ValueError(
-            'Specifying both `timedelta` in `inputs` and `default_timedelta`'
-            f'is error-prone and not supported {inputs.keys()=}'
-        )
-    if not isinstance(timedelta, jdt.Timedelta):
-      raise ValueError(f'timedelta must be Timedelta, got {type(timedelta)}')
-
+    timedelta = _get_timedelta(inputs, self.default_timedelta)
     dt = self.dt_mod_freq.get_value() + timedelta
-    is_update_step = (dt >= self.resolution).data
-    recenter_timedelta = lambda t: t - self.resolution
-    keep_timedelta = lambda t: t
-    self.dt_mod_freq.set_value(
-        jax.lax.cond(is_update_step, recenter_timedelta, keep_timedelta, dt)
-    )
+    new_dt, is_update_step = _update_clock(dt, self.resolution)
+    self.dt_mod_freq.set_value(new_dt)
 
     for k in self.extract_coords:
       per_period = self.per_period[k].get_value()
@@ -299,6 +321,129 @@ class IntervalDiagnostic(DiagnosticModule):
           self.instants[k].set_value(v)
 
 
+@nnx.dataclass
+class TimeOffsetDiagnostic(DiagnosticModule):
+  """A diagnostic that tracks field values at given backwards-looking offset.
+
+  This diagnostic enables retrieval of field values saved at previous simulation
+  steps. A call to ``diagnostic_values`` returns values with teporal `offset`
+  that are saved on the module's internal state. To provide the temporal context
+  for the value updates, this module requires an explicit call to
+  `advance_diagnostic_clock` method.
+
+  Attributes:
+    extract: A callable that computes diagnostic values.
+    extract_coords: Coordinates for each of the diagnostic fields keyed by name.
+    offset: Timedelta or a dict of timedeltas to provide diagnostics for. If
+      specified as a dict, the output keys include a suffix from the dict keys.
+    resolution: The duration of sub-intervals at which values are stored. Must
+      evenly divide `offset` and `default_timedelta` if specified.
+    default_timedelta: Time increment to use in `advance_diagnostic_clock` if
+      explicit 'timedelta' of type jdt.Timedelta is not provided in the inputs.
+    include_dt_offset: Whether to include an additional diagnostic for the time
+      since the last sub-interval update, useful for debugging.
+    dt_mod_freq: Time since the last interval update.
+    latest_update: The most recent values from `__call__`.
+    past_values: The stored values for each `resolution` step into the past.
+    offset_axis: The coordinate axis for the offset dimension.
+  """
+
+  extract: Extract = nnx.data()
+  extract_coords: dict[str, cx.Coordinate] = nnx.static()
+  offset: np.timedelta64 | dict[str, np.timedelta64] = nnx.static()
+  resolution: np.timedelta64 = nnx.static()
+  default_timedelta: np.timedelta64 | None = nnx.static(default=None)
+  include_dt_offset: bool = nnx.static(default=False)
+  dt_mod_freq: typing.Diagnostic = nnx.data(init=False)
+  latest_update: dict[str, typing.Diagnostic] = nnx.data(init=False)
+  offset_axis: coordinates.TimeDelta = nnx.static(init=False)
+  past_values: dict[str, typing.Diagnostic] = nnx.data(init=False)
+  periods: int = nnx.static(init=False)
+
+  def __post_init__(self):
+    if isinstance(self.offset, np.timedelta64):
+      self._offsets = {'': self.offset}
+    else:
+      self._offsets = self.offset
+
+    max_offset = np.timedelta64(0, 's')
+    for name, offset in self._offsets.items():
+      _check_and_get_periods(offset, self.resolution, f'offset[{name}]')
+      max_offset = max(max_offset, offset)
+    self.periods = _check_and_get_periods(
+        max_offset, self.resolution, 'max_offset'
+    )
+    self.dt_mod_freq = typing.Diagnostic(cx.field(jdt.Timedelta()))
+    self.latest_update = {
+        k: Diagnostic(cx.field(jnp.zeros(c.shape), c))
+        for k, c in self.extract_coords.items()
+    }
+    offset_deltas = np.arange(-self.periods, 1) * self.resolution
+    self.offset_axis = coordinates.TimeDelta(offset_deltas)
+    with_offset = lambda c: cx.coords.compose(self.offset_axis, c)
+    self.past_values = {
+        k: Diagnostic(cx.field(jnp.zeros(with_offset(c).shape), with_offset(c)))
+        for k, c in self.extract_coords.items()
+    }
+
+  def reset_diagnostic_state(self):
+    """Resets the internal diagnostic state."""
+    self.dt_mod_freq.set_value(cx.field(jdt.Timedelta()))
+    zeros_like = lambda v: cx.field(
+        jnp.zeros_like(v.get_value().data), v.get_value().coordinate
+    )
+    for k in self.extract_coords:
+      self.latest_update[k].set_value(zeros_like(self.latest_update[k]))
+      self.past_values[k].set_value(zeros_like(self.past_values[k]))
+
+  def advance_diagnostic_clock(self, inputs, *args, **kwargs):
+    """Advances the internal clock and updates past values."""
+    del args, kwargs  # unused.
+    timedelta = _get_timedelta(inputs, self.default_timedelta)
+    dt = self.dt_mod_freq.get_value() + timedelta
+    new_dt, is_update_step = _update_clock(dt, self.resolution)
+    self.dt_mod_freq.set_value(new_dt)
+
+    for k in self.extract_coords:
+      past = self.past_values[k].get_value()
+      latest = self.latest_update[k].get_value()
+
+      def _update_past(past, latest):
+        updated = jnp.concatenate([past[1:], latest[None]])
+        return jnp.where(is_update_step, updated, past)
+
+      past = past.untag(self.offset_axis)
+      update_past = cx.cmap(_update_past, past.named_axes)
+      updated_past = update_past(past, latest).tag(self.offset_axis)
+      self.past_values[k].set_value(updated_past)
+
+  def diagnostic_values(self) -> typing.Pytree:
+    """Returns formatted diagnostics computed from the internal module state."""
+    values = {}
+    periods = self.periods
+    for key_suffix, offset in self._offsets.items():
+      target_period = offset // self.resolution
+      index = periods - int(target_period)
+      for k, v in self.past_values.items():
+        field = v.get_value()
+        # pylint: disable=cell-var-from-loop
+        selected = cx.cmap(lambda x: x[index])(field.untag(self.offset_axis))
+        # pylint: enable=cell-var-from-loop
+        out_key = f'{k}_{key_suffix}' if key_suffix else k
+        values[out_key] = selected
+
+    if self.include_dt_offset:
+      values['timedelta_since_sub_interval'] = self.dt_mod_freq.get_value()
+    return values
+
+  def __call__(self, inputs, *args, **kwargs):
+    """Updates the internal module state from the inputs."""
+    diagnostics = self.extract(inputs, *args, **kwargs)
+    for k, v in diagnostics.items():
+      if k in self.extract_coords:
+        self.latest_update[k].set_value(v)
+
+
 @nnx_compat.dataclass
 class ExtractTransformedOutputs(nnx.Module):
   """Extract module that applies `transform` to the diagnosed module outputs."""
@@ -319,12 +464,12 @@ class ExtractFixedQueryObservations(nnx.Module):
   `__call__` method, based on `prognostics_arg_key`. An optional `transform` can
   be applied to the results of the observation.
 
-  Args:
+  Attributes:
     observation_operator: An ObservationOperator module to be evaluated.
     query: A fixed query for the `observation_operator` to generate outputs.
     prognostics_arg_key: The key or index used to extract the prognostics
-      dictionary from the arguments passed to `__call__`. Prognostics are
-      passed to the observation operator together with the `query`.
+      dictionary from the arguments passed to `__call__`. Prognostics are passed
+      to the observation operator together with the `query`.
     transform: An optional function to apply to the outputs returned by the
       `observation_operator`.
   """

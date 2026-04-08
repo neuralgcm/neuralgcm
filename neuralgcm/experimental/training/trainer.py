@@ -427,9 +427,9 @@ class ExperimentState(NamedTuple):
   """
 
   opt_state: PyTree
-  params: nnx.GraphState
-  ema_params: nnx.GraphState
-  non_params: nnx.GraphState
+  params: nnx.State
+  ema_params: nnx.State
+  non_params: nnx.State
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1817,7 +1817,7 @@ class RolloutTrainer:
       )
 
   def _initialize_for_fresh_start(
-      self, params: nnx.GraphState, non_params: nnx.GraphState
+      self, params: nnx.State, non_params: nnx.State
   ) -> tuple[int, AutoRestart, ExperimentState]:
     """Convert params and non_params into training experiment state."""
     start_step = 0

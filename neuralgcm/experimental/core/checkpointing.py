@@ -33,8 +33,8 @@ Metadata = ocp.metadata.value.Metadata
 
 @dataclasses.dataclass(frozen=True)
 class _SplitState:
-  params: nnx.GraphState
-  non_params: nnx.GraphState
+  params: nnx.State
+  non_params: nnx.State
 
 
 def split_model_state_for_saving(model: nnx.Module) -> _SplitState:

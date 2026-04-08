@@ -189,9 +189,9 @@ class DiagnosticsTest(parameterized.TestCase):
     )
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
-    # call `advance_diagnostic_clock` on every module.__call__.
+    # call `advance_clock` on every module.__call__.
     module_with_diagnostic = module_utils.with_callback(
-        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+        module_with_diagnostic, (diagnostic, 'advance_clock')
     )
     inputs = {
         'fixed': cx.field(jnp.arange(3.0), x_coord),
@@ -248,6 +248,40 @@ class DiagnosticsTest(parameterized.TestCase):
           expected_zeros['increasing'],
       )
 
+  def test_interval_with_multiple_intervals(self):
+    y_coord = cx.SizedAxis('y', 5)
+    diagnostic = diagnostics.IntervalDiagnostic(
+        extract=lambda x, *args, **kwargs: {'inc': x['increasing']},
+        extract_coords={'inc': y_coord},
+        interval={'4h': np.timedelta64(4, 'h'), '2h': np.timedelta64(2, 'h')},
+        resolution=np.timedelta64(2, 'h'),
+        default_timedelta=np.timedelta64(1, 'h'),
+    )
+    module = MockMethod()
+    module_with_diagnostic = module_utils.with_callback(module, diagnostic)
+    module_with_diagnostic = module_utils.with_callback(
+        module_with_diagnostic, (diagnostic, 'advance_clock')
+    )
+    inputs = {'increasing': cx.field(jnp.zeros(5), y_coord)}
+
+    output = inputs.copy()
+    for _ in range(8):
+      output = module_with_diagnostic(output)
+
+    # `increasing` increments by 2 per step. The value at step i is 2*i.
+    # Resolution is 2h, so updates happen at steps 2, 4, 6, 8.
+    # The 4h interval covers steps 5, 6, 7, 8.
+    # Sum over steps 5, 6, 7, 8 is 10 + 12 + 14 + 16 = 52.
+    # The 2h interval covers steps 7, 8.
+    # Sum over steps 7, 8 is 14 + 16 = 30.
+
+    expected_increasing_4h = cx.field(jnp.ones(5) * 52.0, y_coord)
+    expected_increasing_2h = cx.field(jnp.ones(5) * 30.0, y_coord)
+
+    actual = diagnostic.diagnostic_values()
+    cx.testing.assert_fields_allclose(actual['inc_4h'], expected_increasing_4h)
+    cx.testing.assert_fields_allclose(actual['inc_2h'], expected_increasing_2h)
+
   def test_interval_diagnostic_with_explicit_timedelta_in_advance_clock(self):
     y_coord = cx.SizedAxis('y', 5)
     extract = lambda x, *args, **kwargs: {'increasing': x['increasing']}
@@ -262,7 +296,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
     module_with_diagnostic = module_utils.with_callback(
         module_with_diagnostic,
-        (diagnostic, 'advance_diagnostic_clock'),
+        (diagnostic, 'advance_clock'),
         method_name='pass_through',
     )
     state = {'increasing': cx.field(jnp.zeros(5), y_coord)}
@@ -307,7 +341,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
     module_with_diagnostic = module_utils.with_callback(
-        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+        module_with_diagnostic, (diagnostic, 'advance_clock')
     )
     output = {'increasing': cx.field(jnp.zeros(5), y_coord)}
     for _ in range(5):
@@ -350,7 +384,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
     module_with_diagnostic = module_utils.with_callback(
-        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+        module_with_diagnostic, (diagnostic, 'advance_clock')
     )
     inputs = {'increasing': cx.field(jnp.zeros(1), y_coord)}
 
@@ -412,7 +446,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
     module_with_diagnostic = module_utils.with_callback(
-        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+        module_with_diagnostic, (diagnostic, 'advance_clock')
     )
     inputs = {
         'fixed': cx.field(jnp.arange(3.0), x_coord),
@@ -481,11 +515,11 @@ class DiagnosticsTest(parameterized.TestCase):
     # is computed first (i.e. first callback).
     module = module_utils.with_callback(module, interval_diag)
     module = module_utils.with_callback(
-        module, (interval_diag, 'advance_diagnostic_clock')
+        module, (interval_diag, 'advance_clock')
     )
     module = module_utils.with_callback(module, time_offset_diag)
     module = module_utils.with_callback(
-        module, (time_offset_diag, 'advance_diagnostic_clock')
+        module, (time_offset_diag, 'advance_clock')
     )
 
     inputs = {'increasing': cx.field(jnp.zeros(5), y_coord)}
@@ -514,7 +548,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
     module_with_diagnostic = module_utils.with_callback(
         module_with_diagnostic,
-        (diagnostic, 'advance_diagnostic_clock'),
+        (diagnostic, 'advance_clock'),
         method_name='pass_through',
     )
     state = {'increasing': cx.field(jnp.zeros(5), y_coord)}
@@ -543,7 +577,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
     module_with_diagnostic = module_utils.with_callback(
-        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+        module_with_diagnostic, (diagnostic, 'advance_clock')
     )
     output = {'increasing': cx.field(jnp.zeros(5), y_coord)}
 
@@ -579,7 +613,7 @@ class DiagnosticsTest(parameterized.TestCase):
     module = MockMethod()
     module_with_diagnostic = module_utils.with_callback(module, diagnostic)
     module_with_diagnostic = module_utils.with_callback(
-        module_with_diagnostic, (diagnostic, 'advance_diagnostic_clock')
+        module_with_diagnostic, (diagnostic, 'advance_clock')
     )
     inputs = {'increasing': cx.field(jnp.zeros(1), y_coord)}
 

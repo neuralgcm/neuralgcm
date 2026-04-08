@@ -14,6 +14,7 @@
 
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
+import abc
 import dataclasses
 from typing import Any, Protocol
 
@@ -32,23 +33,32 @@ Diagnostic = typing.Diagnostic
 
 
 @nnx_compat.dataclass
-class DiagnosticModule(nnx.Module):
+class DiagnosticModule(nnx.Module, abc.ABC):
   """Base API for diagnostic modules."""
 
+  @abc.abstractmethod
   def diagnostic_values(self) -> typing.Pytree:
     """Returns formatted diagnostics computed from the internal module state."""
-    raise NotImplementedError(f'`diagnostic_values` on {self.__name__=}.')
 
+  @abc.abstractmethod
   def reset_diagnostic_state(self):
     """Resets the internal diagnostic state."""
-    raise NotImplementedError(f'`reset_diagnostic_state` on {self.__name__=}.')
 
+  @abc.abstractmethod
   def __call__(self, *args, **kwargs) -> None:
     """Updates the internal module state from the inputs."""
-    raise NotImplementedError(f'`__call__` on {self.__name__=}.')
 
   def __init_subclass__(cls, **kwargs):
     super().__init_subclass__(pytree=False, **kwargs)
+
+
+@nnx_compat.dataclass
+class TemporalDiagnosticModule(DiagnosticModule):
+  """Base class for diagnostics that track time."""
+
+  @abc.abstractmethod
+  def advance_clock(self, inputs, *args, **kwargs):
+    """Updates the internal state to reflect a time increment."""
 
 
 class Extract(Protocol):
@@ -173,13 +183,13 @@ class InstantDiagnostic(DiagnosticModule):
 
 
 @nnx_compat.dataclass
-class IntervalDiagnostic(DiagnosticModule):
+class IntervalDiagnostic(TemporalDiagnosticModule):
   """A diagnostic that tracks interval-accumulated values of fields.
 
   This diagnostic enables tracking of values accumulated over time `interval`,
   with sub-intervals of duration `resolution`. To provide the
   temporal context for accumulation this class requires an explicit call to
-  `advance_diagnostic_clock` with time increments smaller than `resolution`.
+  `advance_clock` with time increments smaller than `resolution`.
 
   A call to `diagnostic_values` returns the accumulated values over the last
   completed interval, not including potential accumulation since the last
@@ -203,9 +213,10 @@ class IntervalDiagnostic(DiagnosticModule):
   Attributes:
     extract: A callable that computes diagnostic values.
     extract_coords: Coordinates for each of the diagnostic fields keyed by name.
-    interval: The total time interval over which diagnostics are accumulated.
+    interval: The total time interval or a dictionary of time intervals over
+      which to compute accumulated diagnostics.
     resolution: The duration of sub-intervals over which values are accumulated.
-    default_timedelta: Time increment to use in `advance_diagnostic_clock` if
+    default_timedelta: Time increment to use in `advance_clock` if
       explicit `timedelta` is not provided in the inputs. If specified,
       `resolution` must be a multiple of `default_timedelta`.
     include_instant: Whether to include additional instantaneous diagnostics.
@@ -219,7 +230,7 @@ class IntervalDiagnostic(DiagnosticModule):
 
   extract: Extract
   extract_coords: dict[str, cx.Coordinate]
-  interval: np.timedelta64
+  interval: np.timedelta64 | dict[str, np.timedelta64]
   resolution: np.timedelta64
   default_timedelta: np.timedelta64 | None = None
   include_instant: bool = False
@@ -230,15 +241,29 @@ class IntervalDiagnostic(DiagnosticModule):
   )
   interval_axis: coordinates.TimeDelta = dataclasses.field(init=False)
   per_period: dict[str, typing.Diagnostic] = dataclasses.field(init=False)
+  periods: int = nnx.static(init=False)
 
   def __post_init__(self):
-    periods = _check_and_get_periods(self.interval, self.resolution)
+    if isinstance(self.interval, np.timedelta64):
+      self._intervals = {'': self.interval}
+    else:
+      self._intervals = self.interval
+
+    max_interval = np.timedelta64(0, 's')
+    for name, interval in self._intervals.items():
+      _check_and_get_periods(interval, self.resolution, f'interval[{name}]')
+      max_interval = max(max_interval, interval)
+
+    self.periods = _check_and_get_periods(
+        max_interval, self.resolution, 'max_interval'
+    )
+
     self.dt_mod_freq = typing.Diagnostic(cx.field(jdt.Timedelta()))
     self.since_last_update = {
         k: Diagnostic(cx.field(jnp.zeros(c.shape), c))
         for k, c in self.extract_coords.items()
     }
-    interval_deltas = np.arange(-periods, 0) * self.resolution
+    interval_deltas = np.arange(-self.periods, 0) * self.resolution
     self.interval_axis = coordinates.TimeDelta(interval_deltas)
     with_intrvl = lambda c: cx.coords.compose(self.interval_axis, c)
     self.per_period = {
@@ -263,7 +288,7 @@ class IntervalDiagnostic(DiagnosticModule):
       if self.include_instant:
         self.instants[k].set_value(zeros_like(self.instants[k]))
 
-  def advance_diagnostic_clock(self, inputs, *args, **kwargs):
+  def advance_clock(self, inputs, *args, **kwargs):
     """Advances the internal clock and updates interval accumulations."""
     del args, kwargs  # unused.
     timedelta = _get_timedelta(inputs, self.default_timedelta)
@@ -296,12 +321,17 @@ class IntervalDiagnostic(DiagnosticModule):
   def diagnostic_values(self) -> typing.Pytree:
     """Returns formatted diagnostics computed from the internal module state."""
     values = {}
-    for k, v in self.per_period.items():
-      sum_fn = lambda x: jnp.sum(x, axis=0) if x.ndim > 0 else x
-      sum_over_intervals = cx.cmap(sum_fn)(
-          v.get_value().untag(self.interval_axis)
-      )
-      values[k] = sum_over_intervals
+    periods = self.periods
+    for name, interval in self._intervals.items():
+      target_period = interval // self.resolution
+      index = periods - int(target_period)
+      for k, v in self.per_period.items():
+        # pylint: disable=cell-var-from-loop
+        sum_fn = cx.cmap(lambda x: jnp.sum(x[index:], axis=0))
+        # pylint: enable=cell-var-from-loop
+        sum_over_intervals = sum_fn(v.get_value().untag(self.interval_axis))
+        out_key = f'{k}_{name}' if name else k
+        values[out_key] = sum_over_intervals
     if self.include_instant:
       for k, v in self.instants.items():
         values[k + '_instant'] = v.get_value()
@@ -322,14 +352,14 @@ class IntervalDiagnostic(DiagnosticModule):
 
 
 @nnx.dataclass
-class TimeOffsetDiagnostic(DiagnosticModule):
+class TimeOffsetDiagnostic(TemporalDiagnosticModule):
   """A diagnostic that tracks field values at given backwards-looking offset.
 
   This diagnostic enables retrieval of field values saved at previous simulation
   steps. A call to ``diagnostic_values`` returns values with teporal `offset`
   that are saved on the module's internal state. To provide the temporal context
   for the value updates, this module requires an explicit call to
-  `advance_diagnostic_clock` method.
+  `advance_clock` method.
 
   Attributes:
     extract: A callable that computes diagnostic values.
@@ -338,7 +368,7 @@ class TimeOffsetDiagnostic(DiagnosticModule):
       specified as a dict, the output keys include a suffix from the dict keys.
     resolution: The duration of sub-intervals at which values are stored. Must
       evenly divide `offset` and `default_timedelta` if specified.
-    default_timedelta: Time increment to use in `advance_diagnostic_clock` if
+    default_timedelta: Time increment to use in `advance_clock` if
       explicit 'timedelta' of type jdt.Timedelta is not provided in the inputs.
     include_dt_offset: Whether to include an additional diagnostic for the time
       since the last sub-interval update, useful for debugging.
@@ -396,7 +426,7 @@ class TimeOffsetDiagnostic(DiagnosticModule):
       self.latest_update[k].set_value(zeros_like(self.latest_update[k]))
       self.past_values[k].set_value(zeros_like(self.past_values[k]))
 
-  def advance_diagnostic_clock(self, inputs, *args, **kwargs):
+  def advance_clock(self, inputs, *args, **kwargs):
     """Advances the internal clock and updates past values."""
     del args, kwargs  # unused.
     timedelta = _get_timedelta(inputs, self.default_timedelta)

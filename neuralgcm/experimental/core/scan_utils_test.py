@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dataclasses
 import functools
 
 from absl.testing import absltest
@@ -24,18 +23,17 @@ import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import scan_utils
 from neuralgcm.experimental.core import typing
 import numpy as np
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class MockStepper(nnx.Module):
   """Mock stepper module."""
 
-  p: typing.Prognostic = dataclasses.field(
+  p: typing.Prognostic = nnx.data(
       default_factory=lambda: typing.Prognostic(
           {'a': jnp.zeros(()), 'b': jnp.zeros(()), 'x': jnp.zeros(())}
       )

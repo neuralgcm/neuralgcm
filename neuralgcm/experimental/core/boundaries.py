@@ -20,11 +20,10 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class BoundaryCondition(nnx.Module, abc.ABC):
   """Base class for boundary conditions that use pad-trim approach.
 
@@ -68,7 +67,7 @@ class BoundaryCondition(nnx.Module, abc.ABC):
     ...
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class LonLatBoundary(BoundaryCondition):
   """Implements boundary condition for data on lon-lat grids.
 

@@ -20,13 +20,12 @@ from typing import Any, Callable
 import coordax as cx
 from flax import nnx
 import jax
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import standard_layers
 from neuralgcm.experimental.core import transformer_layers
 from neuralgcm.experimental.core import typing
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ForwardTower(nnx.Module):
   """Applies `neural_net` to a single input Field `f` over `inputs_in_dims`.
 
@@ -43,7 +42,7 @@ class ForwardTower(nnx.Module):
     final_activation: The activation function to be applied to the output.
   """
 
-  neural_net: nnx.Module
+  neural_net: nnx.Module = nnx.data()
   inputs_in_dims: tuple[str | cx.Coordinate, ...]
   out_dims: tuple[str | cx.Coordinate, ...]
   apply_remat: bool = False
@@ -81,7 +80,7 @@ class ForwardTower(nnx.Module):
 ForwardTowerFactory = Callable[..., ForwardTower]
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class RecurrentTower(nnx.Module):
   """Applies RNN cell to inputs and carry state.
 
@@ -96,7 +95,7 @@ class RecurrentTower(nnx.Module):
     apply_remat: Whether to apply nnx.remat to the RNN cell.
   """
 
-  rnn_cell: nnx.Module
+  rnn_cell: nnx.Module = nnx.data()
   inputs_in_dims: tuple[str | cx.Coordinate, ...]
   state_dims: tuple[str | cx.Coordinate, ...]
   out_dims: tuple[str | cx.Coordinate, ...]
@@ -176,7 +175,7 @@ class RecurrentTower(nnx.Module):
 RecurrentTowerFactory = Callable[..., RecurrentTower]
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class TransformerTower(nnx.Module):
   """Applies transformer NN to a input fields over specified dimensions.
 
@@ -202,12 +201,14 @@ class TransformerTower(nnx.Module):
     final_activation: The activation function to be applied to the output.
   """
 
-  neural_net: transformer_layers.TransformerBase
+  neural_net: transformer_layers.TransformerBase = nnx.data()
   inputs_in_dims: tuple[str | cx.Coordinate, ...]
   out_dims: tuple[str | cx.Coordinate, ...]
-  positional_encoder: transformer_layers.PositionalEncoder
+  positional_encoder: transformer_layers.PositionalEncoder = nnx.data()
   latents_in_dims: tuple[str | cx.Coordinate, ...] | None = None
-  latents_positional_encoder: transformer_layers.PositionalEncoder | None = None
+  latents_positional_encoder: transformer_layers.PositionalEncoder | None = (
+      nnx.data(default=None)
+  )
   apply_remat: bool = False
   final_activation: Callable[[typing.Array], typing.Array] = lambda x: x
 

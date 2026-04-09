@@ -14,16 +14,13 @@
 
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
-import dataclasses
-from typing import Protocol, Sequence
+from typing import Protocol
 
 import coordax as cx
 from flax import nnx
-import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.atmosphere import diagnostics
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import orographies
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
@@ -47,7 +44,7 @@ class FixerModule(Protocol):
     """Adjusts targets (state or tendencies) based on diagnostics."""
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class TemperatureAdjustmentForEnergyBalance(nnx.Module):
   """Adjusts temperature tendency to conserve energy based on imbalance.
 
@@ -62,7 +59,7 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
   ylm_map: spherical_harmonics.FixedYlmMapping
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
-  transform: typing.Transform | None = None
+  transform: typing.Transform | None = nnx.data(default=None)
   prognostics_arg_key: str | int = 'prognostics'
   imbalance_diagnostic_key: str = 'imbalance'
 
@@ -117,7 +114,7 @@ class TemperatureAdjustmentForEnergyBalance(nnx.Module):
     return tendencies
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class GlobalEnergyFixer(nnx.Module):
   """Adjusts temperature to conserve global energy based on budget prediction.
 
@@ -135,10 +132,10 @@ class GlobalEnergyFixer(nnx.Module):
   ylm_map: spherical_harmonics.FixedYlmMapping
   levels: coordinates.SigmaLevels
   sim_units: units.SimUnits
-  model_orography: orographies.ModalOrography
+  model_orography: orographies.ModalOrography = nnx.data()
   use_liquid_ice_moist_static_energy: bool = False
-  predict_energy_budget: diagnostics.ExtractColumnEnergyBudget = (
-      dataclasses.field(init=False)
+  predict_energy_budget: diagnostics.ExtractColumnEnergyBudget = nnx.data(
+      init=False
   )
 
   def __post_init__(self):
@@ -179,7 +176,7 @@ class GlobalEnergyFixer(nnx.Module):
         column_energy_star_t1 - column_energy_t1, radius=1.0
     )
     cp = self.sim_units.Cp
-    delta_t = energy_diff / (cp * total_mass) # uniform
+    delta_t = energy_diff / (cp * total_mass)  # uniform
     t_nodal = to_nodal(targets['temperature'])
     t_adj_nodal = t_nodal + delta_t
 
@@ -188,7 +185,7 @@ class GlobalEnergyFixer(nnx.Module):
     return state_adj
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class GlobalDryAirMassFixer(nnx.Module):
   """Adjusts surface pressure to conserve global dry air mass.
 
@@ -201,8 +198,8 @@ class GlobalDryAirMassFixer(nnx.Module):
   ylm_map: spherical_harmonics.FixedYlmMapping
   levels: coordinates.SigmaLevels | coordinates.HybridLevels
   sim_units: units.SimUnits
-  extract_column_dry_air_mass: diagnostics.ExtractColumnDryAirMass = (
-      dataclasses.field(init=False)
+  extract_column_dry_air_mass: diagnostics.ExtractColumnDryAirMass = nnx.data(
+      init=False
   )
 
   def __post_init__(self):
@@ -243,9 +240,7 @@ class GlobalDryAirMassFixer(nnx.Module):
     gamma = 1.0 + mass_diff / total_mass_t1
 
     targets_adj = targets.copy()
-    log_sp_nodal = self.ylm_map.to_nodal(
-        targets['log_surface_pressure']
-    )
+    log_sp_nodal = self.ylm_map.to_nodal(targets['log_surface_pressure'])
     log_sp_adj_nodal = log_sp_nodal + cx.cmap(jnp.log)(gamma)
     targets_adj['log_surface_pressure'] = self.ylm_map.to_modal(
         log_sp_adj_nodal

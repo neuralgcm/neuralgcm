@@ -30,7 +30,6 @@ from neuralgcm.experimental.core import diagnostics
 from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import fiddle_tags  # pylint: disable=unused-import
 from neuralgcm.experimental.core import module_utils
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import random_processes
@@ -62,16 +61,14 @@ DEFAULT_MODEL_STATE_AXES = nnx.StateAxes({
 })
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Model(nnx.Module, abc.ABC):
   """Base class for stateful, modular forecast systems."""
 
-  mesh: parallelism.Mesh = dataclasses.field(
+  mesh: parallelism.Mesh = nnx.static(
       default_factory=parallelism.default_mesh, kw_only=True
   )
-  fiddle_config: fdl.Config[Model] | None = dataclasses.field(
-      default=None, init=False
-  )
+  fiddle_config: fdl.Config[Model] | None = nnx.static(default=None, init=False)
 
   @abc.abstractmethod
   def assimilate(self, inputs: typing.Observation) -> None:
@@ -243,13 +240,13 @@ class Model(nnx.Module, abc.ABC):
     super().__init_subclass__(pytree=False, **kwargs)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class VectorizedModel(Model):
   """A wrapper for a vectorized model."""
 
   vectorized_model: Model
-  _vector_axes: list[tuple[nnx.filterlib.Filter, cx.Coordinate]] = (
-      dataclasses.field(default_factory=lambda: [], init=False)
+  _vector_axes: list[tuple[nnx.filterlib.Filter, cx.Coordinate]] = nnx.static(
+      default_factory=lambda: [], init=False
   )
 
   @classmethod
@@ -626,7 +623,7 @@ def _inference_model_unflatten(
     aux_data: tuple[Any, ...], children: tuple[Any, ...]
 ) -> InferenceModel:
   """Unflattens InferenceModel."""
-  (model_graph_def, dummy_simulation_state_coords, fiddle_config) = aux_data
+  model_graph_def, dummy_simulation_state_coords, fiddle_config = aux_data
   (model_state,) = children
   dummy_simulation_state = jax.tree.map(
       cx.shape_struct_field,

@@ -15,7 +15,6 @@
 """Implementation of the Lorenz96 model components."""
 
 from collections.abc import Sequence
-import dataclasses
 import functools
 from typing import Callable, Protocol
 
@@ -27,7 +26,6 @@ import jax_datetime as jdt
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import module_utils
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import time_integrators
@@ -55,16 +53,16 @@ def lorenz96_y_term(y: jax.Array, c: float, b: float) -> jax.Array:
   return -(c * b) * y_p1 * (y_p2 - y_m1) - c * y
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Lorenz96Base(api.Model):
   """Base class for Lorenz-96 models providing common methods."""
 
-  dt: float = dataclasses.field(default=0.002, kw_only=True)
-  time_integrator_cls: IntegratorCls = dataclasses.field(
+  dt: float = nnx.static(default=0.002, kw_only=True)
+  time_integrator_cls: IntegratorCls = nnx.static(
       default=time_integrators.RungeKutta4, kw_only=True
   )
-  operators: dict[str, observation_operators.ObservationOperatorABC] = (
-      dataclasses.field(default_factory=dict, kw_only=True)
+  operators: dict[str, typing.ObservationOperator] = nnx.data(
+      default_factory=dict, kw_only=True
   )
 
   def __post_init__(self):
@@ -124,20 +122,20 @@ class Lorenz96Base(api.Model):
     return specs
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Lorenz96WithTwoScales(Lorenz96Base):
   """Two timescale Lorenz-96 model."""
 
   k_axis: cx.Coordinate
   j_axis: cx.Coordinate
-  forcing: float | nnx.Param = 10.0
-  c: float | nnx.Param = 10.0
-  b: float | nnx.Param = 10.0
-  h: float | nnx.Param = 1.0
+  forcing: float | nnx.Param = nnx.data(default=10.0)
+  c: float | nnx.Param = nnx.data(default=10.0)
+  b: float | nnx.Param = nnx.data(default=10.0)
+  h: float | nnx.Param = nnx.data(default=1.0)
   # Prognostic fields initialized in __post_init__
-  x: typing.Prognostic = dataclasses.field(init=False)
-  y: typing.Prognostic = dataclasses.field(init=False)
-  time: typing.Prognostic = dataclasses.field(init=False)
+  x: typing.Prognostic = nnx.data(init=False)
+  y: typing.Prognostic = nnx.data(init=False)
+  time: typing.Prognostic = nnx.data(init=False)
 
   def __post_init__(self):
     ks, js = self.k_axis, self.j_axis
@@ -188,7 +186,7 @@ class L96Parameterization(Protocol):
     """Returns cumulative correction over `dt` for a `x` or `y` variable."""
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class StochasticLinearParameterization(nnx.Module):
   """A simple stochastic linear parameterization.
 
@@ -200,9 +198,9 @@ class StochasticLinearParameterization(nnx.Module):
   """
 
   random_process: random_processes.RandomProcessModule
-  b0: float | nnx.Param = 0.75218026
-  b1: float | nnx.Param = 0.85439536
-  noise_amplitude: float | nnx.Param = 1.0
+  b0: float | nnx.Param = nnx.data(default=0.75218026)
+  b1: float | nnx.Param = nnx.data(default=0.85439536)
+  noise_amplitude: float | nnx.Param = nnx.data(default=1.0)
 
   def __call__(
       self,
@@ -219,16 +217,16 @@ class StochasticLinearParameterization(nnx.Module):
     return deterministic_term * dt + stochastic_term * jnp.sqrt(dt)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Lorenz96(Lorenz96Base):
   """Single timescale Lorenz-96 model with a modular parameterizations."""
 
   k_axis: cx.Coordinate
-  parameterizations: Sequence[L96Parameterization] = ()
-  forcing: float | nnx.Param = 10.0
+  parameterizations: Sequence[L96Parameterization] = nnx.data(default=())
+  forcing: float | nnx.Param = nnx.data(default=10.0)
   # Prognostic fields initialized in __post_init__
-  x: typing.Prognostic = dataclasses.field(init=False)
-  time: typing.Prognostic = dataclasses.field(init=False)
+  x: typing.Prognostic = nnx.data(init=False)
+  time: typing.Prognostic = nnx.data(init=False)
 
   def __post_init__(self):
     self.x = typing.Prognostic(
@@ -258,18 +256,18 @@ class Lorenz96(Lorenz96Base):
     self.time.set_value(self.time.get_value() + self.timestep)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class Lorenz96FastMode(Lorenz96Base):
   """Fast timescale Lorenz-96 model."""
 
   k_axis: cx.Coordinate
   j_axis: cx.Coordinate
-  parameterizations: Sequence[L96Parameterization] = ()
+  parameterizations: Sequence[L96Parameterization] = nnx.data(default=())
   c: float | nnx.Param = 10.0
   b: float | nnx.Param = 10.0
   # Prognostic fields initialized in __post_init__
-  y: typing.Prognostic = dataclasses.field(init=False)
-  time: typing.Prognostic = dataclasses.field(init=False)
+  y: typing.Prognostic = nnx.data(init=False)
+  time: typing.Prognostic = nnx.data(init=False)
 
   def __post_init__(self):
     kjs = cx.coords.compose(self.k_axis, self.j_axis)

@@ -26,7 +26,6 @@ import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import dynamic_io
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import random_processes
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.inference import dynamic_inputs as dynamic_inputs_lib
@@ -35,14 +34,14 @@ import numpy as np
 import xarray
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class MockModel(api.Model):
   """A mock Model for testing."""
 
   input_specs: dict[str, dict[str, cx.Coordinate]]
   dynamic_input_specs: dict[str, dict[str, cx.Coordinate]]
-  dynamic_input_slice: dynamic_io.DynamicInputSlice
-  assimilation_noise: random_processes.RandomProcessModule | None
+  dynamic_input_slice: dynamic_io.DynamicInputSlice = nnx.data()
+  assimilation_noise: random_processes.RandomProcessModule | None = nnx.data()
 
   def __post_init__(self):
     self.prognostics = typing.Prognostic({
@@ -62,7 +61,9 @@ class MockModel(api.Model):
       self,
   ) -> dict[str, dict[str, cx.Coordinate]]:
     make_spec = data_specs.CoordSpec.with_any_timedelta
-    return jax.tree.map(make_spec, self.dynamic_input_specs, is_leaf=cx.is_coord)
+    return jax.tree.map(
+        make_spec, self.dynamic_input_specs, is_leaf=cx.is_coord
+    )
 
   @property
   def timestep(self) -> np.timedelta64:

@@ -17,7 +17,6 @@ import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import pytree_utils
 import numpy as np
 
@@ -30,7 +29,7 @@ class StreamingCounter(nnx.Variable):
   ...
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class StreamNorm(nnx.Module):
   """Streaming normalization module.
 
@@ -63,9 +62,9 @@ class StreamNorm(nnx.Module):
   """
 
   coords: dict[str, cx.Coordinate]
-  counters: dict[str, StreamingCounter]
-  means: dict[str, StreamingValue]
-  m2: dict[str, StreamingValue]
+  counters: dict[str, StreamingCounter] = nnx.data()
+  means: dict[str, StreamingValue] = nnx.data()
+  m2: dict[str, StreamingValue] = nnx.data()
   epsilon: float
   skip_unspecified: bool
   skip_nans: bool
@@ -207,9 +206,7 @@ class StreamNorm(nnx.Module):
     if not self.allow_missing:
       missing_keys = coords_keys - input_keys
       if missing_keys:
-        raise ValueError(
-            f'Inputs are missing keys in coords: {missing_keys}'
-        )
+        raise ValueError(f'Inputs are missing keys in coords: {missing_keys}')
     if update_stats:
       self._update_stats(inputs, mask)
 

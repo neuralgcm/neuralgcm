@@ -15,7 +15,6 @@
 """Module-based API for calculating diagnostics of NeuralGCM models."""
 
 import abc
-import dataclasses
 from typing import Any, Protocol
 
 import coordax as cx
@@ -24,7 +23,6 @@ import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
 from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import nnx_compat
 from neuralgcm.experimental.core import typing
 import numpy as np
 
@@ -32,7 +30,6 @@ import numpy as np
 Diagnostic = typing.Diagnostic
 
 
-@nnx_compat.dataclass
 class DiagnosticModule(nnx.Module, abc.ABC):
   """Base API for diagnostic modules."""
 
@@ -52,7 +49,6 @@ class DiagnosticModule(nnx.Module, abc.ABC):
     super().__init_subclass__(pytree=False, **kwargs)
 
 
-@nnx_compat.dataclass
 class TemporalDiagnosticModule(DiagnosticModule):
   """Base class for diagnostics that track time."""
 
@@ -126,11 +122,11 @@ def _update_clock(
   return new_dt, is_update_step
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class CumulativeDiagnostic(DiagnosticModule):
   """Diagnostic that tracks cumulative value of a dictionary of fields."""
 
-  extract: Extract
+  extract: Extract = nnx.data()
   extract_coords: dict[str, cx.Coordinate]
 
   def __post_init__(self):
@@ -154,11 +150,11 @@ class CumulativeDiagnostic(DiagnosticModule):
       self.cumulatives[k].set_value(v + self.cumulatives[k].get_value())
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class InstantDiagnostic(DiagnosticModule):
   """Diagnostic that tracks instant value of a dictionary of fields."""
 
-  extract: Extract
+  extract: Extract = nnx.data()
   extract_coords: dict[str, cx.Coordinate]
 
   def __post_init__(self):
@@ -182,7 +178,7 @@ class InstantDiagnostic(DiagnosticModule):
       self.instants[k].set_value(v)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class IntervalDiagnostic(TemporalDiagnosticModule):
   """A diagnostic that tracks interval-accumulated values of fields.
 
@@ -228,19 +224,19 @@ class IntervalDiagnostic(TemporalDiagnosticModule):
     interval_axis: The coordinate axis for the interval dimension.
   """
 
-  extract: Extract
+  extract: Extract = nnx.data()
   extract_coords: dict[str, cx.Coordinate]
   interval: np.timedelta64 | dict[str, np.timedelta64]
   resolution: np.timedelta64
   default_timedelta: np.timedelta64 | None = None
   include_instant: bool = False
   include_dt_offset: bool = False
-  dt_mod_freq: typing.Diagnostic = dataclasses.field(init=False)
-  since_last_update: dict[str, typing.Diagnostic] = dataclasses.field(
+  dt_mod_freq: typing.Diagnostic = nnx.data(init=False)
+  since_last_update: dict[str, typing.Diagnostic] = nnx.data(
       init=False
   )
-  interval_axis: coordinates.TimeDelta = dataclasses.field(init=False)
-  per_period: dict[str, typing.Diagnostic] = dataclasses.field(init=False)
+  interval_axis: coordinates.TimeDelta = nnx.static(init=False)
+  per_period: dict[str, typing.Diagnostic] = nnx.data(init=False)
   periods: int = nnx.static(init=False)
 
   def __post_init__(self):
@@ -474,18 +470,18 @@ class TimeOffsetDiagnostic(TemporalDiagnosticModule):
         self.latest_update[k].set_value(v)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractTransformedOutputs(nnx.Module):
   """Extract module that applies `transform` to the diagnosed module outputs."""
 
-  transform: typing.Transform
+  transform: typing.Transform = nnx.data()
 
   def __call__(self, result, *args, **kwargs) -> dict[str, cx.Field]:
     del args, kwargs  # unused.
     return self.transform(result)
 
 
-@nnx_compat.dataclass
+@nnx.dataclass
 class ExtractFixedQueryObservations(nnx.Module):
   """Extract module that evaluates observation operator with a fixed query.
 
@@ -504,8 +500,8 @@ class ExtractFixedQueryObservations(nnx.Module):
       `observation_operator`.
   """
 
-  observation_operator: typing.ObservationOperator
-  query: dict[str, cx.Coordinate | cx.Field]
+  observation_operator: typing.ObservationOperator = nnx.data()
+  query: dict[str, cx.Coordinate | cx.Field] = nnx.data()
   prognostics_arg_key: str | int = 'prognostics'
   transform: typing.Transform | None = None
 

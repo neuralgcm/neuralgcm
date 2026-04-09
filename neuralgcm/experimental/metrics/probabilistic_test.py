@@ -44,12 +44,8 @@ class ProbabilisticMetricsTest(parameterized.TestCase):
     with self.subTest('debug_terms'):
       debug_terms = loss.debug_terms(crps_statistics, crps_values)
       np.testing.assert_allclose(
-          debug_terms['relative_skill_to_total'].data,
-          skill / expected_crps,
-      )
-      np.testing.assert_allclose(
-          debug_terms['relative_spread_to_total'].data,
-          0.5 * spread / expected_crps,
+          debug_terms['skill_spread_ratio_x'].data,
+          skill / spread,
       )
       np.testing.assert_allclose(
           debug_terms['relative_crps_x'].data,

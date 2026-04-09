@@ -32,6 +32,7 @@ from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import transforms
 import numpy as np
 
+
 class TransformsTest(parameterized.TestCase):
   """Tests that transforms work as expected."""
 
@@ -728,9 +729,7 @@ class TransformsTest(parameterized.TestCase):
   def test_apply_over_axis_with_scan(self):
     nodal_grid = coordinates.LonLatGrid.T21()
     modal_grid = coordinates.SphericalHarmonicGrid.T21()
-    ylm_map = spherical_harmonics.FixedYlmMapping(
-        nodal_grid, modal_grid
-    )
+    ylm_map = spherical_harmonics.FixedYlmMapping(nodal_grid, modal_grid)
     to_modal = transforms.ToModal(ylm_map)
     time = cx.SizedAxis('time', 5)
     inputs = {
@@ -915,7 +914,8 @@ class TransformsTest(parameterized.TestCase):
 
   def test_velocity_div_curl_roundtrip(self):
     ylm_map = spherical_harmonics.YlmMapper(
-        truncation_rule='cubic',)
+        truncation_rule='cubic',
+    )
     modal_grid = coordinates.SphericalHarmonicGrid.T21()
     nodal_grid = coordinates.LonLatGrid.T21()
     rng = jax.random.PRNGKey(42)
@@ -1019,7 +1019,7 @@ class TransformsTest(parameterized.TestCase):
           dict_out_fn,
           out_keys={'u': 'new_u', 'v': 'new_v'},
           pass_inputs=False,
-          bind_inputs={'u': 'a', 'v': 'b'}
+          bind_inputs={'u': 'a', 'v': 'b'},
       )
       out3 = tx3(inputs)
       self.assertSameElements(out3.keys(), ['new_u', 'new_v'])
@@ -1035,7 +1035,7 @@ class TransformsTest(parameterized.TestCase):
           tuple_f_out_fn,
           out_keys=('new_a', 'new_b'),
           pass_inputs=True,
-          bind_inputs={'v': 'b'}
+          bind_inputs={'v': 'b'},
       )
       out4 = tx4(inputs)
       self.assertSameElements(out4.keys(), ['new_a', 'new_b'])
@@ -1044,11 +1044,12 @@ class TransformsTest(parameterized.TestCase):
 
     def pass_as_kwarg(state, factor=1.0):
       return state['a'] * factor
+
     tx5 = transforms.WrapFn(
         pass_as_kwarg,
         out_keys='scaled_a',
         pass_inputs='state',
-        kwargs={'factor': 0.5}
+        kwargs={'factor': 0.5},
     )
     out5 = tx5(inputs)
     np.testing.assert_allclose(out5['scaled_a'].data, jnp.array([0.5, 1.0]))
@@ -1405,7 +1406,10 @@ class NestedTransformTest(parameterized.TestCase):
     """Tests using a dictionary of transforms."""
     scale_2 = transforms.ScaleFields(cx.field(2.0))
     scale_3 = transforms.ScaleFields(cx.field(3.0))
-    transform = transforms.NestedTransform({'a': scale_2, 'b': scale_3})
+    transform = transforms.NestedTransform({
+        'a': scale_2,
+        'b_new': ('b', scale_3),
+    })
     inputs = {
         'a': {'val': cx.field(np.array([1.0]), 'x')},
         'b': {'val': cx.field(np.array([1.0]), 'x')},
@@ -1413,7 +1417,7 @@ class NestedTransformTest(parameterized.TestCase):
     actual = transform(inputs)
     expected = {
         'a': {'val': cx.field(np.array([2.0]), 'x')},
-        'b': {'val': cx.field(np.array([3.0]), 'x')},
+        'b_new': {'val': cx.field(np.array([3.0]), 'x')},
     }
     chex.assert_trees_all_close(actual, expected)
 
@@ -1421,7 +1425,9 @@ class NestedTransformTest(parameterized.TestCase):
     """Tests using Ellipsis as default transform."""
     scale_2 = transforms.ScaleFields(cx.field(2.0))
     scale_10 = transforms.ScaleFields(cx.field(10.0))
-    transform = transforms.NestedTransform({'a': scale_2, ...: scale_10})
+    transform = transforms.NestedTransform(
+        {'a': scale_2, 'modal_a': ('a', scale_2), ...: scale_10}
+    )
     inputs = {
         'a': {'val': cx.field(np.array([1.0]), 'x')},
         'b': {'val': cx.field(np.array([1.0]), 'x')},
@@ -1430,6 +1436,7 @@ class NestedTransformTest(parameterized.TestCase):
     actual = transform(inputs)
     expected = {
         'a': {'val': cx.field(np.array([2.0]), 'x')},
+        'modal_a': {'val': cx.field(np.array([2.0]), 'x')},
         'b': {'val': cx.field(np.array([10.0]), 'x')},
         'c': {'val': cx.field(np.array([10.0]), 'x')},
     }
@@ -1444,7 +1451,8 @@ class NestedTransformTest(parameterized.TestCase):
         'missing_key': {'val': cx.field(np.array([1.0]), 'x')},
     }
     with self.assertRaisesRegex(
-        ValueError, "No default or key-specific transform for k='missing_key'"
+        ValueError,
+        "No default or key-specific transform for in_key='missing_key'",
     ):
       transform(inputs)
 
@@ -1619,6 +1627,7 @@ class NestedTransformTest(parameterized.TestCase):
     actual = transform(inputs)
     self.assertIn('proj', actual)
     chex.assert_trees_all_close(actual['proj'], cx.field(22.5))
+
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

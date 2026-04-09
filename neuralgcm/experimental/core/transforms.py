@@ -2348,6 +2348,9 @@ class ProjectOntoBasis(TransformABC):
     return {self.out_key: result}
 
 
+TransformWithOptionalKey = typing.Transform | tuple[str, typing.Transform]
+
+
 class NestedTransform(nnx.Module, pytree=False):
   """Wrapper that applies transforms to values of a nested dict[dict[Field]].
 
@@ -2369,9 +2372,12 @@ class NestedTransform(nnx.Module, pytree=False):
 
   def __init__(
       self,
-      transform: typing.Transform | dict[str | type(...), typing.Transform],
+      transform: (
+          typing.Transform | dict[str | type(...), TransformWithOptionalKey]
+      ),
       default_transform: typing.Transform | None = None,
   ):
+    self.transforms: dict[str, tuple[str, typing.Transform]] = {}
     if isinstance(transform, dict):
       transforms_map = transform.copy()
       if ... in transforms_map:
@@ -2383,24 +2389,36 @@ class NestedTransform(nnx.Module, pytree=False):
         self.default_transform = transforms_map.pop(...)
       else:
         self.default_transform = default_transform
-      self.transforms = transforms_map
+
+      for k, v in transforms_map.items():
+        if not isinstance(k, str):
+          raise ValueError(f'Transform key {k} must be a string.')
+        if isinstance(v, tuple) and len(v) == 2 and isinstance(v[0], str):
+          self.transforms[k] = v
+        else:
+          self.transforms[k] = (k, v)
     else:
       if default_transform is not None:
         raise ValueError(
             'Cannot specify default_transform when transform is not a dict.'
         )
       self.default_transform = transform
-      self.transforms = {}
 
   def __call__(self, inputs: dict[str, Any]) -> dict[str, Any]:
     outputs = {}
-    for k, v in inputs.items():
-      if k in self.transforms:
-        outputs[k] = self.transforms[k](v)
-      elif self.default_transform is not None:
-        outputs[k] = self.default_transform(v)
-      else:
-        raise ValueError(f'No default or key-specific transform for {k=}.')
+    explicit_in_keys = {in_key for (in_key, _) in self.transforms.values()}
+
+    for out_key, (in_key, transform) in self.transforms.items():
+      if in_key in inputs:
+        outputs[out_key] = transform(inputs[in_key])
+
+    for in_key, v in inputs.items():
+      if in_key not in explicit_in_keys:
+        if self.default_transform is None:
+          raise ValueError(
+              f'No default or key-specific transform for {in_key=}.'
+          )
+        outputs[in_key] = self.default_transform(v)
     return outputs
 
   def output_shapes(self, input_shapes: dict[str, Any]) -> dict[str, Any]:

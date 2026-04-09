@@ -588,7 +588,7 @@ class EvalSchema:
   train_time_slice: tuple[str, str] | list[tuple[str, str]] | None
   eval_time_slice: tuple[str, str] | list[tuple[str, str]] | None
   loss_evaluator: EvaluatorLike | None = None
-  name: str | None = None
+  name: str = dataclasses.field(kw_only=True)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1953,7 +1953,6 @@ class RolloutTrainer:
     if not count:
       raise RuntimeError('no batches to iterate over')
 
-    prefix = [eval_schema.name] if eval_schema.name else []
     # Recording metrics.
     values_to_record = {}
     if eval_schema.metrics_evaluator:
@@ -1970,7 +1969,7 @@ class RolloutTrainer:
             key = '.'.join(prefix_list) + '/' + str(k)
             values_to_record[key] = float(v.data)
 
-      _flatten_metric_values(metric_values, prefix)
+      _flatten_metric_values(metric_values, [eval_schema.name])
 
     # Recording loss.
     if eval_schema.loss_evaluator is not None:
@@ -1978,7 +1977,7 @@ class RolloutTrainer:
       loss_val = float(
           loss_evaluator.evaluate_total({}, {}, total_loss_agg).data
       )
-      key = '.'.join(prefix + ['total'])
+      key = '.'.join([eval_schema.name, 'total'])
       values_to_record[key] = loss_val
 
       def _collect_loss_terms(evaluator, agg_state, current_prefix):
@@ -1997,6 +1996,7 @@ class RolloutTrainer:
           evaluator = evaluator.evaluator
 
         # Base Evaluator case
+        data_key = '_'.join(current_prefix)
         for term_key in sorted(evaluator.metrics.keys()):
           term_metric = evaluator.metrics[term_key]
           assert isinstance(term_metric, metrics_base.Loss)
@@ -2006,7 +2006,7 @@ class RolloutTrainer:
             w = 1.0
           term_metric_values = agg_state[term_key].metric_values(term_metric)
           relative_value_key = (
-              '.'.join(current_prefix + ['relative']) + f'/{term_key}'
+              f'{eval_schema.name}_relative_contributions/{data_key}_{term_key}'
           )
           loss_term_value = w * float(
               term_metric.total(term_metric_values).data
@@ -2021,10 +2021,10 @@ class RolloutTrainer:
           debug_terms = term_metric.debug_terms(mean_stats, term_metric_values)
           for debug_term_name in sorted(debug_terms.keys()):
             v = debug_terms[debug_term_name]
-            key = '.'.join(current_prefix + [term_key]) + f'/{debug_term_name}'
+            key = f'{eval_schema.name}_{data_key}/{debug_term_name}'
             values_to_record[key] = float(v.data)
 
-      _collect_loss_terms(loss_evaluator, total_loss_agg, prefix)
+      _collect_loss_terms(loss_evaluator, total_loss_agg, [])
 
     return values_to_record
 

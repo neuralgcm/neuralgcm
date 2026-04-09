@@ -37,17 +37,17 @@ class CRPS(probabilistic_metrics.CRPS, base.PerVariableLoss):
         k: mean_stats[v.unique_name] for k, v in self.statistics.items()
     }
     skills = mean_stats['skill']
+    spreads = mean_stats['spread']
     weighted_spreads = {
-        k: self.spread_term_weight * v for k, v in mean_stats['spread'].items()
+        k: self.spread_term_weight * v for k, v in spreads.items()
     }
     ws = collections.defaultdict(lambda: 1.0) | (self.variable_weights or {})
     relative_crps = {
         f'relative_crps_{k}': ws[k] * (skills[k] - weighted_spreads[k]) / total
         for k in skills
     }
-    relative_skill = sum(skills[k] * ws[k] for k in skills) / total
-    relative_spread = sum(weighted_spreads[k] * ws[k] for k in skills) / total
-    return relative_crps | {
-        'relative_skill_to_total': relative_skill,
-        'relative_spread_to_total': relative_spread,
+    skill_spread_ratio = {
+        f'skill_spread_ratio_{k}': skills[k] / spreads[k]
+        for k in skills
     }
+    return relative_crps | skill_spread_ratio

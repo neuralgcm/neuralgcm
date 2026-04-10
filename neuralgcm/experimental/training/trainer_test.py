@@ -26,6 +26,7 @@ import jax_datetime as jdt
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
+from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import transforms
 from neuralgcm.experimental.core import xarray_utils
 from neuralgcm.experimental.metrics import aggregation
@@ -41,6 +42,7 @@ import pandas as pd
 
 
 class TestLorenz96(lorenz96.Lorenz96):
+
   def __post_init__(self):
     super().__post_init__()
     # Add a dummy variable to ensure non_params is not empty
@@ -48,6 +50,7 @@ class TestLorenz96(lorenz96.Lorenz96):
 
 
 class TestLorenz96WithTwoScales(lorenz96.Lorenz96WithTwoScales):
+
   def __post_init__(self):
     super().__post_init__()
     # Add a dummy variable to ensure non_params is not empty
@@ -68,19 +71,20 @@ class InMemorySaver(trainer.OnlineMetricsSaver):
 
 def _construct_spec(supported_spec, timedelta):
   """Construct concrete data specs from inputs spec."""
+
   # Assumes all supported_spec are CoordSpec with "any" timedelta.
   def _set_timedelta(c):
     assert isinstance(c, data_specs.CoordSpec)
     c = c.coord
-    return cx.coords.compose(
-        *[timedelta if isinstance(ax, coordinates.TimeDelta) else ax
-          for ax in c.axes]
-    )
+    return cx.coords.compose(*[
+        timedelta if isinstance(ax, coordinates.TimeDelta) else ax
+        for ax in c.axes
+    ])
 
   return jax.tree.map(
       _set_timedelta,
       supported_spec,
-      is_leaf=lambda x: isinstance(x, data_specs.CoordSpec)
+      is_leaf=lambda x: isinstance(x, data_specs.CoordSpec),
   )
 
 
@@ -94,7 +98,9 @@ class TrainerTest(parameterized.TestCase):
     shutil.rmtree(self.test_dir)
     super().tearDown()
 
-  def create_model_and_data(self, multiscale: bool = False):
+  def create_model_and_data(
+      self, multiscale: bool = False, add_fixed_point_obs_operator: bool = False
+  ):
     k = cx.LabeledAxis('k', np.arange(8))
     t0 = jdt.Datetime.from_isoformat('2000-01-01')
     dummy_dt = coordinates.TimeDelta(np.timedelta64(0, 's') * np.arange(1))
@@ -109,7 +115,7 @@ class TrainerTest(parameterized.TestCase):
               'x': cx.field(x_init[None, ...], dummy_dt, k),
               'time': cx.field(t0[None, ...], dummy_dt),
           },
-          'fast': {'y': cx.field(y_init[None, ...], dummy_dt, kj)}
+          'fast': {'y': cx.field(y_init[None, ...], dummy_dt, kj)},
       }
     else:
       kj = None  # make pytype happy.
@@ -121,6 +127,11 @@ class TrainerTest(parameterized.TestCase):
               'time': cx.field(t0[None, ...], dummy_dt),
           }
       }
+
+    if add_fixed_point_obs_operator:
+      sel_point = transforms.Sel({'k': 4})
+      point_obs = observation_operators.TransformObservationOperator(sel_point)
+      model.operators['fixed_point'] = point_obs
 
     inference_model = api.InferenceModel.from_model_api(model)
     state = inference_model.assimilate(inputs)
@@ -136,6 +147,16 @@ class TrainerTest(parameterized.TestCase):
         query={'slow': {'x': k, 'time': cx.Scalar()}},
     )
     trajectories.update(trajectory)
+    if add_fixed_point_obs_operator:
+      dt_fixed_point = dt_slow * 2
+      _, trajectory_fixed_point = api.unroll_from_advance(
+          inference_model,
+          initial_state=state,
+          timedelta=dt_fixed_point,
+          steps=n_steps // 2,
+          query={'fixed_point': {'x': cx.Scalar(), 'time': cx.Scalar()}},
+      )
+      trajectories.update(trajectory_fixed_point)
     if multiscale:
       assert isinstance(kj, cx.Coordinate)
       dt_fast = model.timestep
@@ -144,7 +165,7 @@ class TrainerTest(parameterized.TestCase):
           initial_state=state,
           timedelta=dt_fast,
           steps=n_steps * 4,
-          query={'fast': {'y': kj, 'time': cx.Scalar()}}
+          query={'fast': {'y': kj, 'time': cx.Scalar()}},
       )
       trajectories.update(trajectory_fast)
 
@@ -174,17 +195,17 @@ class TrainerTest(parameterized.TestCase):
     )
     mse = deterministic_metrics.MSE()
     eval_metrics = evaluators.Evaluator(
-        metrics={'mse': mse},
-        aggregators={'mse': aggregator}
+        metrics={'mse': mse}, aggregators={'mse': aggregator}
     )
     crps = probabilistic_losses.CRPS()
     loss = evaluators.Evaluator(
-        metrics={'crps': crps},
-        aggregators={'crps': aggregator}
+        metrics={'crps': crps}, aggregators={'crps': aggregator}
     )
     return eval_metrics, loss
 
-  def _create_queries_specs(self, model):
+  def _create_queries_specs(
+      self, model, add_fixed_point_obs_operator: bool = False
+  ):
     remove_timedelta = lambda c: cx.coords.compose(
         *[ax for ax in c.axes if not isinstance(ax, coordinates.TimeDelta)]
     )
@@ -193,6 +214,8 @@ class TrainerTest(parameterized.TestCase):
       queries_specs[data_key] = {
           k: remove_timedelta(v.coord) for k, v in k_spec.items() if k != 'time'
       }
+    if add_fixed_point_obs_operator:
+      queries_specs['fixed_point'] = {'x': cx.Scalar()}
     return queries_specs
 
   def test_trainer(self):
@@ -233,27 +256,30 @@ class TrainerTest(parameterized.TestCase):
     eval_timedelta = coordinates.TimeDelta(np.arange(10) * dt_slow)
     eval_inputs_spec = _construct_spec(model.inputs_spec, eval_timedelta)
     eval_dyn_spec = _construct_spec(model.dynamic_inputs_spec, eval_timedelta)
-    eval_schedule = trainer.EvalSchedule(stages=[
-        trainer.EvalSchema(
-            cadence=2,
-            inputs_spec=eval_inputs_spec,
-            dynamic_inputs_spec=eval_dyn_spec,
-            queries_spec=queries_specs,
-            metrics_evaluator=eval_metrics,
-            loss_evaluator=loss,
-            time_sample_offset=dt_slow,
-            batch_size_per_device=1,
-            num_batches=1,
-            train_time_slice=None,
-            eval_time_slice=None,
-        )
-    ])
+    eval_schedule = trainer.EvalSchedule(
+        stages=[
+            trainer.EvalSchema(
+                cadence=2,
+                inputs_spec=eval_inputs_spec,
+                dynamic_inputs_spec=eval_dyn_spec,
+                queries_spec=queries_specs,
+                metrics_evaluator=eval_metrics,
+                loss_evaluator=loss,
+                time_sample_offset=dt_slow,
+                batch_size_per_device=1,
+                num_batches=1,
+                train_time_slice=None,
+                eval_time_slice=None,
+                name='eval',
+            )
+        ]
+    )
 
     checkpoint_config = trainer.CheckpointConfig(
         save_interval_steps=2,
         keep_every_n_steps=10,
         model_config_str='{}',
-        metadata={}
+        metadata={},
     )
 
     auto_restart = trainer.AutoRestartConfig()
@@ -292,8 +318,130 @@ class TrainerTest(parameterized.TestCase):
     eval_metrics = evaluators.NestedEvaluators(
         evaluators={'slow': eval_metrics, 'fast': eval_metrics}
     )
+    loss = evaluators.NestedEvaluators(evaluators={'slow': loss, 'fast': loss})
+
+    optimizer = optax.adam(1e-3)
+    opt_config = trainer.OptimizationConfig(optimizer, ema_num_steps=10)
+
+    # Create train stage with nested data specs
+    train_stages = []
+    # 2 slow steps = 5 fast steps (0, 1, 2, 3, 4) if dt_slow=4*dt_fast
+    slow_steps = 2
+    dt_slow = model.timestep * 4
+    dt_fast = model.timestep
+
+    fast_steps = (slow_steps - 1) * 4 + 1
+    timedelta_slow = coordinates.TimeDelta(np.arange(slow_steps) * dt_slow)
+    timedelta_fast = coordinates.TimeDelta(np.arange(fast_steps) * dt_fast)
+
+    # inputs_spec must match model structure
+    inputs_spec = {
+        'slow': _construct_spec(model.inputs_spec['slow'], timedelta_slow),
+        'fast': _construct_spec(model.inputs_spec['fast'], timedelta_fast),
+    }
+    # Dynamic inputs are empty for this model, so we don't need to set them.
+    dyn_spec = {}
+
+    train_stages.append(
+        trainer.TrainStage(
+            duration=5,
+            inputs_spec=inputs_spec,
+            dynamic_inputs_spec=dyn_spec,
+            queries_spec=queries_specs,
+            loss=loss,
+            time_sample_offset=dt_slow,
+            batch_size_per_device=1,
+            shuffle_buffer_size=0,
+            train_time_slice=None,
+            eval_time_slice=None,
+        )
+    )
+    train_schedule = trainer.TrainSchedule(stages=train_stages)
+
+    eval_slow_steps = 4
+    eval_fast_steps = (eval_slow_steps - 1) * 4 + 1
+    eval_td_slow = coordinates.TimeDelta(np.arange(eval_slow_steps) * dt_slow)
+    eval_td_fast = coordinates.TimeDelta(np.arange(eval_fast_steps) * dt_fast)
+    eval_inputs_spec = {
+        'slow': _construct_spec(model.inputs_spec['slow'], eval_td_slow),
+        'fast': _construct_spec(model.inputs_spec['fast'], eval_td_fast),
+    }
+    eval_dyn_spec = {}
+    eval_schedule = trainer.EvalSchedule(
+        stages=[
+            trainer.EvalSchema(
+                cadence=2,
+                inputs_spec=eval_inputs_spec,
+                dynamic_inputs_spec=eval_dyn_spec,
+                queries_spec=queries_specs,
+                metrics_evaluator=eval_metrics,
+                loss_evaluator=loss,
+                time_sample_offset=dt_slow,
+                batch_size_per_device=1,
+                num_batches=1,
+                train_time_slice=None,
+                eval_time_slice=None,
+                name='eval',
+            )
+        ]
+    )
+
+    checkpoint_config = trainer.CheckpointConfig(
+        save_interval_steps=2,
+        keep_every_n_steps=10,
+        model_config_str='{}',
+        metadata={},
+    )
+
+    auto_restart = trainer.AutoRestartConfig()
+    remat = trainer.RematConfig()
+    process_obs = transforms.Identity()
+    metrics_saver = InMemorySaver()
+    rollout_trainer = trainer.RolloutTrainer(
+        experiment_dir=self.test_dir,
+        model=model,
+        data_loader=data_loader,
+        process_observations=process_obs,
+        calibration_modules=None,
+        train_schedule=train_schedule,
+        eval_schedule=eval_schedule,
+        optimization_config=opt_config,
+        initial_checkpoint=None,
+        checkpoint_config=checkpoint_config,
+        auto_restart_config=auto_restart,
+        remat_config=remat,
+        ensemble_axis=cx.SizedAxis('ensemble', 2),
+        online_metrics_saver=metrics_saver,
+    )
+    rollout_trainer.run_training()
+
+    self.assertTrue(metrics_saver.metrics)
+    self.assertTrue(os.path.exists(os.path.join(self.test_dir, 'checkpoints')))
+
+  def test_all_features(self):
+    model, all_data = self.create_model_and_data(
+        multiscale=True, add_fixed_point_obs_operator=True
+    )
+    queries_specs = self._create_queries_specs(
+        model, add_fixed_point_obs_operator=False
+    )
+    data_loader = self._create_data_loader(all_data)
+    eval_metrics, loss = self._create_evaluators(
+        dims_to_reduce=('ensemble', 'batch', 'k', 'j')
+    )
+    # Using nested evaluators for nested inputs.
+    fixed_point_eval_metrics, fixed_point_loss = self._create_evaluators(
+        ('ensemble', 'batch')
+    )
+    eval_metrics = evaluators.NestedEvaluators(
+        evaluators={
+            'slow': eval_metrics,
+            'fast': eval_metrics,
+            'fixed_point': fixed_point_eval_metrics,
+        }
+    )
     loss = evaluators.NestedEvaluators(
-        evaluators={'slow': loss, 'fast': loss}
+        evaluators={'slow': loss, 'fast': loss, 'fixed_point': fixed_point_loss}
     )
 
     optimizer = optax.adam(1e-3)
@@ -343,27 +491,30 @@ class TrainerTest(parameterized.TestCase):
         'fast': _construct_spec(model.inputs_spec['fast'], eval_td_fast),
     }
     eval_dyn_spec = {}
-    eval_schedule = trainer.EvalSchedule(stages=[
-        trainer.EvalSchema(
-            cadence=2,
-            inputs_spec=eval_inputs_spec,
-            dynamic_inputs_spec=eval_dyn_spec,
-            queries_spec=queries_specs,
-            metrics_evaluator=eval_metrics,
-            loss_evaluator=loss,
-            time_sample_offset=dt_slow,
-            batch_size_per_device=1,
-            num_batches=1,
-            train_time_slice=None,
-            eval_time_slice=None,
-        )
-    ])
+    eval_schedule = trainer.EvalSchedule(
+        stages=[
+            trainer.EvalSchema(
+                cadence=2,
+                inputs_spec=eval_inputs_spec,
+                dynamic_inputs_spec=eval_dyn_spec,
+                queries_spec=queries_specs,
+                metrics_evaluator=eval_metrics,
+                loss_evaluator=loss,
+                time_sample_offset=dt_slow,
+                batch_size_per_device=1,
+                num_batches=1,
+                train_time_slice=None,
+                eval_time_slice=None,
+                name='eval',
+            )
+        ]
+    )
 
     checkpoint_config = trainer.CheckpointConfig(
         save_interval_steps=2,
         keep_every_n_steps=10,
         model_config_str='{}',
-        metadata={}
+        metadata={},
     )
 
     auto_restart = trainer.AutoRestartConfig()

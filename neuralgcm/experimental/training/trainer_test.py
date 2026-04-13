@@ -246,6 +246,7 @@ class TrainerTest(parameterized.TestCase):
             num_batches=1,
             train_time_slice=None,
             eval_time_slice=None,
+            name='eval',
         )
     ])
 
@@ -356,6 +357,7 @@ class TrainerTest(parameterized.TestCase):
             num_batches=1,
             train_time_slice=None,
             eval_time_slice=None,
+            name='eval',
         )
     ])
 

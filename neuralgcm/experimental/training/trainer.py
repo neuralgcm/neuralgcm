@@ -1240,9 +1240,16 @@ class RolloutTrainer:
 
     inputs_spec = train_stage.inputs_spec
     rollout_spec = data_loading.sel_target_timedeltas(inputs_spec)
+    # rollout inputs might contain fields that are only used for initialization,
+    # so we filter them out by using the queries spec.
+    rollout_spec = data_loading.filter_inputs_by_queries(
+        rollout_spec, train_stage.queries_spec, include_field_in_query=True
+    )
     _, nested_rollout_specs = self._get_nested_steps_and_specs(rollout_spec)
+    # include_field_in_query is False for targets as field-in-query is not
+    # included in model predictions (only contains dynamic query details).
     targets_spec = data_loading.filter_inputs_by_queries(
-        inputs_spec, train_stage.queries_spec
+        inputs_spec, train_stage.queries_spec, include_field_in_query=False
     )
     _, nested_targets_spec = self._get_nested_steps_and_specs(targets_spec)
     full_queries_spec = _construct_full_queries_spec(  # include timedelta now.
@@ -1404,6 +1411,11 @@ class RolloutTrainer:
     )
     inputs_spec = eval_schema.inputs_spec
     rollout_spec = data_loading.sel_target_timedeltas(inputs_spec)
+    # rollout inputs might contain fields that are only used for initialization,
+    # so we filter them out by using the queries spec.
+    rollout_spec = data_loading.filter_inputs_by_queries(
+        rollout_spec, eval_schema.queries_spec, include_field_in_query=True
+    )
     _, nested_rollout_specs = self._get_nested_steps_and_specs(rollout_spec)
     targets_spec = data_loading.filter_inputs_by_queries(
         inputs_spec, eval_schema.queries_spec

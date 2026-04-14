@@ -538,7 +538,7 @@ class HostDataBuffer:
     self.current_batch = None
     self.desired_dims_layout = ('timedelta',) + desired_spatial_dims_layout
     if local_cpu is not None:
-      self.pinned_sharding = jax.sharding.SingleDeviceSharding(
+      self.pinned_sharding = jax.sharding.make_single_device_sharding(
           local_cpu, memory_kind='pinned_host'
       )
     else:
@@ -769,7 +769,7 @@ class DataLoader:
         return jax.ShapeDtypeStruct(
             shape=shape_dtype.shape,
             dtype=shape_dtype.dtype,
-            sharding=jax.sharding.SingleDeviceSharding(
+            sharding=jax.sharding.make_single_device_sharding(
                 device=local_cpu, memory_kind='pinned_host'
             ),
         )

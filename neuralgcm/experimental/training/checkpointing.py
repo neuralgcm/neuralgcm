@@ -14,6 +14,7 @@
 """Utilities for checkpointing training runs."""
 
 from collections.abc import Sequence
+import copy
 import dataclasses
 import json
 from typing import Any
@@ -24,6 +25,7 @@ from fiddle.experimental import serialization
 from flax import nnx
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import checkpointing as model_checkpointing
+from neuralgcm.experimental.core import parallelism
 import orbax.checkpoint as ocp
 from orbax.checkpoint import checkpoint_managers as ocp_managers
 
@@ -103,6 +105,7 @@ def load_fiddle_json(json_str: str) -> fiddle.Config:
 
 def untrained_model_from_training_dir(
     checkpoints_dir: str,
+    mesh: parallelism.Mesh | None = None,
 ) -> api.Model:
   """Loads model without parameters."""
   logging.info('loading model metadata')
@@ -113,6 +116,11 @@ def untrained_model_from_training_dir(
   logging.info('loading model config into fiddle')
   model_config = load_fiddle_json(json.dumps(model_config_dict))
   logging.info('building model')
+  if mesh is not None:
+    return api.Model.from_fiddle_config(
+        model_config,
+        spmd_mesh_updates={parallelism.Mesh: mesh.spmd_mesh},
+    )
   return api.Model.from_fiddle_config(model_config)
 
 
@@ -120,10 +128,11 @@ def model_from_training_checkpoint(
     checkpoints_dir: str,
     step: int | None = None,
     use_ema_params: bool = True,
+    mesh: parallelism.Mesh | None = None,
 ) -> api.Model:
   """Load a checkpoint into a Model."""
   logging.info(f'Loading checkpoint for step {step} from {checkpoints_dir}')
-  model = untrained_model_from_training_dir(checkpoints_dir)
+  model = untrained_model_from_training_dir(checkpoints_dir, mesh=mesh)
   abstract_state = model_checkpointing.split_model_state_for_saving(model)
 
   param_key = 'ema_params' if use_ema_params else 'params'
@@ -158,11 +167,17 @@ def export_training_to_model_checkpoint(
   Args:
     train_checkpoints_dir: The directory containing training checkpoints.
     model_checkpoint_path: The path to save the model checkpoint to.
-    train_step: The step of the training checkpoint to load. If None, the
-      latest checkpoint will be loaded.
+    train_step: The step of the training checkpoint to load. If None, the latest
+      checkpoint will be loaded.
     use_ema_params: Whether to use the EMA params or the non-EMA params.
   """
   model = model_from_training_checkpoint(
       train_checkpoints_dir, step=train_step, use_ema_params=use_ema_params
   )
-  model_checkpointing.save_checkpoint(model, model_checkpoint_path)
+  fiddle_config = copy.deepcopy(model.fiddle_config)
+  fiddle_config = parallelism.update_mesh_properties(
+      fiddle_config, spmd_mesh_updates={parallelism.Mesh: None}
+  )
+  model_checkpointing.save_checkpoint(
+      model, model_checkpoint_path, fiddle_config=fiddle_config
+  )

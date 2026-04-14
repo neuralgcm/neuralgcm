@@ -387,13 +387,14 @@ class InferenceRunner:
     @timing.Timed
     def unroll(state, dynamic_inputs):
       return api.unroll_from_advance(
-          forecast_system=self.model,
+          model=self.model,
           initial_state=state,
           timedelta=self.output_freq,
           steps=self.steps_per_unroll,
-          query=self.output_query,
+          queries=self.output_query,
           dynamic_inputs=dynamic_inputs,
-          start_with_input=True,
+          prepend_init=True,
+          trim_last=True,
       )
 
     dynamic_inputs_task = streaming.SingleTaskExecutor(get_dynamic_inputs)

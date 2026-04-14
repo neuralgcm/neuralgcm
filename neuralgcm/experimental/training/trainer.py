@@ -1722,7 +1722,7 @@ class RolloutTrainer:
 
       current_step_metrics = []
       for cadence, evaluate_fn in evaluation_fns:
-        if (step + 1) % cadence == 0:
+        if (step + 1) % cadence == 0 or step == start_step:
           online_metrics = evaluate_fn(experiment_state)
           if cadence == min_cadence and step > start_step:
             assert training_time is not None
@@ -2022,16 +2022,19 @@ class RolloutTrainer:
       key = '.'.join([eval_schema.name, 'total'])
       values_to_record[key] = loss_val
 
-      def _collect_loss_terms(evaluator, agg_state, current_prefix):
+      def _collect_loss_terms(evaluator, agg_state, current_prefix, weight=1.0):
         if isinstance(evaluator, evaluators.NestedEvaluators):
           # Recursively log terms for each sub-evaluator.
           # Note: agg_state is dict[str, agg_state]
           # Iterate through available results in agg_state.
+          evaluator_weights = evaluator.evaluator_weights or {}
           for k in sorted(agg_state.keys()):
             sub_agg = agg_state[k]
             sub_eval = evaluator.evaluators.get(k, evaluator.default_evaluator)
             if sub_eval:
-              _collect_loss_terms(sub_eval, sub_agg, current_prefix + [k])
+              sub_weight = weight * evaluator_weights.get(k, 1.0)
+              prefix = current_prefix + [k]
+              _collect_loss_terms(sub_eval, sub_agg, prefix, sub_weight)
           return
 
         if isinstance(evaluator, evaluators.FlattenedEvaluator):
@@ -2042,10 +2045,8 @@ class RolloutTrainer:
         for term_key in sorted(evaluator.metrics.keys()):
           term_metric = evaluator.metrics[term_key]
           assert isinstance(term_metric, metrics_base.Loss)
-          if evaluator.term_weights is not None:
-            w = evaluator.term_weights.get(term_key, 1.0)
-          else:
-            w = 1.0
+          term_weights = evaluator.term_weights or {}
+          w = weight * term_weights.get(term_key, 1.0)
           term_metric_values = agg_state[term_key].metric_values(term_metric)
           relative_value_key = (
               f'{eval_schema.name}_relative_contributions/{data_key}_{term_key}'

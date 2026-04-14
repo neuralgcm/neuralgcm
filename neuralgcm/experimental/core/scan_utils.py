@@ -63,7 +63,7 @@ def _drop_none_from_nested_dict(nested: ConcreteSpecs) -> ConcreteSpecs:
   return pytree_utils.unflatten_dict(flat)
 
 
-def _group_by_timedeltas(
+def group_by_timedeltas(
     inputs_spec: ConcreteSpecs,
     dt: np.timedelta64 | None = None,
     ref_t0: np.timedelta64 | None = None,
@@ -102,7 +102,7 @@ def _group_by_timedeltas(
   return sorted(tuple(groups), key=lambda x: x[0])
 
 
-def _shared_final_leadtime(inputs_spec: ConcreteSpecs) -> np.timedelta64:
+def shared_final_leadtime(inputs_spec: ConcreteSpecs) -> np.timedelta64:
   """Returns the shared end time for all timedeltas in `inputs_spec`."""
   leaves = jax.tree.leaves(inputs_spec, is_leaf=_is_spec_leaf)
   final_deltas = [_extract_timedelta(c).deltas[-1] for c in leaves]
@@ -162,9 +162,9 @@ def nested_scan_specs(
     A tuple of input specs, one for each level of the nested scan, ordered from
     innermost to outermost.
   """
-  dt_and_specs = _group_by_timedeltas(inputs_spec, dt, ref_t0)
+  dt_and_specs = group_by_timedeltas(inputs_spec, dt, ref_t0)
   _compute_steps_and_validate(
-      dt_and_specs, _shared_final_leadtime(inputs_spec), ref_t0
+      dt_and_specs, shared_final_leadtime(inputs_spec), ref_t0
   )
   return tuple(spec for _, spec in dt_and_specs)
 
@@ -189,8 +189,8 @@ def nested_scan_steps(
     A tuple of integers representing the number of scan steps for each level,
     from the innermost to the outermost scan.
   """
-  dts_and_specs = _group_by_timedeltas(inputs_spec, dt, ref_t0)
-  outer_delta = _shared_final_leadtime(inputs_spec)
+  dts_and_specs = group_by_timedeltas(inputs_spec, dt, ref_t0)
+  outer_delta = shared_final_leadtime(inputs_spec)
   return _compute_steps_and_validate(dts_and_specs, outer_delta, ref_t0)
 
 

@@ -475,10 +475,26 @@ class ExtractTransformedOutputs(nnx.Module):
   """Extract module that applies `transform` to the diagnosed module outputs."""
 
   transform: typing.Transform = nnx.data()
+  prognostics_arg_key: str | int | None = None
+
+  def _extract_prognostics(
+      self, result, *args, **kwargs
+  ) -> dict[str, cx.Field]:
+    if self.prognostics_arg_key is None:
+      prognostics = result
+    elif isinstance(self.prognostics_arg_key, int):
+      prognostics = args[self.prognostics_arg_key]
+    else:
+      prognostics = kwargs.get(self.prognostics_arg_key)
+    if not isinstance(prognostics, dict):
+      raise ValueError(
+          f'Prognostics must be a dictionary, got {type(prognostics)=} instead.'
+      )
+    return prognostics
 
   def __call__(self, result, *args, **kwargs) -> dict[str, cx.Field]:
-    del args, kwargs  # unused.
-    return self.transform(result)
+    prognostics = self._extract_prognostics(result, *args, **kwargs)
+    return self.transform(prognostics)
 
 
 @nnx.dataclass

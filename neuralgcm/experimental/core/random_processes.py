@@ -14,7 +14,9 @@
 """Modules that parameterize random processes."""
 
 import abc
-from collections.abc import Sequence
+import dataclasses
+import functools
+from typing import Protocol, Sequence
 import zlib
 
 import coordax as cx
@@ -27,7 +29,6 @@ from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
 import numpy as np
 
-
 Quantity = typing.Quantity
 _ADVANCE_SALT = zlib.crc32(b'advance')  # arbitrary uint32 value
 
@@ -37,6 +38,253 @@ Randomness = typing.Randomness
 
 class RandomnessParam(nnx.Variable):
   """Variable type for parameters of random processes."""
+
+
+class RandomnessTape(typing.Randomness):
+  """Variable type for holding recorded/replayed samples.
+
+  RandomnessTape is a subclass of Randomness is ensure that when modules are
+  vectorized we generate copies for each copy. It is a separate type to ensure
+  that we set different scan mechanics, as tape should be closed over, rather
+  than being passed through as a scan carry which could result in broadcasting.
+  """
+
+
+class DistributionLike(Protocol):
+  """Protocol that described distribution requirements to be compatible with Samplers."""
+
+  def sample(
+      self, *, seed: jax.Array, sample_shape: tuple[int, ...]
+  ) -> jax.Array:
+    ...
+
+  def log_prob(self, value: jax.Array) -> jax.Array:
+    ...
+
+
+class Sampler(nnx.Module, abc.ABC):
+  """Base class for seeding potentially correlated random processes.
+
+  Random processes use `Sampler`s to produce independent random variables that
+  may be transformed into correlated random state. A random process may rely on
+  one or multiple `Sampler` instances. Changing the underlying sampler can be
+  used to record or inject samples which is needed for some Data Assimilation
+  algorithms.
+
+  Attributes:
+    sample_coord: coordinate describing a single draw event.
+  """
+
+  def __init__(self, sample_coord: cx.Coordinate):
+    self.sample_coord = sample_coord
+
+  @abc.abstractmethod
+  def draw(
+      self,
+      seed: cx.Field,
+  ) -> cx.Field:
+    """Draws samples `sample_coord` coordinate for each entry in `seed`."""
+
+
+class DistributionSampler(Sampler):
+  """Sampler that draws i.i.d. variables from a distribution."""
+
+  def __init__(
+      self, distribution: DistributionLike, sample_coord: cx.Coordinate
+  ):
+    super().__init__(sample_coord)
+    self.distribution = distribution
+
+  def draw(
+      self,
+      seed: cx.Field,
+  ) -> cx.Field:
+    sample_fn = lambda k: self.distribution.sample(
+        seed=k, sample_shape=self.sample_coord.shape
+    )
+    return cx.cmap(sample_fn, seed.named_axes)(seed).tag(self.sample_coord)
+
+
+class RecordingSampler(Sampler):
+  """Sampler wrapper that records first "N" draws to a tape."""
+
+  def __init__(
+      self,
+      sampler: Sampler,
+      tape: cx.Field,
+      tape_axis: str | cx.Coordinate = 'tape_idx',
+  ):
+    super().__init__(sampler.sample_coord)
+    self.sampler = sampler
+    self.tape = RandomnessTape(tape)
+    self.tape_position = RandomnessTape(cx.field(0))
+    self.tape_axis = tape_axis
+
+  @classmethod
+  def with_fixed_tape_length(
+      cls,
+      sampler: Sampler,
+      max_steps: int,
+      tape_axis: str | cx.Coordinate = 'tape_idx',
+  ):
+    """Creates a RecordingSampler with a fixed tape length."""
+    if isinstance(tape_axis, str):
+      tape_axis = cx.DummyAxis(tape_axis, max_steps)
+    tape_coord = cx.coords.compose(tape_axis, sampler.sample_coord)
+    tape_data = jnp.zeros(tape_coord.shape)
+    tape = cx.field(tape_data, tape_coord)
+    return cls(sampler, tape, tape_axis)
+
+  def draw(
+      self,
+      seed: cx.Field,
+  ) -> cx.Field:
+    """Draws a sampler from the wrapped sampler."""
+    draw = self.sampler.draw(seed)
+    # Updating the tape value if it is not full.
+    tape = self.tape.get_value()
+    tape_axis = cx.get_coordinate_part(tape, self.tape_axis)
+    tape_length = tape_axis.shape[0]
+    idx = self.tape_position.get_value()
+    update_fn = lambda t, d, i: jnp.where(i < tape_length, t.at[i].set(d), t)
+    update_fn = cx.cmap(update_fn, out_axes=tape.untag(tape_axis).named_axes)
+    updated_tape = update_fn(tape.untag(tape_axis), draw, idx).tag(tape_axis)
+    self.tape.set_value(updated_tape)
+    # Update tape position.
+    clip_fn = cx.cmap(functools.partial(jnp.clip, max=tape_length))
+    self.tape_position.set_value(clip_fn(idx + 1))
+    return draw
+
+
+class TapeSampler(Sampler):
+  """Sampler that replays first "N" draws from a provided tape."""
+
+  def __init__(
+      self,
+      sampler: Sampler,
+      tape: cx.Field,
+      tape_axis: str | cx.Coordinate = 'tape_idx',
+      allow_broadcasting: bool = False,
+  ):
+    super().__init__(sampler.sample_coord)
+    self.sampler = sampler
+    self.tape = RandomnessTape(tape)
+    self.allow_broadcasting = allow_broadcasting
+    self.tape_position = RandomnessTape(cx.field(0))
+    self.tape_axis = tape_axis
+
+  def draw(
+      self,
+      seed: cx.Field,
+  ) -> cx.Field:
+    """Draws a sample either from sampler or tape depending on call count."""
+    idx = self.tape_position.get_value()
+    tape = self.tape.get_value()
+    tape_axis = cx.get_coordinate_part(tape, self.tape_axis)
+    tape_draw = cx.cmap(lambda x, i: x[i])(tape.untag(tape_axis), idx)
+    sampler_draw = self.sampler.draw(seed)
+
+    if sampler_draw.coordinate != tape_draw.coordinate:
+      if not self.allow_broadcasting:
+        raise ValueError(
+            f'Tape sample has {tape_draw.coordinate} that is not equal to the '
+            f'coordinate from the sampler {sampler_draw.coordinate} and '
+            'allow_broadcasting is False.'
+        )
+      tape_draw = tape_draw.broadcast_like(sampler_draw)
+
+    tape_length = tape_axis.shape[0]
+    pick_draw_fn = lambda idx, t, s: jnp.where(idx < tape_length, t, s)
+    draw = cx.cmap(pick_draw_fn)(idx, tape_draw, sampler_draw)
+    clip_fn = cx.cmap(functools.partial(jnp.clip, max=tape_length))
+    self.tape_position.set_value(clip_fn(idx + 1))
+    return draw
+
+  def tape_log_prob(self) -> cx.Field:
+    """Computes the log-likelihood of the tape under the stored distribution."""
+    if not isinstance(self.sampler, DistributionSampler):
+      raise ValueError(
+          'Wrapped sampler must be a DistributionSampler to compute log-prob'
+      )
+    idx = self.tape_position.get_value()
+    tape = self.tape.get_value()
+    tape_axis = cx.get_coordinate_part(tape, self.tape_axis)
+    tape_length = tape_axis.shape[0]
+    mask = cx.field(jnp.arange(tape_length), tape_axis) < idx
+    log_prob_fn = cx.cmap(self.sampler.distribution.log_prob)
+    masked_log_prob = log_prob_fn(tape) * mask
+    return cx.cmap(jnp.sum)(masked_log_prob.untag(tape_axis, self.sample_coord))
+
+
+@dataclasses.dataclass
+class UniformDistribution:
+  """Uniform distribution."""
+
+  minval: float = 0.0
+  maxval: float = 1.0
+
+  def sample(
+      self, *, seed: jax.Array, sample_shape: tuple[int, ...]
+  ) -> jax.Array:
+    return jax.random.uniform(
+        seed, shape=sample_shape, minval=self.minval, maxval=self.maxval
+    )
+
+  def log_prob(self, value: jax.Array) -> jax.Array:
+    log_prob = -jnp.log(self.maxval - self.minval)
+    within_bounds = (value >= self.minval) & (value <= self.maxval)
+    return jnp.where(within_bounds, log_prob, -jnp.inf)
+
+
+@dataclasses.dataclass
+class NormalDistribution:
+  """Normal distribution."""
+
+  mean: float = 0.0
+  std: float = 1.0
+
+  def sample(
+      self, *, seed: jax.Array, sample_shape: tuple[int, ...]
+  ) -> jax.Array:
+    return self.mean + self.std * jax.random.normal(seed, shape=sample_shape)
+
+  def log_prob(self, value: jax.Array) -> jax.Array:
+    return -0.5 * ((value - self.mean) / self.std) ** 2 - jnp.log(
+        self.std * jnp.sqrt(2 * jnp.pi)
+    )
+
+
+@dataclasses.dataclass
+class TruncatedNormalDistribution:
+  """Truncated normal distribution."""
+
+  lower: float
+  upper: float
+  mean: float = 0.0
+  std: float = 1.0
+
+  def sample(
+      self, *, seed: jax.Array, sample_shape: tuple[int, ...]
+  ) -> jax.Array:
+    std_lower = (self.lower - self.mean) / self.std
+    std_upper = (self.upper - self.mean) / self.std
+    val = jax.random.truncated_normal(
+        seed, std_lower, std_upper, shape=sample_shape
+    )
+    return self.mean + self.std * val
+
+  def log_prob(self, value: jax.Array) -> jax.Array:
+    std_value = (value - self.mean) / self.std
+    std_lower = (self.lower - self.mean) / self.std
+    std_upper = (self.upper - self.mean) / self.std
+    log_phi_diff = jnp.log(
+        jax.scipy.special.ndtr(std_upper) - jax.scipy.special.ndtr(std_lower)
+    )
+    normal_log_prob = -0.5 * std_value**2 - jnp.log(
+        self.std * jnp.sqrt(2 * jnp.pi)
+    )
+    within_bounds = (value >= self.lower) & (value <= self.upper)
+    return jnp.where(within_bounds, normal_log_prob - log_phi_diff, -jnp.inf)
 
 
 def _advance_prng_key(prng_key: jax.Array, prng_step: int):

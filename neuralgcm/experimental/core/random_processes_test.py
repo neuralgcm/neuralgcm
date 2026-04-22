@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import coordax as cx
+import coordax.testing as cx_testing
 from flax import nnx
 import jax
 import jax.numpy as jnp
@@ -378,7 +379,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       correlation_length,
       correlation_time,
   ):
-    grf = random_processes.GaussianRandomField(
+    grf = random_processes.GaussianRandomField.construct(
         ylm_map=ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
@@ -424,7 +425,7 @@ class GaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
         lon_lat_grid=coordinates.LonLatGrid.T42(),
         ylm_grid=coordinates.SphericalHarmonicGrid.T42(),
     )
-    grf = random_processes.GaussianRandomField(
+    grf = random_processes.GaussianRandomField.construct(
         ylm_map=ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
@@ -469,7 +470,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
       correlation_times,
   ):
     axis = cx.SizedAxis('grf', len(variances))
-    return random_processes.VectorizedGaussianRandomField(
+    return random_processes.VectorizedGaussianRandomField.construct(
         ylm_map=self.ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
@@ -622,7 +623,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
     )
     grid = ylm_map.nodal_grid
     axis = cx.SizedAxis('grf', 2)  # 2 fields.
-    grf = random_processes.VectorizedGaussianRandomField(
+    grf = random_processes.VectorizedGaussianRandomField.construct(
         ylm_map=ylm_map,
         dt=self.dt,
         sim_units=self.sim_units,
@@ -661,7 +662,7 @@ class BatchGaussianRandomFieldTest(BaseSphericalHarmonicRandomProcessTest):
 
     @nnx.jit
     def build_grf():
-      grf = random_processes.VectorizedGaussianRandomField(
+      grf = random_processes.VectorizedGaussianRandomField.construct(
           ylm_map=ylm_map,
           dt=self.dt,
           sim_units=self.sim_units,
@@ -701,7 +702,9 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       maxval,
   ):
     rng = nnx.Rngs(0)
-    uniform = random_processes.UniformUncorrelated(minval, maxval, coord, rng)
+    uniform = random_processes.UniformUncorrelated.construct(
+        coord, minval, maxval, rng
+    )
     with self.subTest('unconditional_sample_stats'):
       sample = uniform.state_values().data
       mean_std_err = (maxval - minval) / np.sqrt(12 * math.prod(coord.shape))
@@ -739,7 +742,9 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       std,
   ):
     rng = nnx.Rngs(0)
-    normal = random_processes.NormalUncorrelated(mean, std, coord, rng)
+    normal = random_processes.NormalUncorrelated.construct(
+        coord, mean, std, rng
+    )
     with self.subTest('unconditional_sample_stats'):
       sample = normal.state_values().data
       mean_std_err = std / np.sqrt(math.prod(coord.shape))
@@ -753,6 +758,239 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       corr = scipy.stats.pearsonr(sample, advanced_sample, axis=None).statistic
       standard_error = 2 / np.sqrt(math.prod(sample.shape))
       np.testing.assert_array_less(corr, 4 * standard_error)
+
+
+class SamplerTest(parameterized.TestCase):
+  """Tests for Samplers."""
+
+  def test_recording_sampler_tape_values(self):
+    max_steps = 4
+    coord = cx.coords.compose(cx.SizedAxis('x', 2), cx.SizedAxis('y', 3))
+
+    dist = random_processes.NormalDistribution()
+    base_sampler = random_processes.DistributionSampler(dist, coord)
+    sampler = random_processes.RecordingSampler.with_fixed_tape_length(
+        base_sampler, max_steps
+    )
+    seed = jax.random.key(42)
+    draws = []
+    for i in range(5):
+      actual_tape_position = sampler.tape_position.get_value()
+      cx_testing.assert_fields_equal(actual_tape_position, cx.field(i))
+      key = jax.random.fold_in(seed, i)
+      val = sampler.draw(cx.field(key))
+      draws.append(val)
+
+    actual_tape = sampler.tape.get_value()
+    expected_tape = cx.cmap(jnp.stack)(draws[:max_steps]).tag(sampler.tape_axis)
+    cx_testing.assert_fields_allclose(actual_tape, expected_tape)
+
+  def test_tape_sampler(self):
+    tape_data = jnp.arange(12, dtype=jnp.float32).reshape(4, 3)
+
+    dist = random_processes.NormalDistribution()
+    x = cx.SizedAxis('x', 3)
+    tape_axis = cx.SizedAxis('tape_idx', 4)
+    tape = cx.field(tape_data, tape_axis, x)
+
+    base_sampler = random_processes.DistributionSampler(dist, x)
+    sampler = random_processes.TapeSampler(base_sampler, tape)
+    seed = jax.random.key(42)
+
+    val1 = sampler.draw(cx.field(seed))
+    val2 = sampler.draw(cx.field(seed))
+
+    with self.subTest('replay_values'):
+      cx_testing.assert_fields_allclose(val1, cx.field(tape_data[0], x))
+      cx_testing.assert_fields_allclose(val2, cx.field(tape_data[1], x))
+
+    with self.subTest('tape_log_prob_value'):
+      expected_log_prob = cx.field(jnp.sum(dist.log_prob(tape_data[:2])))
+      actual_log_prob = sampler.tape_log_prob()
+      cx_testing.assert_fields_allclose(actual_log_prob, expected_log_prob)
+
+  def test_samplers_jit(self):
+    """Verifies that RecordingSampler and TapeSampler work under JIT."""
+    max_steps = 4
+    x = cx.SizedAxis('x', 3)
+    dist = random_processes.NormalDistribution()
+    base_sampler = random_processes.DistributionSampler(dist, x)
+    tape_axis = cx.SizedAxis('tape_idx', max_steps)
+    tape_data = jnp.ones(tape_axis.shape + x.shape)
+    tape = cx.field(tape_data, tape_axis, x)
+    seed = jax.random.key(42)
+
+    @nnx.jit
+    def run_draws(s, k):
+      for i in range(3):
+        key = jax.random.fold_in(k, i)
+        s.draw(cx.field(key))
+
+    with self.subTest('recording_sampler'):
+      sampler = random_processes.RecordingSampler(base_sampler, tape)
+      run_draws(sampler, seed)
+      self.assertEqual(int(sampler.tape_position.get_value().data), 3)
+
+    with self.subTest('tape_sampler'):
+      sampler = random_processes.TapeSampler(base_sampler, tape)
+      run_draws(sampler, seed)
+      self.assertEqual(int(sampler.tape_position.get_value().data), 3)
+
+  def test_tape_sampler_broadcasting(self):
+    tape_data = jnp.arange(12, dtype=jnp.float32).reshape(4, 3)
+    dist = random_processes.NormalDistribution()
+    x = cx.SizedAxis('x', 3)
+    tape_axis = cx.SizedAxis('tape_idx', 4)
+    tape = cx.field(tape_data, tape_axis, x)
+
+    base_sampler = random_processes.DistributionSampler(dist, x)
+    seed = jax.random.key(42)
+    b = cx.SizedAxis('batch', 2)
+    batched_seed = cx.field(jax.random.split(seed, 2), b)
+
+    with self.subTest('disallows_broadcasting'):
+      sampler = random_processes.TapeSampler(
+          base_sampler, tape, allow_broadcasting=False
+      )
+      with self.assertRaises(ValueError):
+        sampler.draw(batched_seed)
+
+    with self.subTest('allows_broadcasting'):
+      sampler = random_processes.TapeSampler(
+          base_sampler, tape, allow_broadcasting=True
+      )
+      val = sampler.draw(batched_seed)
+      self.assertEqual(val.shape, b.shape + x.shape)
+
+    with self.subTest('matches_coordinates'):
+      batched_tape = tape.broadcast_like(cx.coords.compose(b, tape.coordinate))
+      sampler = random_processes.TapeSampler(
+          base_sampler, batched_tape, allow_broadcasting=False
+      )
+      val = sampler.draw(batched_seed)
+      self.assertEqual(val.shape, b.shape + x.shape)
+
+
+class DistributionsTest(parameterized.TestCase):
+  """Tests for basic probability distribution implementations."""
+
+  def test_uniform_distribution_log_prob(self):
+    dist = random_processes.UniformDistribution(0.0, 1.0)
+    values = jnp.array([-0.5, 0.0, 0.5, 1.0, 1.5])
+    scipy_dist = scipy.stats.uniform(loc=0.0, scale=1.0)
+    expected_log_prob = scipy_dist.logpdf(values)
+    actual_log_prob = dist.log_prob(values)
+    np.testing.assert_allclose(actual_log_prob, expected_log_prob, atol=1e-5)
+
+  def test_normal_distribution_log_prob(self):
+    dist = random_processes.NormalDistribution(0.0, 1.0)
+    values = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    scipy_dist = scipy.stats.norm(loc=0.0, scale=1.0)
+    expected_log_prob = scipy_dist.logpdf(values)
+    actual_log_prob = dist.log_prob(values)
+    np.testing.assert_allclose(actual_log_prob, expected_log_prob, atol=1e-5)
+
+  def test_truncated_normal_distribution_log_prob(self):
+    dist = random_processes.TruncatedNormalDistribution(-3.0, 3.0, 0.0, 1.0)
+    values = jnp.array([-4.0, -2.0, 0.0, 2.0, 4.0])
+    scipy_dist = scipy.stats.truncnorm(-3.0, 3.0, loc=0.0, scale=1.0)
+    expected_log_prob = scipy_dist.logpdf(values)
+    actual_log_prob = dist.log_prob(values)
+    np.testing.assert_allclose(actual_log_prob, expected_log_prob, atol=1e-5)
+
+
+class ProcessSamplerInjectionTest(parameterized.TestCase):
+  """Tests that random processes correctly use injected samplers."""
+
+  def test_recording_sampler_in_normal_random_process(self):
+    coord = coordinates.LonLatGrid.T21()
+    rng = nnx.Rngs(0)
+    normal = random_processes.NormalUncorrelated.construct(coord, 0.0, 1.0, rng)
+    orig = nnx.clone(normal)
+    max_steps = 5
+    rec_sampler = random_processes.RecordingSampler.with_fixed_tape_length(
+        normal.sampler, max_steps
+    )
+    normal.samplers['normal'] = rec_sampler
+    normal.unconditional_sample(cx.field(jax.random.key(42)))
+    samples = []
+    for i in range(max_steps):
+      samples.append(normal.state_values())
+      # draws from both advance and unconditional_sample should be recorded.
+      if i % 2 == 0:
+        normal.advance()
+        orig.advance()
+      else:
+        normal.unconditional_sample(cx.field(jax.random.key(i)))
+        orig.unconditional_sample(cx.field(jax.random.key(i)))
+    # Tape is fully written and should contain samples in order of recording.
+    expected_tape = cx.cmap(jnp.stack)(samples).tag(rec_sampler.tape_axis)
+
+    with self.subTest('tape_has_expected_values'):
+      actual_tape = rec_sampler.tape.get_value()
+      cx_testing.assert_fields_allclose(actual_tape, expected_tape)
+
+    with self.subTest('same_samples_as_original'):
+      cx_testing.assert_fields_allclose(
+          orig.state_values(), normal.state_values()
+      )
+      normal.advance()
+      orig.advance()
+      cx_testing.assert_fields_allclose(
+          orig.state_values(), normal.state_values()
+      )
+
+    with self.subTest('tape_not_edited_once_fully_written'):
+      normal.unconditional_sample(cx.field(jax.random.key(11)))
+      normal.advance()
+      actual_tape = rec_sampler.tape.get_value()
+      cx_testing.assert_fields_allclose(actual_tape, expected_tape)
+
+  def test_recording_and_tape_workflow(self):
+    """Demonstrates workflow between RecordingSampler and TapeSampler."""
+    coord = coordinates.LonLatGrid.T21()
+    rng = nnx.Rngs(0)
+    normal = random_processes.NormalUncorrelated.construct(coord, 0.0, 1.0, rng)
+    init_rng_1 = cx.field(jax.random.key(42))
+    init_rng_2 = cx.field(jax.random.key(43))
+
+    @nnx.jit
+    def produce_samples(module, k1, k2):
+      base_sampler = module.sampler
+      rec_sampler = random_processes.RecordingSampler.with_fixed_tape_length(
+          base_sampler, max_steps=3
+      )
+      module.samplers['normal'] = rec_sampler
+
+      module.unconditional_sample(k1)
+      draw_samples = []
+      for _ in range(4):
+        draw_samples.append(module.state_values())
+        module.advance()
+
+      tape = rec_sampler.tape.get_value()
+      tape_sampler = random_processes.TapeSampler(base_sampler, tape)
+      module.samplers['normal'] = tape_sampler
+
+      module.unconditional_sample(k2)
+      replay_samples = []  # since 4 > 3, the last sample will be a "draw" one.
+      for _ in range(4):
+        replay_samples.append(module.state_values())
+        module.advance()
+
+      module.samplers['normal'] = base_sampler  # restore original sampler.
+      log_prob = tape_sampler.tape_log_prob()
+      return draw_samples, replay_samples, log_prob
+
+    draw, replay, log_prob = produce_samples(normal, init_rng_1, init_rng_2)
+
+    with self.subTest('replay_verification'):
+      for i in range(3):
+        cx_testing.assert_fields_allclose(draw[i], replay[i])
+      self.assertFalse(np.allclose(draw[3].data, replay[3].data))
+
+    with self.subTest('log_prob_verification'):
+      self.assertTrue(jnp.isfinite(log_prob.data))
 
 
 if __name__ == '__main__':

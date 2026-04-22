@@ -204,7 +204,7 @@ class FeatureTransformsTest(parameterized.TestCase):
   )
   def test_randomness_features(self, ylm_map):
     with self.subTest('gaussian_random_field'):
-      random_process = random_processes.GaussianRandomField(
+      random_process = random_processes.GaussianRandomField.construct(
           ylm_map=ylm_map,
           dt=1.0,
           sim_units=units.DEFAULT_UNITS,
@@ -221,7 +221,7 @@ class FeatureTransformsTest(parameterized.TestCase):
       self._test_feature_module(randomness_features, None)
 
     with self.subTest('batched_gaussian_random_fields'):
-      random_process = random_processes.VectorizedGaussianRandomField(
+      random_process = random_processes.VectorizedGaussianRandomField.construct(
           ylm_map=ylm_map,
           dt=1.0,
           sim_units=units.DEFAULT_UNITS,

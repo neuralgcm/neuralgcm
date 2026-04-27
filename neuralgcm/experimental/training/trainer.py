@@ -1844,8 +1844,9 @@ class RolloutTrainer:
     start_step = ckpt.metadata['step']
     logging.info(f'Restored experiment from checkpoint at step={start_step}')
     auto_restart = AutoRestart(**ckpt.metadata['auto_restart'])
+    non_params = ckpt.get('non_params', nnx.State({}))
     experiment_state = ExperimentState(
-        ckpt.opt_state, ckpt.params, ckpt.ema_state, ckpt.non_params
+        ckpt.opt_state, ckpt.params, ckpt.ema_state, non_params
     )
     experiment_state = train_utils.ensure_replicated(
         experiment_state, mesh=self.spmd_mesh
@@ -1919,16 +1920,16 @@ class RolloutTrainer:
     opt_state, params, ema_state, non_params = experiment_state
     ema_params, _ = self._ema_update(params, ema_state)  # pytype: disable=attribute-error  # jax-api-types
 
-    ckpt_state = ocp.args.Composite(
-        # state required for inference
-        params=wrap_pytree(params),
-        ema_params=wrap_pytree(ema_params),
-        non_params=wrap_pytree(non_params),
-        # state only used for training
-        opt_state=wrap_pytree(opt_state),
-        ema_state=wrap_pytree(ema_state),
-        metadata=metadata,
-    )
+    composite_args = {
+        'params': wrap_pytree(params),
+        'ema_params': wrap_pytree(ema_params),
+        'opt_state': wrap_pytree(opt_state),
+        'ema_state': wrap_pytree(ema_state),
+        'metadata': metadata,
+    }
+    if jax.tree.leaves(non_params):
+      composite_args['non_params'] = wrap_pytree(non_params)
+    ckpt_state = ocp.args.Composite(**composite_args)
     return ckpt_state
 
   def dummy_evaluate(

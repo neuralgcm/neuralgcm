@@ -43,18 +43,13 @@ import pandas as pd
 
 class TestLorenz96(lorenz96.Lorenz96):
 
-  def __post_init__(self):
-    super().__post_init__()
-    # Add a dummy variable to ensure non_params is not empty
-    self.dummy_non_param = nnx.Variable(jnp.array(0.0))
+  pass
 
 
 class TestLorenz96WithTwoScales(lorenz96.Lorenz96WithTwoScales):
 
   def __post_init__(self):
     super().__post_init__()
-    # Add a dummy variable to ensure non_params is not empty
-    self.dummy_non_param = nnx.Variable(jnp.array(0.0))
     # Add a dummy param to ensure params is not empty
     self.dummy_param = nnx.Param(jnp.array(0.0))
 

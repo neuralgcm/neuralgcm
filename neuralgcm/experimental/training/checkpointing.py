@@ -23,6 +23,7 @@ from absl import logging
 import fiddle
 from fiddle.experimental import serialization
 from flax import nnx
+import jax
 from neuralgcm.experimental.core import api
 from neuralgcm.experimental.core import checkpointing as model_checkpointing
 from neuralgcm.experimental.core import parallelism
@@ -136,11 +137,16 @@ def model_from_training_checkpoint(
   abstract_state = model_checkpointing.split_model_state_for_saving(model)
 
   param_key = 'ema_params' if use_ema_params else 'params'
-  restore_args = ocp.args.Composite(
-      metadata=ocp.args.JsonRestore(),
-      non_params=ocp.args.StandardRestore(abstract_state.non_params),
-      **{param_key: ocp.args.StandardRestore(abstract_state.params)},
-  )
+  restore_kwargs = {
+      'metadata': ocp.args.JsonRestore(),
+      param_key: ocp.args.StandardRestore(abstract_state.params),
+  }
+  has_non_params = bool(jax.tree.leaves(abstract_state.non_params))
+  if has_non_params:
+    restore_kwargs['non_params'] = ocp.args.StandardRestore(
+        abstract_state.non_params
+    )
+  restore_args = ocp.args.Composite(**restore_kwargs)
 
   with read_only_manager(checkpoints_dir) as manager:
     if step is None:
@@ -152,7 +158,8 @@ def model_from_training_checkpoint(
 
   params = ckpt[param_key]
   nnx.update(model, params)
-  nnx.update(model, ckpt.non_params)
+  if has_non_params:
+    nnx.update(model, ckpt.non_params)
   return model
 
 

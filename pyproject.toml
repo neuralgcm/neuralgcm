@@ -59,6 +59,7 @@ experimental = [
     "jax-solar",
     "orbax",
     "treescope",
+    "tqdm",
     "zarr>= 3.1.4",
     # require dev version of xarray until 2025.09.0 release
     "xarray @ git+https://github.com/pydata/xarray.git",

@@ -23,7 +23,7 @@ import logging
 import math
 import operator
 import os.path
-from typing import Any, NamedTuple, TypeAlias, overload
+from typing import Any, NamedTuple, overload, TypeAlias
 
 import coordax as cx
 from etils import epath
@@ -54,6 +54,7 @@ import numpy as np
 import optax
 import orbax.checkpoint as ocp
 from orbax.checkpoint import checkpoint_managers as ocp_managers
+import tqdm
 
 
 # pylint: disable=logging-fstring-interpolation
@@ -711,7 +712,7 @@ class RolloutTrainer:
     self._train_schedule_boundaries = np.cumsum(
         [s.duration for s in self.train_schedule.stages]
     )
-    self._total_train_steps = (
+    self._total_train_steps = int(
         self._train_schedule_boundaries[-1]
         if len(self._train_schedule_boundaries) > 0  # pylint: disable=g-explicit-length-test
         else 0
@@ -1587,7 +1588,7 @@ class RolloutTrainer:
     if is_coordinator():
       self.online_metrics_saver.save(step, online_metrics)
 
-  def run_training(self):
+  def run_training(self, show_progress_bar: bool = False):
     """Runs the training experiment."""
     start_step, auto_restart, experiment_state = self.initialize_experiment()
 
@@ -1622,6 +1623,11 @@ class RolloutTrainer:
 
     train_step_fn, evaluation_fns, train_iter = None, [], None  # pytype happy.
     step = start_step
+
+    pbar = None
+    if show_progress_bar:
+      pbar = tqdm.auto.tqdm(total=self._total_train_steps, initial=start_step)
+
     while step < self._total_train_steps:
       old_schedule_idx = schedule_idx
       schedule_idx = np.sum(  # compute which leg of the schedule we are at.
@@ -1658,6 +1664,9 @@ class RolloutTrainer:
         )
         target_step = step - 1 - lookback
         step, experiment_state = self.reinitialize_for_nan_restart(target_step)
+        if pbar is not None:
+          pbar.n = step
+          pbar.refresh()
 
       if (
           auto_restart.iteration
@@ -1724,6 +1733,8 @@ class RolloutTrainer:
           logging_stream.wait()  # don't allow training to run ahead of logging.
           logging_stream.submit(step, schedule_idx, loss, auto_restart)
       step += 1
+      if pbar is not None:
+        pbar.update(1)
     # End of while step < self.config.num_training_steps:
 
     logging.info('finished training')

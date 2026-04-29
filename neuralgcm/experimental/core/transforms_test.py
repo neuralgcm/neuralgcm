@@ -1581,6 +1581,69 @@ class NestedTransformTest(parameterized.TestCase):
     }
     chex.assert_trees_all_equal(actual, expected)
 
+  def test_elementwise_logical_op(self):
+    x = cx.SizedAxis('x', 2)
+    inputs = {
+        'a': cx.field(jnp.array([1.0, 4.0]), x),
+        'b': cx.field(jnp.array([5.0, 2.0]), x),
+    }
+    operands = {
+        'a': cx.field(jnp.array([2.0, 3.0]), x),
+        'b': cx.field(jnp.array([2.0, 3.0]), x),
+    }
+
+    with self.subTest('less_than'):
+      op_transform = transforms.EntrywiseBinaryOp.with_prescribed_fields(
+          'less_than', operands
+      )
+      actual = op_transform(inputs)
+      expected = {
+          'a': cx.field(jnp.array([True, False]), x),
+          'b': cx.field(jnp.array([False, True]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('greater_than'):
+      op_transform = transforms.EntrywiseBinaryOp.with_prescribed_fields(
+          'greater_than', operands
+      )
+      actual = op_transform(inputs)
+      expected = {
+          'a': cx.field(jnp.array([False, True]), x),
+          'b': cx.field(jnp.array([True, False]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('less_equal'):
+      operands_eq = {
+          'a': cx.field(jnp.array([1.0, 3.0]), x),
+          'b': cx.field(jnp.array([2.0, 2.0]), x),
+      }
+      op_transform = transforms.EntrywiseBinaryOp.with_prescribed_fields(
+          'less_equal', operands_eq
+      )
+      actual = op_transform(inputs)
+      expected = {
+          'a': cx.field(jnp.array([True, False]), x),
+          'b': cx.field(jnp.array([False, True]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
+    with self.subTest('greater_equal'):
+      operands_eq = {
+          'a': cx.field(jnp.array([1.0, 3.0]), x),
+          'b': cx.field(jnp.array([2.0, 2.0]), x),
+      }
+      op_transform = transforms.EntrywiseBinaryOp.with_prescribed_fields(
+          'greater_equal', operands_eq
+      )
+      actual = op_transform(inputs)
+      expected = {
+          'a': cx.field(jnp.array([True, True]), x),
+          'b': cx.field(jnp.array([True, True]), x),
+      }
+      chex.assert_trees_all_equal(actual, expected)
+
   def test_project_onto_basis(self):
     x = cx.SizedAxis('x', 2)
     y = cx.SizedAxis('y', 3)

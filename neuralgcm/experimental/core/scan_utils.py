@@ -198,11 +198,39 @@ def nest_data_for_scans(
     inputs: InputsLike,
     dt: np.timedelta64 | None = None,
     ref_t0: np.timedelta64 | None = None,
+    scan_steps: tuple[int, ...] | None = None,
+    scan_specs: tuple[ConcreteSpecs, ...] | None = None,
 ) -> tuple[InputsLike, ...]:
-  """Returns `inputs` partitioned into subsets corresponding to scan nesting."""
+  """Returns `inputs` partitioned into subsets corresponding to scan nesting.
+
+  Args:
+    inputs: A pytree of `cx.Field` objects providing data for the scan.
+    dt: Optional numpy timedelta defining the inner-most scan step.
+    ref_t0: Optional timedelta to use for step inference of TimeDelta of size 1.
+    scan_steps: Optional tuple of scan steps for each level. If provided,
+      `scan_specs` must also be provided.
+    scan_specs: Optional tuple of concrete specs for each level. If provided,
+      `scan_steps` must also be provided.
+
+  Returns:
+    A tuple of `InputsLike` objects, one for each level of the nested scan.
+  """
   in_spec = jax.tree.map(lambda x: x.coordinate, inputs, is_leaf=cx.is_field)
-  scan_steps = nested_scan_steps(in_spec, dt, ref_t0)
-  scan_specs = nested_scan_specs(in_spec, dt, ref_t0)
+  if scan_steps is None and scan_specs is None:
+    scan_steps = nested_scan_steps(in_spec, dt, ref_t0)
+    scan_specs = nested_scan_specs(in_spec, dt, ref_t0)
+  else:
+    if None in [scan_steps, scan_specs]:
+      raise ValueError(
+          'scan_steps and scan_specs must be either both provided or inferred'
+      )
+
+  if len(scan_steps) != len(scan_specs):
+    raise ValueError(
+        'scan_steps and scan_specs must have the same length, '
+        f'got {len(scan_steps)=} and {len(scan_specs)=}.'
+    )
+
   nested_data = []
   for i, spec in enumerate(scan_specs):
     shape = scan_steps[i:][::-1]
@@ -214,7 +242,8 @@ def nest_data_for_scans(
       td = _extract_timedelta(coord)
       out_coord = cx.coords.replace_axes(coord, td, dummy_td)
       out_axes = {d: i for i, d in enumerate(out_coord.dims) if d}
-      reshape = cx.cmap(lambda x: x.reshape(shape), out_axes=out_axes)
+      reshape_fn = lambda tree: jax.tree.map(lambda x: x.reshape(shape), tree)
+      reshape = cx.cmap(reshape_fn, out_axes=out_axes)
       return reshape(field.untag(td))
 
     fs_for_spec = pytree_utils.replace_with_matching_or_default(
@@ -234,7 +263,8 @@ def ravel_data_from_nested_scans(
   def _retag(field: cx.Field, coord):
     coord = _get_coord(coord)
     timedelta = cx.coords.extract(coord, coordinates.TimeDelta)
-    result = cx.cmap(lambda x: x.ravel())(field).tag(timedelta)
+    ravel_fn = lambda tree: jax.tree.map(lambda x: x.ravel(), tree)
+    result = cx.cmap(ravel_fn)(field).tag(timedelta)
     if result.coordinate != coord:
       raise ValueError(f'Coordinate mismatch: {result.coordinate} vs {coord}')
     return result

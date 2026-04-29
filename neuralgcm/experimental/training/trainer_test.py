@@ -537,6 +537,38 @@ class TrainerTest(parameterized.TestCase):
     self.assertTrue(metrics_saver.metrics)
     self.assertTrue(os.path.exists(os.path.join(self.test_dir, 'checkpoints')))
 
+  def test_drop_field_in_query_outputs(self):
+    """Tests _drop_field_in_query_outputs."""
+    predictions = {
+        'slow': {
+            'x': cx.field(jnp.zeros((8,)), cx.SizedAxis('k', 8)),
+            'time': cx.field(jnp.zeros(())),
+        },
+        'fast': {
+            'y': cx.field(
+                jnp.zeros((8, 4)), cx.SizedAxis('k', 8), cx.SizedAxis('j', 4)
+            ),
+        },
+    }
+    query = {
+        'slow': {
+            'x': cx.SizedAxis('k', 8),
+            'time': cx.Scalar(),
+        },
+        'fast': {
+            'y': cx.field(
+                jnp.zeros((8, 4)), cx.SizedAxis('k', 8), cx.SizedAxis('j', 4)
+            ),
+        },
+    }
+
+    filtered = trainer._drop_field_in_query_outputs(predictions, query)
+
+    self.assertIn('slow', filtered)
+    self.assertIn('x', filtered['slow'])
+    self.assertIn('time', filtered['slow'])
+    self.assertNotIn('fast', filtered)
+
 
 if __name__ == '__main__':
   absltest.main()

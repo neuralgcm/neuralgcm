@@ -103,7 +103,8 @@ class TransformObservationOperator(ObservationOperatorABC):
       raise ValueError(f'Got {query=} that contains {bad_fields=}.')
     data_obserator = DataObservationOperator(self.transform(inputs | q_fields))
     coord_queries = {k: v for k, v in query.items() if cx.is_coord(v)}
-    return data_obserator.observe({}, coord_queries)
+    present_q_fields = {k: v for k, v in q_fields.items() if v is not None}
+    return data_obserator.observe({}, coord_queries) | present_q_fields
 
 
 @dataclasses.dataclass

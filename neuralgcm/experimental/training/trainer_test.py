@@ -139,7 +139,9 @@ class TrainerTest(parameterized.TestCase):
         initial_state=state,
         timedelta=dt_slow,
         steps=n_steps,
-        query={'slow': {'x': k, 'time': cx.Scalar()}},
+        queries={'slow': {'x': k, 'time': cx.Scalar()}},
+        prepend_init=True,
+        trim_last=True,
     )
     trajectories.update(trajectory)
     if add_fixed_point_obs_operator:
@@ -149,7 +151,9 @@ class TrainerTest(parameterized.TestCase):
           initial_state=state,
           timedelta=dt_fixed_point,
           steps=n_steps // 2,
-          query={'fixed_point': {'x': cx.Scalar(), 'time': cx.Scalar()}},
+          queries={'fixed_point': {'x': cx.Scalar(), 'time': cx.Scalar()}},
+          prepend_init=True,
+          trim_last=True,
       )
       trajectories.update(trajectory_fixed_point)
     if multiscale:
@@ -160,7 +164,9 @@ class TrainerTest(parameterized.TestCase):
           initial_state=state,
           timedelta=dt_fast,
           steps=n_steps * 4,
-          query={'fast': {'y': kj, 'time': cx.Scalar()}},
+          queries={'fast': {'y': kj, 'time': cx.Scalar()}},
+          prepend_init=True,
+          trim_last=True,
       )
       trajectories.update(trajectory_fast)
 
@@ -536,6 +542,38 @@ class TrainerTest(parameterized.TestCase):
 
     self.assertTrue(metrics_saver.metrics)
     self.assertTrue(os.path.exists(os.path.join(self.test_dir, 'checkpoints')))
+
+  def test_drop_field_in_query_outputs(self):
+    """Tests _drop_field_in_query_outputs."""
+    predictions = {
+        'slow': {
+            'x': cx.field(jnp.zeros((8,)), cx.SizedAxis('k', 8)),
+            'time': cx.field(jnp.zeros(())),
+        },
+        'fast': {
+            'y': cx.field(
+                jnp.zeros((8, 4)), cx.SizedAxis('k', 8), cx.SizedAxis('j', 4)
+            ),
+        },
+    }
+    query = {
+        'slow': {
+            'x': cx.SizedAxis('k', 8),
+            'time': cx.Scalar(),
+        },
+        'fast': {
+            'y': cx.field(
+                jnp.zeros((8, 4)), cx.SizedAxis('k', 8), cx.SizedAxis('j', 4)
+            ),
+        },
+    }
+
+    filtered = trainer._drop_field_in_query_outputs(predictions, query)
+
+    self.assertIn('slow', filtered)
+    self.assertIn('x', filtered['slow'])
+    self.assertIn('time', filtered['slow'])
+    self.assertNotIn('fast', filtered)
 
 
 if __name__ == '__main__':

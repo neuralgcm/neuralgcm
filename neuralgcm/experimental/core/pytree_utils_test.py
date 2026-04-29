@@ -204,6 +204,103 @@ class PytreeUtilsTest(parameterized.TestCase):
       reconstructed = from_dict_fn(dict_repr)
       chex.assert_trees_all_close(reconstructed, inputs)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='non_overlapping',
+          dict_a={'a': 1, 'b': 2},
+          dict_b={'c': 3, 'd': 4},
+          check_values=False,
+          expected={'a': 1, 'b': 2, 'c': 3, 'd': 4},
+      ),
+      dict(
+          testcase_name='overlapping_raise_by_default',
+          dict_a={'a': 1, 'b': 2},
+          dict_b={'b': 3, 'c': 4},
+          check_values=False,
+          should_raise=True,
+      ),
+      dict(
+          testcase_name='overlapping_equal_check_values',
+          dict_a={'a': 1, 'b': 2},
+          dict_b={'b': 2, 'c': 4},
+          check_values=True,
+          expected={'a': 1, 'b': 2, 'c': 4},
+      ),
+      dict(
+          testcase_name='overlapping_unequal_check_values',
+          dict_a={'a': 1, 'b': 2},
+          dict_b={'b': 3, 'c': 4},
+          check_values=True,
+          should_raise=True,
+      ),
+      dict(
+          testcase_name='nested_no_overlap',
+          dict_a={'a': {'b': 1}},
+          dict_b={'a': {'c': 2}},
+          check_values=False,
+          expected={'a': {'b': 1, 'c': 2}},
+      ),
+      dict(
+          testcase_name='nested_overlap_raise_by_default',
+          dict_a={'a': {'b': 1}},
+          dict_b={'a': {'b': 2}},
+          check_values=False,
+          should_raise=True,
+      ),
+      dict(
+          testcase_name='nested_overlap_equal_check_values',
+          dict_a={'a': {'b': 1}},
+          dict_b={'a': {'b': 1}},
+          check_values=True,
+          expected={'a': {'b': 1}},
+      ),
+  )
+  def test_merge_nested_dicts(
+      self, dict_a, dict_b, check_values, expected=None, should_raise=False
+  ):
+    """Tests that merge_nested_dicts works as expected."""
+    if should_raise:
+      with self.assertRaises(ValueError):
+        pytree_utils.merge_nested_dicts(
+            dict_a, dict_b, check_values=check_values
+        )
+    else:
+      actual = pytree_utils.merge_nested_dicts(
+          dict_a, dict_b, check_values=check_values
+      )
+      chex.assert_trees_all_close(actual, expected)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='simple_filter',
+          filter_fn=lambda x: x > 1,
+          dictionary={'a': 1, 'b': 2, 'c': 3},
+          expected={'b': 2, 'c': 3},
+      ),
+      dict(
+          testcase_name='nested_filter',
+          filter_fn=lambda x: x > 1,
+          dictionary={'a': {'b': 1, 'c': 2}, 'd': 3},
+          expected={'a': {'c': 2}, 'd': 3},
+      ),
+      dict(
+          testcase_name='drop_empty_subdict',
+          filter_fn=lambda x: x > 10,
+          dictionary={'a': {'b': 1, 'c': 2}, 'd': 3},
+          expected={},
+      ),
+      dict(
+          testcase_name='mixed_types_filter',
+          filter_fn=lambda x: isinstance(x, str),
+          dictionary={'a': 1, 'b': 'hello', 'c': {'d': 2, 'e': 'world'}},
+          expected={'b': 'hello', 'c': {'e': 'world'}},
+      ),
+  )
+  def test_filter_nested_dict(self, filter_fn, dictionary, expected):
+    """Tests that filter_nested_dict works as expected."""
+    actual = pytree_utils.filter_nested_dict(filter_fn, dictionary)
+    chex.assert_trees_all_equal(actual, expected)
+
 
 if __name__ == '__main__':
   absltest.main()

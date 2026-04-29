@@ -106,7 +106,7 @@ class RunnerTest(parameterized.TestCase):
   )
   def test_inference_runner(self, ensemble_size):
     if ensemble_size is not None:
-      assimilation_noise = random_processes.UniformUncorrelated(
+      assimilation_noise = random_processes.UniformUncorrelated.construct(
           minval=-0.1, maxval=0.1, coord=cx.Scalar(), rngs=nnx.Rngs(0)
       )
     else:

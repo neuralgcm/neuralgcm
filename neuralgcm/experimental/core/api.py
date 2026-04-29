@@ -24,6 +24,7 @@ import coordax as cx
 import fiddle as fdl
 from flax import nnx
 import jax
+import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import diagnostics
@@ -33,6 +34,7 @@ from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import parallelism
 from neuralgcm.experimental.core import pytree_utils
 from neuralgcm.experimental.core import random_processes
+from neuralgcm.experimental.core import scan_utils
 from neuralgcm.experimental.core import typing
 import numpy as np
 import pandas as pd
@@ -645,58 +647,255 @@ jax.tree_util.register_pytree_node(
 )
 
 
+def _unroll_for_queries(
+    model: InferenceModel,
+    initial_state: typing.SimulationState,
+    queries: tuple[typing.Query, ...],
+    timedelta: tuple[np.timedelta64, ...],
+    final_leadtime: np.timedelta64,
+    process_observations_fn: Callable[[typing.Observation], Any] = lambda x: x,
+    dynamic_inputs: typing.Pytree | None = None,
+    prepend_init: bool = False,
+    trim_last: bool = False,
+) -> tuple[typing.SimulationState, typing.Pytree]:
+  """Unrolls a forecast for given queries supporting nested scans.
+
+  This is a helper function that implements the core nested scan logic.
+
+  Assumptions about `queries` and `timedelta`:
+    - `queries`: Must be a tuple of queries, one per nesting level.
+    - `timedelta`: Must be a tuple of timedeltas, one per nesting level,
+      ordered from finest to coarsest frequency.
+    - Leaves in `queries` that are Coordinates must already have a full
+      `TimeDelta` coordinate attached, defining the exact lead times at which
+      they should be observed.
+    - Leaves in `queries` that are Fields must either have a full `TimeDelta`
+      coordinate (indicating they are time-varying queries to be scanned over)
+      or NO `TimeDelta` coordinate (indicating they apply to that specific
+      nesting level and should be closed over in that level' computation).
+    - All time-varying leaves must share a unique final lead time.
+
+  Args:
+    model: The inference model to unroll.
+    initial_state: The starting state for the simulation.
+    queries: A tuple of queries, one per nesting level.
+    timedelta: A tuple of timedeltas, one per nesting level.
+    final_leadtime: The shared final lead time for all queries.
+    process_observations_fn: A function to post-process raw observations.
+    dynamic_inputs: Optional time-varying inputs for the model.
+    prepend_init: If True, includes observations at t=0 in the output.
+    trim_last: If True, excludes the last observation from the output.
+
+  Returns:
+    A tuple containing:
+      - final_state: The state of the simulation after the last step.
+      - trajectory: A pytree of collected observations.
+  """
+  dt = model.timestep
+  if dt != timedelta[0]:
+    timedelta = (dt,) + timedelta
+    queries = ({},) + queries
+
+  if np.any(np.diff(timedelta) <= np.timedelta64(0, 's')):
+    raise ValueError(
+        'Timedeltas must be strictly increasing (finest to coarsest).'
+    )
+  coord_or_field = lambda x: cx.is_field(x) or cx.is_coord(x)  # tree helper.
+  timedelta_coords = [  # coordinates for each nesting level.
+      coordinates.TimeDelta((1 + np.arange(final_leadtime // td)) * td)
+      for td in timedelta
+  ]
+
+  def _out_spec(x, td):
+    coord = x.coordinate if cx.is_field(x) else x
+    if 'timedelta' not in coord.dims:
+      coord = cx.coords.compose(td, coord)
+    return coord
+
+  outputs_spec = {}  # contains flat coordinates spec for the final outputs.
+  # pylint: disable=cell-var-from-loop
+  for q, td in zip(queries, timedelta_coords, strict=True):
+    spec = jax.tree.map(lambda x: _out_spec(x, td), q, is_leaf=coord_or_field)
+    outputs_spec = pytree_utils.merge_nested_dicts(outputs_spec, spec)
+
+  all_steps = scan_utils.nested_scan_steps(outputs_spec, dt=dt)
+
+  # Timedeltas in queries have been saved in outputs_spec. We can trim them away
+  # from coordinates to make them directly compatible with `observe` call.
+  def _remove_td(x, td):
+    if cx.is_field(x):
+      return x
+    return cx.coords.replace_axes(x, td, cx.Scalar()) if td in x.axes else x
+
+  queries = tuple(
+      jax.tree.map(lambda x: _remove_td(x, td), q, is_leaf=coord_or_field)
+      for q, td in zip(queries, timedelta_coords, strict=True)
+  )
+  # pylint: enable=cell-var-from-loop
+
+  is_scannable_field = lambda x: cx.is_field(x) and 'timedelta' in x.dims
+  is_close_over_query = lambda x: not is_scannable_field(x)
+  scannable_field_queries_specs = tuple(
+      pytree_utils.filter_nested_dict(is_scannable_field, q) for q in queries
+  )
+  queries_to_close_over = tuple(
+      pytree_utils.filter_nested_dict(is_close_over_query, q) for q in queries
+  )
+  # To nest data for scans we combine all queries, extract scannable fields and
+  # nest them according to the full scan structure.
+  merged_query = functools.reduce(pytree_utils.merge_nested_dicts, queries, {})
+  fields_in_queries_to_scan_over = scan_utils.nest_data_for_scans(
+      pytree_utils.filter_nested_dict(is_scannable_field, merged_query),
+      scan_steps=all_steps,
+      scan_specs=scannable_field_queries_specs,
+  )
+
+  # Build and run the nested scan function.
+  def build_scan_fn(nest_level: int):
+    if nest_level == -1:  # Base case body_fn simply calls advance.
+
+      def _innermost(state, scannable_inputs):
+        del scannable_inputs  # unused.
+        next_state = model.advance(state, dynamic_inputs)
+        return next_state, {}  # no nested sub-timestep observations.
+
+      return _innermost
+
+    length = all_steps[nest_level]
+    static_q = queries_to_close_over[nest_level]
+    inner_fn = build_scan_fn(nest_level - 1)
+
+    def _with_obs(state, fields_in_q_to_scan):
+      # scannable_inputs is a tuple of pytrees. At the current nest_level,
+      # the leaves have a leading dimension of length `length`.
+      scanned_q = fields_in_q_to_scan[-1]
+      inner_fields_in_q_to_scan = fields_in_q_to_scan[:-1]
+      next_state, inner_obs = inner_fn(state, inner_fields_in_q_to_scan)
+      in_queries = pytree_utils.merge_nested_dicts(static_q, scanned_q)
+      raw_obs = model.observe(next_state, in_queries, dynamic_inputs)
+      obs = process_observations_fn(raw_obs)
+      merged_obs = pytree_utils.merge_nested_dicts(inner_obs, obs)
+      return next_state, merged_obs
+
+    def _scan_level(state, fields_in_q_to_scan):
+      return jax.lax.scan(
+          _with_obs, state, fields_in_q_to_scan[: nest_level + 1], length=length
+      )
+
+    return _scan_level
+
+  scan_fn = build_scan_fn(len(all_steps) - 1)
+  final, observations = scan_fn(initial_state, fields_in_queries_to_scan_over)
+  unroll = scan_utils.ravel_data_from_nested_scans(observations, outputs_spec)
+
+  if prepend_init:  # prepends t0 observations to raveled result.
+    dt0 = np.array([np.timedelta64(0, 's')])
+    t0_query = jax.tree.map(
+        lambda x: x.isel(timedelta=0) if 'timdelta' in x.dims else x,
+        merged_query,
+        is_leaf=coord_or_field,
+    )
+    t0_raw_obs = model.observe(initial_state, t0_query, dynamic_inputs)
+    t0_obs = process_observations_fn(t0_raw_obs)
+    # expand leading dimension. Coordax auto-adds unlabeled dimension.
+    t0_obs_expanded = jax.tree.map(lambda x: x[None, ...], t0_obs)
+    concat_array_fn = lambda x, y: jnp.concatenate([x, y], axis=0)
+    concat_trees_fn = lambda tx, ty: jax.tree.map(concat_array_fn, tx, ty)
+    combined = jax.tree.map(
+        cx.cpmap(concat_trees_fn),
+        t0_obs_expanded,
+        cx.untag(unroll, 'timedelta'),
+        is_leaf=cx.is_field,
+    )
+
+    def _tag_td(f: cx.Field, coord: cx.Coordinate) -> cx.Field:
+      orig_td = cx.coords.extract(coord, coordinates.TimeDelta)
+      new_td = coordinates.TimeDelta(np.concatenate([dt0, orig_td.deltas]))
+      return f.tag(new_td)
+
+    unroll = jax.tree.map(_tag_td, combined, outputs_spec, is_leaf=cx.is_field)
+
+  if trim_last:
+    unroll = jax.tree.map(
+        lambda x: x.isel(timedelta=slice(None, -1)), unroll, is_leaf=cx.is_field
+    )
+
+  return final, unroll
+
+
 @_checked_jit(
     static_argnames=[
         'timedelta',
         'steps',
         'process_observations_fn',
-        'start_with_input',
+        'prepend_init',
+        'trim_last',
     ],
 )
 def unroll_from_advance(
-    forecast_system: InferenceModel,
+    model: InferenceModel,
     initial_state: typing.SimulationState,
-    timedelta: np.timedelta64,
+    queries: tuple[typing.Query, ...] | typing.Query,
+    timedelta: tuple[np.timedelta64, ...] | np.timedelta64,
     steps: int,
-    query: typing.Query,
+    *,
     process_observations_fn: Callable[[typing.Observation], Any] = lambda x: x,
     dynamic_inputs: typing.Pytree | None = None,
-    start_with_input: bool = True,
+    prepend_init: bool = False,
+    trim_last: bool = False,
 ) -> tuple[typing.SimulationState, typing.Pytree]:
-  """Unrolls a forecast using functional advance and observe calls."""
-  inner_steps = calculate_sub_steps(forecast_system.timestep, timedelta)
+  """Unrolls a forecast using functional advance and observe calls.
 
-  def _advance_n_steps(
-      simulation_state: typing.SimulationState,
-  ) -> typing.SimulationState:
-    def body_fn(state, _):
-      next_state = forecast_system.advance(state, dynamic_inputs)
-      return next_state, None
+  This function performs a simulation rollout by repeatedly calling `advance`
+  on the `model` and collecting observations at specified intervals
+  defined by `timedelta` and `query`. It supports nested scan loops for
+  collecting observations at different frequencies. When multiple timedeltas are
+  requested, they must be ordered from finest to coarsest frequency and must be
+  congruent.
 
-    if inner_steps > 1:
-      final_state, _ = jax.lax.scan(
-          body_fn, simulation_state, xs=None, length=inner_steps
-      )
-      return final_state
-    else:
-      return forecast_system.advance(simulation_state, dynamic_inputs)
+  Args:
+    model: The inference model to unroll.
+    initial_state: The starting state for the simulation.
+    queries: Single or nested queries specifying what to observe at each level
+      of nesting. If a tuple, it must have the same length as `timedelta`.
+    timedelta: A single timedelta or a tuple of timedeltas specifying the
+      observation frequency. If a tuple, it must be ordered from finest to
+      coarsest frequency. Timedeltas must be congruent.
+    steps: The number of steps to take at the outermost timedelta level.
+    process_observations_fn: A function to post-process raw observations.
+    dynamic_inputs: Optional time-varying inputs for the model.
+    prepend_init: If True, includes observations at t=0 in the output.
+    trim_last: If True, excludes the last observation from the output.
 
-  def _scan_step(state, _):
-    next_state = _advance_n_steps(state)
-    if start_with_input:
-      raw_obs = forecast_system.observe(state, query, dynamic_inputs)
-    else:
-      raw_obs = forecast_system.observe(next_state, query, dynamic_inputs)
-    observation = process_observations_fn(raw_obs)
-    return next_state, observation
+  Returns:
+    A tuple containing:
+      - final_state: The state of the simulation at final lead time.
+      - unroll: A trajectory of observations matching the requested queries and
+        timedeltas.
+  """
+  is_nested = list({isinstance(timedelta, tuple), isinstance(queries, tuple)})
+  if len(is_nested) != 1:
+    raise ValueError(
+        'timedelta and query must be both tuples or both not tuples'
+    )
+  [is_nested] = is_nested  # pylint: disable=unbalanced-tuple-unpacking
 
-  final_state, observations = jax.lax.scan(
-      _scan_step, initial_state, xs=None, length=steps
+  if not is_nested:
+    timedelta = (timedelta,)
+    queries = (queries,)
+
+  final_timedelta = timedelta[-1] * steps
+  return _unroll_for_queries(
+      model,
+      initial_state,
+      queries,
+      timedelta,
+      final_timedelta,
+      process_observations_fn,
+      dynamic_inputs,
+      prepend_init,
+      trim_last,
   )
-  time_steps = int(not start_with_input) + np.arange(steps)
-  time_coord = coordinates.TimeDelta(time_steps * timedelta)
-  observations = cx.tag(observations, time_coord)
-  return final_state, observations
 
 
 @_checked_jit(
@@ -704,31 +903,120 @@ def unroll_from_advance(
         'timedelta',
         'steps',
         'process_observations_fn',
-        'start_with_input',
+        'prepend_init',
+        'trim_last',
     ],
 )
 def forecast_steps(
-    forecast_system: InferenceModel,
+    model: InferenceModel,
     inputs: dict[str, dict[str, cx.Field]],
-    timedelta: np.timedelta64,
+    queries: typing.Query | tuple[typing.Query, ...],
+    timedelta: np.timedelta64 | tuple[np.timedelta64, ...],
     steps: int,
-    query: typing.Query,
+    *,
     dynamic_inputs: typing.Pytree | None = None,
     rng: cx.Field | typing.PRNGKeyArray | None = None,
-    start_with_input: bool = True,
+    prepend_init: bool = False,
+    trim_last: bool = False,
     process_observations_fn: Callable[[typing.Observation], Any] = lambda x: x,
 ) -> tuple[typing.SimulationState, typing.Pytree]:
-  """Runs a forecast from an inputs for a specified number of steps."""
+  """Runs a forecast from inputs for a specified number of steps.
+
+  This function first assimilates the provided `inputs` to create an initial
+  simulation state, and then calls `unroll_from_advance` to perform the rollout.
+
+  Args:
+    model: The inference model to unroll.
+    inputs: Input fields used for assimilation.
+    queries: Single or nested queries specifying what to observe at each level
+      of nesting. If a tuple, it must have the same length as `timedelta`.
+    timedelta: A single timedelta or a tuple of timedeltas specifying the
+      observation frequency. If a tuple, it must be ordered from finest to
+      coarsest frequency. Timedeltas must be congruent.
+    steps: The number of steps at the outermost level.
+    dynamic_inputs: Optional time-varying inputs for the model.
+    rng: Optional random number generator state.
+    prepend_init: If True, includes observations at t=0 in the output.
+    trim_last: If True, excludes the last observation from the output.
+    process_observations_fn: A function to post-process raw observations.
+
+  Returns:
+    A tuple containing:
+      - final_state: The state of the simulation at final lead time.
+      - unroll: A trajectory of observations matching the requested queries and
+        timedeltas.
+  """
   if rng is not None and not isinstance(rng, cx.Field):
     rng = cx.field(rng, cx.Scalar())
-  initial_state = forecast_system.assimilate(inputs, dynamic_inputs, rng)
+  initial_state = model.assimilate(inputs, dynamic_inputs, rng)
   return unroll_from_advance(
-      forecast_system=forecast_system,
+      model=model,
       initial_state=initial_state,
-      query=query,
-      steps=steps,
+      queries=queries,
       timedelta=timedelta,
-      dynamic_inputs=dynamic_inputs,
-      start_with_input=start_with_input,
+      steps=steps,
       process_observations_fn=process_observations_fn,
+      dynamic_inputs=dynamic_inputs,
+      prepend_init=prepend_init,
+      trim_last=trim_last,
+  )
+
+
+def unroll_for_template(
+    model: InferenceModel,
+    initial_state: typing.SimulationState,
+    template: dict[str, dict[str, cx.Field | cx.Coordinate]],
+    dynamic_inputs: typing.Pytree | None = None,
+    process_observations_fn: Callable[[typing.Observation], Any] = lambda x: x,
+) -> tuple[typing.SimulationState, typing.Pytree]:
+  """Unrolls a forecast based on a template specifying desired outputs.
+
+  This function infers the required observation frequencies and queries from the
+  `template` argument. Template is specified as a nested dictionary of
+  Fields or Coordinates. Coordinate leaves must have Timedelta axes with
+  congruent timedeltas and share a unique final lead time. Field leaves are
+  used to specify field in queries components and are also expected to have a
+  TimeDelta axis.
+
+  Args:
+    model: The inference model to unroll.
+    initial_state: The starting state for the simulation.
+    template: A nested dictionary of Fields or Coordinates that defines the
+      desired output structure and time coordinates. Coordinate leaves indicate
+      the queried fields and Field leaves specify dynamic queries data.
+    dynamic_inputs: Optional time-varying inputs for the model.
+    process_observations_fn: A function to post-process raw observations.
+
+  Returns:
+    A tuple containing:
+      - final_state: The state of the simulation at final lead time.
+      - unroll: A trajectory of observations matching the template structure.
+  """
+  dt = model.timestep
+  to_coord = lambda x: x.coordinate if cx.is_field(x) else x
+  combined_coords = jax.tree.map(
+      to_coord, template, is_leaf=lambda x: cx.is_field(x) or cx.is_coord(x)
+  )
+  final_leadtime = scan_utils.shared_final_leadtime(combined_coords)
+
+  dt_and_specs = scan_utils.group_by_timedeltas(combined_coords, dt=dt)
+  # Construct queries and timedeltas replacing coordinates with template values.
+  timedeltas = []
+  queries = []
+  for td, spec in dt_and_specs:
+    timedeltas.append(td)
+    q = pytree_utils.replace_with_matching_or_default(
+        spec, template, check_used_all_replace_keys=False
+    )
+    queries.append(q)
+
+  return _unroll_for_queries(
+      model=model,
+      initial_state=initial_state,
+      queries=tuple(queries),
+      timedelta=tuple(timedeltas),
+      final_leadtime=final_leadtime,
+      process_observations_fn=process_observations_fn,
+      dynamic_inputs=dynamic_inputs,
+      prepend_init=False,
   )

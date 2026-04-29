@@ -172,6 +172,43 @@ def unflatten_dict(
   return result
 
 
+def merge_nested_dicts(
+    dict_a: dict[str, Any],
+    dict_b: dict[str, Any],
+    *,
+    check_values: bool = False,
+) -> dict[str, Any]:
+  """Merges dictionaries recursively.
+
+  Args:
+    dict_a: First dictionary.
+    dict_b: Second dictionary.
+    check_values: If True, allows overlapping keys if their values are equal. If
+      False (default), raises ValueError on any overlapping keys (unless both
+      values are dictionaries, in which case it recurses).
+
+  Returns:
+    The merged dictionary.
+  """
+  result = dict(dict_a)
+  for key, value in dict_b.items():
+    if key in result:
+      if isinstance(result[key], dict) and isinstance(value, dict):
+        result[key] = merge_nested_dicts(
+            result[key], value, check_values=check_values
+        )
+      elif check_values:
+        if result[key] != value:
+          raise ValueError(
+              f'Conflicting values for key {key!r}: {result[key]} != {value}'
+          )
+      else:
+        raise ValueError(f'Duplicate key found: {key!r}')
+    else:
+      result[key] = value
+  return result
+
+
 def replace_with_matching_or_default(
     x: dict[str, Any],
     replace: dict[str, Any],
@@ -187,3 +224,30 @@ def replace_with_matching_or_default(
       raise ValueError(f'Keys {unused_replace_keys} not present in {x.keys()=}')
   flat_result = {k: flat_replace.get(k, default) for k in flat_x.keys()}
   return unflatten_dict(flat_result, empty_keys)
+
+
+def filter_nested_dict(
+    filter_fn: Callable[[Any], bool],
+    dictionary: dict[str, Any],
+) -> dict[str, Any]:
+  """Returns a filtered `dictionary` recursively.
+
+  Args:
+    filter_fn: A function that takes a value and returns True if it should be
+      included in the result.
+    dictionary: The dictionary to filter.
+
+  Returns:
+    A new dictionary containing only the elements that satisfy `filter_fn`.
+    Nested dictionaries are filtered recursively. If a nested dictionary
+    becomes empty after filtering, it is excluded from the result.
+  """
+  result = {}
+  for k, v in dictionary.items():
+    if isinstance(v, dict):
+      filtered_v = filter_nested_dict(filter_fn, v)
+      if filtered_v:
+        result[k] = filtered_v
+    elif filter_fn(v):
+      result[k] = v
+  return result

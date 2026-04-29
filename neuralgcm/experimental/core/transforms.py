@@ -57,6 +57,10 @@ _SUPPORTED_BINARY_OPS = {
     'divide': operator.truediv,
     'add': operator.add,
     'multiply': operator.mul,
+    'less_than': operator.lt,
+    'greater_than': operator.gt,
+    'less_equal': operator.le,
+    'greater_equal': operator.ge,
 }
 
 # pylint: disable=g-classes-have-attributes

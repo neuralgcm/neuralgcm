@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import math
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -21,6 +22,7 @@ import coordax as cx
 from flax import nnx
 import jax
 import jax.numpy as jnp
+import jax_datetime as jdt
 from neuralgcm.experimental.core import coordinates
 from neuralgcm.experimental.core import data_specs
 from neuralgcm.experimental.core import pytree_utils
@@ -280,6 +282,19 @@ class NestDataForScansUtilsTest(parameterized.TestCase):
         expected_nested_data = ({}, cx.untag(inputs['data'], timedelta))
         chex.assert_trees_all_equal(nested_data, expected_nested_data)
 
+  def test_nest_data_with_datetime(self):
+    dt = np.timedelta64(1, 'h')
+    data_dt = np.timedelta64(6, 'h')
+    timedelta = coordinates.TimeDelta(range_from_one(4) * data_dt)
+    times = jdt.Datetime.from_isoformat('2001-04-05') + timedelta.deltas
+    inputs = {'time': cx.field(times, timedelta)}
+    nested_data = scan_utils.nest_data_for_scans(inputs, dt)
+    expected_nested_data = (
+        {},
+        cx.untag(inputs, timedelta),
+    )
+    chex.assert_trees_all_equal(nested_data, expected_nested_data)
+
   def test_nest_data_for_scans_with_multiple_timedeltas(self):
     dt = np.timedelta64(1, 'h')
     x = cx.SizedAxis('x', 4)
@@ -316,6 +331,42 @@ class NestDataForScansUtilsTest(parameterized.TestCase):
       actual = scan_utils.nest_data_for_scans(inputs['data'], dt)
       expected = tuple(x.get('data', {}) for x in expected_nested_data)
       chex.assert_trees_all_equal(actual, expected)
+
+  def test_nest_data_for_scans_with_explicit_steps_and_specs(self):
+    x = cx.SizedAxis('x', 7)
+    dt = np.timedelta64(1, 'h')
+    scan_steps = (3, 2, 5, 4)  # explicit 4-level nesting.
+    # Demo data with 3hr granularity --> will appear in second nesting level.
+    data_length = math.prod(scan_steps[1:])
+    data_dt = math.prod(scan_steps[:1]) * dt
+    timedelta = coordinates.TimeDelta(range_from_one(data_length) * data_dt)
+    ones_like = lambda c: cx.field(np.ones(c.shape), c)
+    inputs = {'u': ones_like(cx.coords.compose(timedelta, x))}
+
+    scan_specs = ({}, {'u': cx.coords.compose(timedelta, x)}, {}, {})
+    nested_data = scan_utils.nest_data_for_scans(
+        inputs, scan_steps=scan_steps, scan_specs=scan_specs
+    )
+
+    dummy_0 = cx.DummyAxis(None, 2)
+    dummy_1 = cx.DummyAxis(None, 3)
+    expected_nested_data = (
+        {},
+        {'u': cx.field(np.ones((4, 5, 2, 7)), None, None, None, x)},
+        {},
+        {},
+    )
+    chex.assert_trees_all_equal(nested_data, expected_nested_data)
+
+  def test_nest_data_for_scans_raises_on_inconsistent_lengths(self):
+    td = coordinates.TimeDelta(range_from_one(6) * np.timedelta64(1, 'h'))
+    inputs = {'u': cx.field(np.ones((6,)), td)}
+    with self.assertRaisesRegex(
+        ValueError, 'scan_steps and scan_specs must have the same length'
+    ):
+      scan_utils.nest_data_for_scans(
+          inputs, scan_steps=(6,), scan_specs=({}, {})
+      )
 
 
 class NestedScanExampleTest(parameterized.TestCase):

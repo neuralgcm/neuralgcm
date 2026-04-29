@@ -203,6 +203,21 @@ def _remove_timedelta(
   )
 
 
+def _drop_field_in_query_outputs(
+    predictions: PyTree, query: PyTree
+) -> PyTree:
+  """Removes outputs from predictions that correspond to fields in query."""
+  flat_preds, empty_keys = pytree_utils.flatten_dict(predictions)
+  flat_query, _ = pytree_utils.flatten_dict(query)
+
+  filtered_flat_preds = {
+      k: v for k, v in flat_preds.items()
+      if not cx.is_field(flat_query.get(k))
+  }
+
+  return pytree_utils.unflatten_dict(filtered_flat_preds, empty_keys)
+
+
 def _drop_empty_agg_state(
     in_dict: dict[str, aggregation.AggregationState],
 ) -> dict[str, aggregation.AggregationState]:
@@ -957,7 +972,9 @@ class RolloutTrainer:
     process_fn = lambda proc_module, target_slice: proc_module(target_slice)
     target_struct = nnx.eval_shape(process_fn, process_obs, target_slice_struct)
     query_struct = data_specs.construct_query(data_slice_struct, queries_spec)
-    dummy_observe = lambda model, proc_module, q: proc_module(model.observe(q))
+    dummy_observe = lambda model, proc_module, q: proc_module(
+        _drop_field_in_query_outputs(model.observe(q), q)
+    )
     prediction_struct = nnx.eval_shape(
         dummy_observe, eb_model, process_obs, query_struct
     )
@@ -998,6 +1015,7 @@ class RolloutTrainer:
 
     def observe_fn(model: api.Model, query: typing.Queries):
       predictions = model.observe(query)
+      predictions = _drop_field_in_query_outputs(predictions, query)
       predictions = self.training_mesh.with_sharding_constraint(
           predictions, 'physics'
       )

@@ -189,6 +189,46 @@ class WindVectorRMSE(base.Metric):
     return {k: cx.cmap(jnp.sqrt)(v) for k, v in wind_vector_se.items()}
 
 
+@dataclasses.dataclass
+class PredictionPassthrough(base.PerVariableStatistic):
+  """Simply returns predictions."""
+  copy_nans_from_targets: bool = False
+
+  @property
+  def unique_name(self) -> str:
+    return 'PredictionPassthrough'
+
+  def _compute_per_variable(
+      self, predictions: cx.Field, targets: cx.Field
+  ) -> cx.Field:
+    result = predictions + 0.0 * targets
+    if self.copy_nans_from_targets:
+      result = cx.cmap(lambda r, t: jnp.where(jnp.isnan(t), jnp.nan, r))(
+          result, targets
+      )
+    return result
+
+
+@dataclasses.dataclass
+class TargetPassthrough(base.PerVariableStatistic):
+  """Simply returns targets."""
+  copy_nans_from_predictions: bool = False
+
+  @property
+  def unique_name(self) -> str:
+    return 'TargetPassthrough'
+
+  def _compute_per_variable(
+      self, predictions: cx.Field, targets: cx.Field
+  ) -> cx.Field:
+    result = targets + 0.0 * predictions
+    if self.copy_nans_from_predictions:
+      result = cx.cmap(lambda r, p: jnp.where(jnp.isnan(p), jnp.nan, r))(
+          result, predictions
+      )
+    return result
+
+
 MSE = SquaredError
 MAE = AbsoluteError
 Bias = Error

@@ -344,7 +344,7 @@ class DynamicalSystem(hk.Module):
       forcing_data: ForcingData,
       start_with_input: bool = False,
       post_process_fn: Callable = _identity,
-  ) -> ...:
+  ):
     """Returns a final model state and trajectory."""
 
     def step_fn(x: PyTreeState) -> PyTreeState:

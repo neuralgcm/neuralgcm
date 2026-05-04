@@ -139,7 +139,9 @@ class TrainerTest(parameterized.TestCase):
         initial_state=state,
         timedelta=dt_slow,
         steps=n_steps,
-        query={'slow': {'x': k, 'time': cx.Scalar()}},
+        queries={'slow': {'x': k, 'time': cx.Scalar()}},
+        prepend_init=True,
+        trim_last=True,
     )
     trajectories.update(trajectory)
     if add_fixed_point_obs_operator:
@@ -149,7 +151,9 @@ class TrainerTest(parameterized.TestCase):
           initial_state=state,
           timedelta=dt_fixed_point,
           steps=n_steps // 2,
-          query={'fixed_point': {'x': cx.Scalar(), 'time': cx.Scalar()}},
+          queries={'fixed_point': {'x': cx.Scalar(), 'time': cx.Scalar()}},
+          prepend_init=True,
+          trim_last=True,
       )
       trajectories.update(trajectory_fixed_point)
     if multiscale:
@@ -160,7 +164,9 @@ class TrainerTest(parameterized.TestCase):
           initial_state=state,
           timedelta=dt_fast,
           steps=n_steps * 4,
-          query={'fast': {'y': kj, 'time': cx.Scalar()}},
+          queries={'fast': {'y': kj, 'time': cx.Scalar()}},
+          prepend_init=True,
+          trim_last=True,
       )
       trajectories.update(trajectory_fast)
 

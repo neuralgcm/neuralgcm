@@ -219,7 +219,8 @@ class ValidateInputsTest(parameterized.TestCase):
     with self.subTest('non_optional_is_missing'):
       inputs_no_u = {'data_key': {'v': cx.field(rng.randn(*y.shape), y)}}
       with self.assertRaisesWithLiteralMatch(
-          ValueError, 'Missing non-optional variables "u"'
+          ValueError,
+          'Missing non-optional variable "u" in "data_key/"',
       ):
         data_specs.validate_inputs(inputs_no_u, inputs_spec)
 

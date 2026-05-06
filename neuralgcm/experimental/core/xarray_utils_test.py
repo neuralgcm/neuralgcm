@@ -141,6 +141,20 @@ class ReadFromXarrayTest(parameterized.TestCase):
     cx.testing.assert_fields_equal(read_data['data']['u'], fields['u'])
     self.assertNotIn('v', read_data['data'])  # OptionalSpec is not present.
 
+  def test_read_from_xarray_missing_dataset_for_all_optional_spec(self):
+    x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
+    y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))
+    rng = np.random.RandomState(42)
+    fields = {'u': cx.field(rng.randn(*x.shape), x)}
+    nested_data = xarray_utils.nested_fields_to_xarray({'data': fields})
+    inputs_spec = {
+        'data': {'u': x},
+        'missing_data': {'v': data_specs.OptionalSpec(spec=y)},
+    }
+    read_data = xarray_utils.read_from_xarray(nested_data, inputs_spec)
+    cx.testing.assert_fields_equal(read_data['data']['u'], fields['u'])
+    self.assertNotIn('missing_data', read_data)
+
   def test_read_from_xarray_with_missing_non_optional_variable_raises(self):
     x = cx.LabeledAxis('x', np.linspace(0, np.pi, num=4))
     y = cx.LabeledAxis('y', np.linspace(0, np.e, num=5))

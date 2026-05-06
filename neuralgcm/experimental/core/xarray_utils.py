@@ -215,12 +215,7 @@ def read_from_xarray(
 
   result = {}
   for data_key, data_spec in in_spec.items():
-    if data_key not in nested_data:
-      raise ValueError(
-          f'Missing dataset for source {data_key!r} in '
-          f'nested_data. Available keys: {list(nested_data.keys())}'
-      )
-    dataset = nested_data[data_key]
+    dataset = nested_data.get(data_key, {})
     specs, fields, missing_vars = {}, {}, []
     for k, v in data_spec.items():
       spec, is_optional = data_specs.unwrap_optional(v)
@@ -235,6 +230,8 @@ def read_from_xarray(
           f'Specs for {data_key!r} contains {missing_vars=} that are '
           f'not in the corresponding dataset with keys {list(dataset.keys())}'
       )
+    if not fields:
+      continue
 
     result[data_key] = {}
     target_coords = data_specs.finalize_spec_pytree(specs, fields)

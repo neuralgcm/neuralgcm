@@ -87,10 +87,12 @@ class DynamicInputSlice(DynamicInputModule):
       keys_to_coords: dict[str, cx.Coordinate],
       observation_key: str,
       time_axis: int = 0,
+      optional_dynamic_spec: bool = False,
   ):
     self.keys_to_coords = keys_to_coords
     self.observation_key = observation_key
     self.time_axis = time_axis
+    self.optional_dynamic_spec = optional_dynamic_spec
     mock_dt = coordinates.TimeDelta(np.array([np.timedelta64(1, 'h')]))
     self.time = DynamicInput(
         cx.field(jdt.to_datetime('1970-01-01T00')[np.newaxis], mock_dt)
@@ -105,6 +107,8 @@ class DynamicInputSlice(DynamicInputModule):
       self, dynamic_inputs: dict[str, dict[str, cx.Field]]
   ) -> None:
     if self.observation_key not in dynamic_inputs:
+      if self.optional_dynamic_spec:
+        return
       # TODO(dkochkov): Consider allowing partial updates.
       raise ValueError(
           f'Observation key {self.observation_key!r} not found in dynamic'
@@ -154,9 +158,13 @@ class DynamicInputSlice(DynamicInputModule):
       self,
   ) -> dict[str, dict[str, cx.Coordinate | data_specs.CoordLikeSpec]]:
     """Returns coordinate specification of the data this module ingests."""
+    if self.optional_dynamic_spec:
+      wrap = data_specs.OptionalSpec
+    else:
+      wrap = lambda c: c
     specs = {
-        k: data_specs.CoordSpec.with_any_timedelta(v)
+        k: wrap(data_specs.CoordSpec.with_any_timedelta(v))
         for k, v in self.keys_to_coords.items()
     }
-    specs['time'] = data_specs.CoordSpec.with_any_timedelta(cx.Scalar())
+    specs['time'] = wrap(data_specs.CoordSpec.with_any_timedelta(cx.Scalar()))
     return {self.observation_key: specs}

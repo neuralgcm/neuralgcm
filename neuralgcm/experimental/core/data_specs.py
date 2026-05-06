@@ -427,7 +427,9 @@ def validate_inputs(
         if is_optional:
           continue
         else:
-          raise ValueError(f'Missing non-optional variables "{var_name}"')
+          raise ValueError(
+              f'Missing non-optional variable "{var_name}" in "{dataset_key}/"'
+          )
 
       x = in_data[var_name]
       data_coord = x.coordinate if cx.is_field(x) else x

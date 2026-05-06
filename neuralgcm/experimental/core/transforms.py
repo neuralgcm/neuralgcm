@@ -1647,7 +1647,7 @@ class StreamNorm(TransformABC):
       compute_masks: Transform | None = None,
       epsilon: float = 1e-11,
       skip_unspecified: bool = False,
-      skip_nans: bool = False,
+      skip_nans: bool = True,
       allow_missing: bool = True,
   ):
     """Custom constructor based on inputs struct that should be normalized."""

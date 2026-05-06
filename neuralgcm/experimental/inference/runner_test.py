@@ -93,9 +93,12 @@ class MockModel(api.Model):
 
   def observe(self, query: typing.Query) -> typing.Observation:
     prognostics = self.prognostics.get_value()
-    return {
-        'state': {k: v for k, v in prognostics.items() if k in query['state']}
-    }
+    result = {}
+    if 'state' in query:
+      result['state'] = {
+          k: v for k, v in prognostics.items() if k in query['state']
+      }
+    return result
 
 
 class RunnerTest(parameterized.TestCase):

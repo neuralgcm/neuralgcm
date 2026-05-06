@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
+
+from typing import Any
 from absl.testing import absltest
 from absl.testing import parameterized
+import chex
 import coordax as cx
 from fiddle.experimental import auto_config
 from flax import nnx
@@ -26,8 +30,12 @@ from neuralgcm.experimental.core import dynamic_io
 from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import observation_operators
 from neuralgcm.experimental.core import random_processes
+from neuralgcm.experimental.core import transforms as trxt
 from neuralgcm.experimental.core import typing
 import numpy as np
+
+
+map_fields = functools.partial(jax.tree.map, is_leaf=cx.is_field)
 
 
 @nnx.dataclass
@@ -43,6 +51,7 @@ class MockModel(api.Model):
   data_key: str = 'prognostics'
   prognostic_var_key: str = 'population'
   dynamic_modulation_key: str = 'modulation'
+  operators: dict[str, Any] = nnx.data(default_factory=dict)
 
   def __post_init__(self):
     self.prognostics = typing.Prognostic({
@@ -78,11 +87,13 @@ class MockModel(api.Model):
   @module_utils.ensure_unchanged_state_structure
   def observe(self, query: typing.Query) -> typing.Observation:
     prognostic = self.prognostics.get_value()
+    result = {}
     operators = {
         self.data_key: observation_operators.DataObservationOperator(prognostic)
-    }
-    result = {}
+    } | self.operators
     for k, q in query.items():
+      if k not in operators:
+        raise ValueError(f'No operator for query key: {k}')
       result[k] = operators[k].observe(prognostic, q)
     return result
 
@@ -105,10 +116,32 @@ def construct_mock_model() -> MockModel:
       coord=x,
       rngs=nnx.Rngs(0),
   )
+  # Adding demo operators with different output types for testing purposes.
+  # x_at_0: Selects values at x=0 coordinate.
+  x_at_0 = trxt.Sequential([trxt.SelectKeys('population'), trxt.Isel({'x': 0})])
+  # below_threshold: Selects values where population < thresholds.
+  get_population_thresholds = trxt.Sequential([
+      trxt.SelectKeys('thresholds'),
+      trxt.RenameKeys({'thresholds': 'population'}),
+  ])
+  below_threshold = trxt.EntrywiseBinaryOp(
+      op='less_than',
+      operand_transform=get_population_thresholds,
+      inputs_transform=trxt.SelectKeys('population'),
+  )
+
+  operators = {
+      'x_at_0': observation_operators.TransformObservationOperator(x_at_0),
+      'below_threshold': observation_operators.TransformObservationOperator(
+          transform=below_threshold,
+          requested_fields_from_query=('thresholds',),
+      ),
+  }
   return MockModel(
       x=x,
       modulation_factor=modulation_factor,
       random_increment=random_increment,
+      operators=operators or {},
   )
 
 
@@ -118,7 +151,7 @@ class ModelApiTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     self.model = construct_mock_model()
-    self.t0 = jdt.Datetime.from_isoformat('2000-01-01')
+    t0 = jdt.Datetime.from_isoformat('2000-01-01')
     self.x = self.model.x
     self.timedelta = coordinates.TimeDelta(
         np.arange(3) * np.timedelta64(1, 'h')
@@ -127,7 +160,7 @@ class ModelApiTest(parameterized.TestCase):
     self.inputs = as_jnp({
         'prognostics': {
             'population': cx.field(np.ones(self.x.shape), self.x),
-            'time': cx.field(self.t0),
+            'time': cx.field(t0),
         }
     })
     self.dynamic_inputs = as_jnp({
@@ -137,18 +170,15 @@ class ModelApiTest(parameterized.TestCase):
                 self.timedelta,
                 self.x,
             ),
-            'time': cx.field(self.t0 + self.timedelta.deltas, self.timedelta),
+            'time': cx.field(t0 + self.timedelta.deltas, self.timedelta),
         },
     })
     self.batch_axis = cx.SizedAxis('batch', 5)
     self.ensemble_axis = cx.SizedAxis('ensemble', 3)
-    self.batched_inputs = jax.tree.map(
-        lambda x: x.broadcast_like(
-            cx.coords.compose(self.batch_axis, x.coordinate)
-        ),
-        self.inputs,
-        is_leaf=cx.is_field,
+    replicate_batch_axis = lambda x: x.broadcast_like(
+        cx.coords.compose(self.batch_axis, x.coordinate)
     )
+    self.batched_inputs = map_fields(replicate_batch_axis, self.inputs)
     self.rng = cx.field(jax.random.key(0), cx.Scalar())
     self.ensemble_rng = cx.field(
         jax.random.split(jax.random.key(0), self.ensemble_axis.size),
@@ -252,7 +282,7 @@ class InferenceModelApiTest(parameterized.TestCase):
     self.inference_model = api.InferenceModel.from_model_api(
         api.Model.from_fiddle_config(self.model_config)
     )
-    self.t0 = jdt.Datetime.from_isoformat('2000-01-01')
+    t0 = jdt.Datetime.from_isoformat('2000-01-01')
     self.x = cx.SizedAxis('x', 3)
     self.timedelta = coordinates.TimeDelta(
         np.arange(3) * np.timedelta64(1, 'h')
@@ -260,7 +290,7 @@ class InferenceModelApiTest(parameterized.TestCase):
     self.inputs = {
         'prognostics': {
             'population': cx.field(np.ones(self.x.shape), self.x),
-            'time': cx.field(self.t0),
+            'time': cx.field(t0),
         }
     }
     self.dynamic_inputs = {
@@ -270,7 +300,7 @@ class InferenceModelApiTest(parameterized.TestCase):
                 self.timedelta,
                 self.x,
             ),
-            'time': cx.field(self.t0 + self.timedelta.deltas, self.timedelta),
+            'time': cx.field(t0 + self.timedelta.deltas, self.timedelta),
         },
     }
     self.query = {'prognostics': {'population': self.x}}
@@ -306,37 +336,6 @@ class InferenceModelApiTest(parameterized.TestCase):
         second_new_state.prognostics['prognostics']['population'].data,
     )
 
-  def test_inference_functions(self):
-    """Tests unroll_from_advance and forecast_steps."""
-    state = self.inference_model.assimilate(
-        self.inputs, self.dynamic_inputs, self.rng
-    )
-    _, trajectory = api.unroll_from_advance(
-        self.inference_model,
-        initial_state=state,
-        timedelta=self.inference_model.timestep,
-        steps=5,
-        query=self.query,
-        dynamic_inputs=self.dynamic_inputs,
-    )
-    self.assertEqual(
-        trajectory['prognostics']['population'].shape,
-        (5,) + self.x.shape,
-    )
-    _, trajectory = api.forecast_steps(
-        self.inference_model,
-        inputs=self.inputs,
-        timedelta=self.inference_model.timestep,
-        steps=5,
-        query=self.query,
-        dynamic_inputs=self.dynamic_inputs,
-        rng=self.rng,
-    )
-    self.assertEqual(
-        trajectory['prognostics']['population'].shape,
-        (5,) + self.x.shape,
-    )
-
   def test_raises_on_insufficient_state(self):
     """Tests that the API raises on insufficient state."""
     with self.assertRaisesRegex(
@@ -344,6 +343,306 @@ class InferenceModelApiTest(parameterized.TestCase):
         'JAX raised TypeError.* This often indicates uninitialized state',
     ):
       self.inference_model.assimilate(self.inputs, self.dynamic_inputs)
+
+
+class InferenceHelpersTest(parameterized.TestCase):
+  """Tests inference helper functions."""
+
+  def setUp(self):
+    super().setUp()
+    t0 = jdt.Datetime.from_isoformat('2000-01-01')
+    x = cx.SizedAxis('x', 3)
+    self.x = x
+    self.model_config = construct_mock_model.as_buildable()
+    self.model = api.InferenceModel.from_model_api(
+        api.Model.from_fiddle_config(self.model_config)
+    )
+    self.inputs = {
+        'prognostics': {
+            'population': cx.field(np.ones(x.shape), x),
+            'time': cx.field(t0),
+        }
+    }
+    td = coordinates.TimeDelta(np.arange(3) * np.timedelta64(1, 'h'))
+    self.dynamic_inputs = {
+        'modulation': {
+            'modulation': cx.field(np.ones(td.shape + x.shape), td, x),
+            'time': cx.field(t0 + td.deltas, td),
+        },
+    }
+    self.rng = cx.field(jax.random.key(0))
+
+  @parameterized.parameters(
+      (False, False),
+      (True, False),
+      (False, True),
+      (True, True),
+  )
+  def test_unroll_functions(self, prepend_init, trim_last):
+    """Tests unroll_from_advance and forecast_steps."""
+    expected_steps = 5
+    if prepend_init:
+      expected_steps += 1
+    if trim_last:
+      expected_steps -= 1
+
+    start_idx = 0 if prepend_init else 1
+    expected_td = coordinates.TimeDelta(
+        np.arange(start_idx, start_idx + expected_steps) * self.model.timestep
+    )
+    expected_coord = cx.coords.compose(expected_td, self.x)
+
+    with self.subTest('unroll_from_advance'):
+      state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+      _, trajectory = api.unroll_from_advance(
+          self.model,
+          initial_state=state,
+          timedelta=self.model.timestep,
+          steps=5,
+          queries={'prognostics': {'population': self.x}},
+          dynamic_inputs=self.dynamic_inputs,
+          prepend_init=prepend_init,
+          trim_last=trim_last,
+      )
+      self.assertEqual(
+          trajectory['prognostics']['population'].coordinate, expected_coord
+      )
+
+    with self.subTest('forecast_steps'):
+      _, trajectory = api.forecast_steps(
+          self.model,
+          inputs=self.inputs,
+          timedelta=self.model.timestep,
+          steps=5,
+          queries={'prognostics': {'population': self.x}},
+          dynamic_inputs=self.dynamic_inputs,
+          rng=self.rng,
+          prepend_init=prepend_init,
+          trim_last=trim_last,
+      )
+      self.assertEqual(
+          trajectory['prognostics']['population'].coordinate, expected_coord
+      )
+
+  def test_unroll_from_advance_with_nested_timedeltas(self):
+    """Tests unroll_from_advance with nested timedeltas."""
+    state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+    inner_dt = self.model.timestep
+    inner_query = {'prognostics': {'population': self.x}}
+    outer_dt = self.model.timestep * 2
+    outer_query = {'x_at_0': {'population': cx.Scalar()}}
+    timedeltas = (inner_dt, outer_dt)
+    queries = (inner_query, outer_query)
+
+    _, trajectory = api.unroll_from_advance(
+        self.model,
+        initial_state=state,
+        timedelta=timedeltas,
+        steps=5,
+        queries=queries,
+        dynamic_inputs=self.dynamic_inputs,
+    )
+    # Build expected coordinates.
+    prog_td = coordinates.TimeDelta(np.arange(1, 11) * inner_dt)
+    x_at_0_td = coordinates.TimeDelta(np.arange(1, 6) * outer_dt)
+    expected_coords = {
+        'prognostics': {'population': cx.coords.compose(prog_td, self.x)},
+        'x_at_0': {'population': x_at_0_td},
+    }
+
+    actual_coords = map_fields(cx.get_coordinate, trajectory)
+    self.assertEqual(actual_coords, expected_coords)
+
+    with self.subTest('raises_on_unsorted_timedeltas'):
+      wrong_order_timedeltas = (outer_dt, inner_dt)
+      with self.assertRaises(ValueError):
+        api.unroll_from_advance(
+            self.model,
+            initial_state=state,
+            timedelta=wrong_order_timedeltas,
+            steps=5,
+            queries=(outer_query, inner_query),
+            dynamic_inputs=self.dynamic_inputs,
+        )
+
+  def test_unroll_from_advance_with_field_query(self):
+    """Tests unroll_from_advance with queries containing fields."""
+    state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+    inner_dt = self.model.timestep * 2
+    outer_dt = self.model.timestep * 4
+    inner_query = {'x_at_0': {'population': cx.Scalar()}}
+    outer_query = {
+        'below_threshold': {
+            'population': self.x,
+            'thresholds': cx.field(np.ones(self.x.shape) * 0.5, self.x),
+        }
+    }
+
+    timedeltas = (self.model.timestep, inner_dt, outer_dt)
+    queries = ({}, inner_query, outer_query)
+
+    _, trajectory = api.unroll_from_advance(
+        self.model,
+        initial_state=state,
+        timedelta=timedeltas,
+        steps=5,
+        queries=queries,
+        dynamic_inputs=self.dynamic_inputs,
+    )
+
+    # Build expected coordinates.
+    td1 = coordinates.TimeDelta(np.arange(1, 11) * inner_dt)
+    td2 = coordinates.TimeDelta(np.arange(1, 6) * outer_dt)
+
+    expected_coords = {
+        'x_at_0': {'population': td1},
+        'below_threshold': {
+            'population': cx.coords.compose(td2, self.x),
+            'thresholds': cx.coords.compose(td2, self.x),
+        },
+    }
+
+    actual_coords = map_fields(cx.get_coordinate, trajectory)
+    self.assertEqual(actual_coords, expected_coords)
+
+  def test_unroll_from_advance_with_time_varying_field_query(self):
+    """Tests unroll_from_advance with queries containing time-varying fields."""
+    state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+
+    # Thresholds vary in time.
+    td_outer = coordinates.TimeDelta(np.arange(1, 6) * self.model.timestep * 2)
+    thresholds = cx.field(
+        np.arange(td_outer.shape[0])[:, None] + np.zeros((1,) + self.x.shape),
+        *(td_outer, self.x),
+    )
+
+    outer_query = {
+        'below_threshold': {'population': self.x, 'thresholds': thresholds}
+    }
+
+    timedelta = (self.model.timestep, self.model.timestep * 2)
+    queries = ({}, outer_query)
+
+    _, trajectory = api.unroll_from_advance(
+        self.model,
+        initial_state=state,
+        timedelta=timedelta,
+        steps=5,
+        queries=queries,
+        dynamic_inputs=self.dynamic_inputs,
+    )
+
+    expected_coords = {
+        'below_threshold': {
+            'population': cx.coords.compose(td_outer, self.x),
+            'thresholds': cx.coords.compose(td_outer, self.x),
+        },
+    }
+    actual_coords = map_fields(cx.get_coordinate, trajectory)
+    self.assertEqual(actual_coords, expected_coords)
+
+  def test_unroll_for_template_returns_expected_coordinates(self):
+    """Tests unroll_for_template returns expected coordinates."""
+    state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+    t2 = coordinates.TimeDelta(np.arange(1, 3) * np.timedelta64(2, 'h'))
+
+    _, predictions = api.unroll_for_template(
+        self.model,
+        initial_state=state,
+        template={'prognostics': {'population': cx.coords.compose(t2, self.x)}},
+        dynamic_inputs=self.dynamic_inputs,
+    )
+    self.assertEqual(
+        predictions['prognostics']['population'].coordinate,
+        cx.coords.compose(t2, self.x),
+    )
+
+  def test_unroll_for_template_with_time_varying_fields(self):
+    """Tests unroll_for_template with template containing time-varying fields."""
+    state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+
+    td_outer = coordinates.TimeDelta(np.arange(1, 3) * self.model.timestep * 2)
+    thresholds = cx.field(
+        np.ones(td_outer.shape + self.x.shape) * 0.5, td_outer, self.x
+    )
+
+    template = {
+        'below_threshold': {
+            'population': cx.coords.compose(td_outer, self.x),
+            'thresholds': thresholds,
+        }
+    }
+
+    _, predictions = api.unroll_for_template(
+        self.model,
+        initial_state=state,
+        template=template,
+        dynamic_inputs=self.dynamic_inputs,
+    )
+
+    expected_coords = {
+        'below_threshold': {
+            'population': cx.coords.compose(td_outer, self.x),
+            'thresholds': cx.coords.compose(td_outer, self.x),
+        },
+    }
+    actual_coords = map_fields(cx.get_coordinate, predictions)
+    self.assertEqual(actual_coords, expected_coords)
+
+  def test_unroll_for_template_reconstruction(self):
+    """Tests that unroll_for_template can reconstruct trajectory."""
+    state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+
+    # Generate a trajectory with unroll_from_advance
+    _, expected_trajectory = api.unroll_from_advance(
+        self.model,
+        initial_state=state,
+        timedelta=self.model.timestep,
+        steps=5,
+        queries={'prognostics': {'population': self.x}},
+        dynamic_inputs=self.dynamic_inputs,
+    )
+
+    template = map_fields(cx.get_coordinate, expected_trajectory)
+
+    _, predictions = api.unroll_for_template(
+        self.model,
+        initial_state=state,
+        template=template,
+        dynamic_inputs=self.dynamic_inputs,
+    )
+
+    chex.assert_trees_all_close(predictions, expected_trajectory)
+
+  def test_unroll_for_template_reconstruction_nested(self):
+    """Tests that unroll_for_template can reconstruct nested trajectory."""
+    state = self.model.assimilate(self.inputs, self.dynamic_inputs, self.rng)
+
+    inner_dt = self.model.timestep
+    outer_dt = self.model.timestep * 2
+    queries = (
+        {'prognostics': {'population': self.x}},
+        {'x_at_0': {'population': cx.Scalar()}},
+    )
+    timedeltas = (inner_dt, outer_dt)
+
+    _, expected_unroll = api.unroll_from_advance(
+        self.model,
+        initial_state=state,
+        timedelta=timedeltas,
+        steps=5,
+        queries=queries,
+        dynamic_inputs=self.dynamic_inputs,
+    )
+
+    template = map_fields(cx.get_coordinate, expected_unroll)
+    _, actual_unroll = api.unroll_for_template(
+        self.model,
+        initial_state=state,
+        template=template,
+        dynamic_inputs=self.dynamic_inputs,
+    )
+    chex.assert_trees_all_close(actual_unroll, expected_unroll, atol=1e-5)
 
 
 if __name__ == '__main__':

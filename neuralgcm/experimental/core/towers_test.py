@@ -446,6 +446,77 @@ class TransformerTowerTest(parameterized.TestCase):
     self.assertEqual(cx.get_coordinate(out), expected_out_coord)
 
 
+class ForwardTowerSequentialTest(parameterized.TestCase):
+  """Tests ForwardTowerSequential implementation."""
+
+  def test_sequential_mlp(self):
+    grid = coordinates.LonLatGrid.T21()
+    mlp_factory = functools.partial(
+        standard_layers.Mlp.uniform,
+        hidden_size=8,
+        hidden_layers=2,
+    )
+    tower_factory = functools.partial(
+        towers.ForwardTower.build_using_factories,
+        inputs_in_dims=('d',),
+        out_dims=('d',),
+        neural_net_factory=mlp_factory,
+    )
+    seq_tower = towers.ForwardTowerSequential.build_using_factories(
+        input_size=7,
+        output_size=13,
+        intermediate_size=8,
+        tower_factories=(tower_factory, tower_factory),
+        rngs=nnx.Rngs(0),
+    )
+    input_coord = cx.coords.compose(cx.DummyAxis('d', 7), grid)
+    inputs = cx.field(jnp.ones(input_coord.shape), input_coord)
+    out = seq_tower(inputs)
+    expected = cx.coords.compose(cx.DummyAxis('d', 13), grid)
+    self.assertEqual(out.coordinate, expected)
+
+
+class TransformerTowerSequentialTest(parameterized.TestCase):
+  """Tests TransformerTowerSequential implementation."""
+
+  def test_sequential_transformer(self):
+    grid = coordinates.LonLatGrid.T21()
+    levels = coordinates.SigmaLevels.equidistant(4)
+    input_size, output_size, num_heads = 6, 3, 2
+    dense_factory = functools.partial(
+        standard_layers.Mlp.uniform, hidden_layers=1, hidden_size=8
+    )
+    neural_net_factory = functools.partial(
+        transformer_layers.TransformerBlocks.build_using_factories,
+        intermediate_sizes=[8, 8],
+        num_heads=num_heads,
+        dense_factory=dense_factory,
+        qkv_features=(num_heads * 3),
+        gating=lambda skip, x: x,
+    )
+    tower_factory = functools.partial(
+        towers.TransformerTower.build_using_factories,
+        neural_net_factory=neural_net_factory,
+        inputs_in_dims=('c', levels),
+        out_dims=('c', levels),
+        positional_encoder=None,
+    )
+
+    seq_tower = towers.TransformerTowerSequential.build_using_factories(
+        input_size=input_size,
+        output_size=output_size,
+        intermediate_size=4,
+        tower_factories=(tower_factory, tower_factory),
+        rngs=nnx.Rngs(0),
+    )
+    input_coord = cx.coords.compose(cx.DummyAxis('c', input_size), levels, grid)
+    inputs_shape = (input_size,) + levels.shape + grid.shape
+    inputs = cx.field(jnp.ones(input_coord.shape), input_coord)
+    out = seq_tower(inputs)
+    expected = cx.coords.compose(cx.DummyAxis('c', output_size), levels, grid)
+    self.assertEqual(out.coordinate, expected)
+
+
 if __name__ == '__main__':
   jax.config.parse_flags_with_absl()
   absltest.main()

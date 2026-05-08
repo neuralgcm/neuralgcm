@@ -81,6 +81,52 @@ ForwardTowerFactory = Callable[..., ForwardTower]
 
 
 @nnx.dataclass
+class ForwardTowerSequential(nnx.Module):
+  """Chains multiple ForwardTower modules together.
+
+  Attributes:
+    towers: Tuple of ForwardTower modules to apply sequentially.
+  """
+
+  towers: tuple[ForwardTower, ...] = nnx.data()
+
+  def __call__(self, field: cx.Field) -> cx.Field:
+    for tower in self.towers:
+      field = tower(field)
+    return field
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_size: int,
+      output_size: int,
+      intermediate_size: int,
+      tower_factories: tuple[ForwardTowerFactory, ...],
+      *,
+      rngs: nnx.Rngs,
+  ):
+    """Builds ForwardTowerSequential using factories for submodules.
+
+    Args:
+      input_size: Input size of the first tower.
+      output_size: Output size of the last tower.
+      intermediate_size: Output size of intermediate towers.
+      tower_factories: Sequence of factories creating the ForwardTowers.
+      rngs: Random number generators for tower initialization.
+
+    Returns:
+      An instance of ForwardTowerSequential.
+    """
+    tower_instances = []
+    l = len(tower_factories)
+    for i, factory in enumerate(tower_factories):
+      in_sz = input_size if i == 0 else intermediate_size
+      out_sz = output_size if i == l - 1 else intermediate_size
+      tower_instances.append(factory(in_sz, out_sz, rngs=rngs))
+    return cls(tuple(tower_instances))
+
+
+@nnx.dataclass
 class RecurrentTower(nnx.Module):
   """Applies RNN cell to inputs and carry state.
 
@@ -290,3 +336,54 @@ class TransformerTower(nnx.Module):
 
 
 TransformerTowerFactory = Callable[..., TransformerTower]
+
+
+@nnx.dataclass
+class TransformerTowerSequential(nnx.Module):
+  """Chains multiple TransformerTower modules together.
+
+  Attributes:
+    towers: Tuple of TransformerTower modules to apply sequentially.
+  """
+
+  towers: tuple[TransformerTower, ...] = nnx.data()
+
+  def __call__(
+      self,
+      inputs: cx.Field,
+      latents: cx.Field | None = None,
+      mask: cx.Field | None = None,
+  ) -> cx.Field:
+    for tower in self.towers:
+      inputs = tower(inputs, latents=latents, mask=mask)
+    return inputs
+
+  @classmethod
+  def build_using_factories(
+      cls,
+      input_size: int,
+      output_size: int,
+      intermediate_size: int,
+      tower_factories: tuple[TransformerTowerFactory, ...],
+      *,
+      rngs: nnx.Rngs,
+  ):
+    """Builds TransformerTowerSequential using factories for submodules.
+
+    Args:
+      input_size: Input size of the first tower.
+      output_size: Output size of the last tower.
+      intermediate_size: Output size of intermediate towers.
+      tower_factories: Sequence of factories creating the TransformerTowers.
+      rngs: Random number generators for tower initialization.
+
+    Returns:
+      An instance of TransformerTowerSequential.
+    """
+    tower_instances = []
+    l = len(tower_factories)
+    for i, factory in enumerate(tower_factories):
+      in_sz = input_size if i == 0 else intermediate_size
+      out_sz = output_size if i == l - 1 else intermediate_size
+      tower_instances.append(factory(in_sz, out_sz, rngs=rngs))
+    return cls(tuple(tower_instances))

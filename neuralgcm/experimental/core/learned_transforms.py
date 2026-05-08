@@ -219,7 +219,7 @@ class RecurrentTowerTransform(transforms.TransformABC, nnx.Module):
 
     in_field = _concat_fields(in_features, self.concat_dims)
     in_field = in_field.tag(in_c)
-    out_carry, out_field = self.tower(carry, in_field)
+    out_carry, out_field = self.tower(in_field, carry)
     out_fields = field_utils.split_field_axis(
         out_field, out_c, self.target_split_axes
     )

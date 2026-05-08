@@ -213,7 +213,7 @@ class RecurrentTowerTest(parameterized.TestCase):
     c = cx.field(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
     h = cx.field(jnp.ones((13,) + self.grid.shape), 'dout', self.grid)
     carry = (c, h) if is_tuple_carry else h
-    new_carry, out = tower(carry, inputs)
+    new_carry, out = tower(inputs, carry)
 
     with self.subTest('output_shape'):
       self.assertEqual(out.shape, (13,) + self.grid.shape)
@@ -274,7 +274,7 @@ class RecurrentTowerTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, 'Vectorized dimensions on inputs .* do not match'
     ):
-      tower(carry, inputs)
+      tower(inputs, carry)
 
 
 class TransformerTowerTest(parameterized.TestCase):

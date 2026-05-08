@@ -103,8 +103,8 @@ class RecurrentTower(nnx.Module):
 
   def __call__(
       self,
-      carry: Any,
       inputs: cx.Field,
+      carry: cx.Field | tuple[cx.Field, ...],
   ) -> tuple[Any, cx.Field]:
     inputs_untagged = inputs.untag(*self.inputs_in_dims)
     carry_untagged = cx.untag(carry, *self.state_dims)

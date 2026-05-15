@@ -1784,6 +1784,7 @@ class RolloutTrainer:
         file_options=ocp.checkpoint_manager.FileOptions(
             path_permission_mode=0o775,  # world-readable
         ),
+        cleanup_tmp_directories=True,
         save_interval_steps=self.checkpoint_config.save_interval_steps,
         preservation_policy=ocp_managers.AnyPreservationPolicy([
             checkpointing.LastNSteps(self.max_lookback_interval),

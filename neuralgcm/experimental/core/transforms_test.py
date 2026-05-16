@@ -842,6 +842,7 @@ class TransformsTest(parameterized.TestCase):
         norm_coords={'u': cx.Scalar()},
         update_stats=True,
         compute_masks=make_masks_transform,
+        shared_mask_key='outlier_mask',
         epsilon=0.0,
         skip_unspecified=True,
     )
@@ -849,6 +850,96 @@ class TransformsTest(parameterized.TestCase):
     relevant_outputs = outputs['u'].data.ravel()[1:]  # skip the outlier.
     np.testing.assert_allclose(np.mean(relevant_outputs), 0.0, atol=1e-4)
     np.testing.assert_allclose(np.var(relevant_outputs, ddof=1), 1.0, atol=1e-4)
+
+  def test_streaming_stats_norm_with_dict_mask(self):
+    rng = np.random.RandomState(42)
+    u_data = rng.normal(size=(10, 4))
+    v_data = rng.normal(size=(10, 4))
+    u_data[0, 0] = 1e6  # outlier
+    v_data[1, 1] = 1e6  # outlier
+
+    mask_u = np.ones((10, 4), dtype=bool)
+    mask_u[0, 0] = False
+    mask_v = np.ones((10, 4), dtype=bool)
+    mask_v[1, 1] = False
+
+    inputs = {'u': cx.field(u_data, 't', 'x'), 'v': cx.field(v_data, 't', 'x')}
+    compute_masks = transforms.PrescribedFields({
+        'u': cx.field(mask_u, 't', 'x'),
+        'v': cx.field(mask_v, 't', 'x'),
+    })
+
+    norm = transforms.StreamNorm(
+        norm_coords={'u': cx.Scalar(), 'v': cx.Scalar()},
+        update_stats=True,
+        compute_masks=compute_masks,
+        epsilon=0.0,
+        skip_unspecified=True,
+    )
+    _ = norm(inputs)  # Update stats.
+    means, vars_ = norm.stream_norm.stats(ddof=1)
+    expected_mean_u = cx.field(
+        np.mean(np.delete(u_data.ravel(), 0)), cx.Scalar()
+    )
+    expected_var_u = cx.field(
+        np.var(np.delete(u_data.ravel(), 0), ddof=1), cx.Scalar()
+    )
+    cx.testing.assert_fields_allclose(means['u'], expected_mean_u, atol=1e-4)
+    cx.testing.assert_fields_allclose(vars_['u'], expected_var_u, atol=1e-4)
+
+    expected_mean_v = cx.field(
+        np.mean(np.delete(v_data.ravel(), 5)), cx.Scalar()
+    )
+    expected_var_v = cx.field(
+        np.var(np.delete(v_data.ravel(), 5), ddof=1), cx.Scalar()
+    )
+    cx.testing.assert_fields_allclose(means['v'], expected_mean_v, atol=1e-4)
+    cx.testing.assert_fields_allclose(vars_['v'], expected_var_v, atol=1e-4)
+
+  def test_streaming_stats_norm_with_shared_mask_key(self):
+    rng = np.random.RandomState(42)
+    u_data = rng.normal(size=(10, 4))
+    v_data = rng.normal(size=(10, 4))
+    u_data[0, 0] = 1e6  # outlier
+
+    mask_shared = np.ones((10, 4), dtype=bool)
+    mask_shared[0, 0] = False
+
+    inputs = {'u': cx.field(u_data, 't', 'x'), 'v': cx.field(v_data, 't', 'x')}
+
+    compute_masks = transforms.PrescribedFields({
+        'key_to_use_as_mask': cx.field(mask_shared, 't', 'x'),
+        'unused_entry': cx.field(np.ones((10, 4), dtype=bool), 't', 'x'),
+    })
+
+    norm = transforms.StreamNorm(
+        norm_coords={'u': cx.Scalar(), 'v': cx.Scalar()},
+        update_stats=True,
+        compute_masks=compute_masks,
+        shared_mask_key='key_to_use_as_mask',
+        epsilon=0.0,
+        skip_unspecified=True,
+    )
+    _ = norm(inputs)  # Update stats.
+    means, vars_ = norm.stream_norm.stats(ddof=1)
+
+    expected_mean_u = cx.field(
+        np.mean(np.delete(u_data.ravel(), 0)), cx.Scalar()
+    )
+    expected_var_u = cx.field(
+        np.var(np.delete(u_data.ravel(), 0), ddof=1), cx.Scalar()
+    )
+    cx.testing.assert_fields_allclose(means['u'], expected_mean_u, atol=1e-4)
+    cx.testing.assert_fields_allclose(vars_['u'], expected_var_u, atol=1e-4)
+
+    expected_mean_v = cx.field(
+        np.mean(np.delete(v_data.ravel(), 0)), cx.Scalar()
+    )
+    expected_var_v = cx.field(
+        np.var(np.delete(v_data.ravel(), 0), ddof=1), cx.Scalar()
+    )
+    cx.testing.assert_fields_allclose(means['v'], expected_mean_v, atol=1e-4)
+    cx.testing.assert_fields_allclose(vars_['v'], expected_var_v, atol=1e-4)
 
   def test_scale_to_match_coarse_fields(self):
     hres_grid = coordinates.LonLatGrid.TL63()

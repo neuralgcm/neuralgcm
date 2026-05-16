@@ -1592,6 +1592,7 @@ class StreamNorm(TransformABC):
       skip_nans: bool = True,
       skip_unspecified: bool = False,
       allow_missing: bool = True,
+      shared_mask_key: str | None = None,
   ):
     """Initializes StreamNorm.
 
@@ -1609,6 +1610,8 @@ class StreamNorm(TransformABC):
       allow_missing: If True, `inputs` may omit fields for which normalization
         is specified (i.e., keys in `norm_coords`). If False, all keys in
         `norm_coords` must be present in `inputs`, otherwise an error is raised.
+      shared_mask_key: Optional key to select a single mask from `compute_masks`
+        output to be used for all fields.
     """
     self.stream_norm = normalizations.StreamNorm(
         norm_coords,
@@ -1619,19 +1622,28 @@ class StreamNorm(TransformABC):
     )
     self.compute_masks = compute_masks
     self.update_stats = update_stats
+    self.shared_mask_key = shared_mask_key
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
     """Normalizes inputs and optionally updates statistics."""
     if self.compute_masks is not None:
-      mask = self.compute_masks(inputs)
-      if len(mask) > 1:
-        raise ValueError(
-            f'Mask transform must contain at most 1 Field, got {len(mask)=}.'
-        )
-      if not mask:
-        mask = None
+      masks = self.compute_masks(inputs)
+      if self.shared_mask_key is not None:
+        mask = masks.get(self.shared_mask_key)
+        if not cx.is_field(mask):
+          raise ValueError(
+              f'Shared mask is set with key {self.shared_mask_key!r}, but got '
+              f'{mask=} that is not a field in masks with keys {masks.keys()}'
+          )
+      elif masks:
+        if masks.keys() != inputs.keys():
+          raise ValueError(
+              f'Masks keys {masks.keys()} do not match inputs keys'
+              f' {inputs.keys()}'
+          )
+        mask = masks
       else:
-        [mask] = list(mask.values())
+        mask = None
     else:
       mask = None
     return self.stream_norm(inputs, self.update_stats, mask=mask)
@@ -1649,6 +1661,7 @@ class StreamNorm(TransformABC):
       skip_unspecified: bool = False,
       skip_nans: bool = True,
       allow_missing: bool = True,
+      shared_mask_key: str | None = None,
   ):
     """Custom constructor based on inputs struct that should be normalized."""
     norm_coords = {
@@ -1676,6 +1689,7 @@ class StreamNorm(TransformABC):
         skip_unspecified=skip_unspecified,
         skip_nans=skip_nans,
         allow_missing=allow_missing,
+        shared_mask_key=shared_mask_key,
     )
 
 

@@ -217,6 +217,60 @@ class StreamNormTest(parameterized.TestCase):
     np.testing.assert_allclose(means['u'].data, expected_mean, atol=1e-5)
     np.testing.assert_allclose(vars_['u'].data, expected_var, atol=1e-5)
 
+  def test_stream_norma_with_dict_mask(self):
+    x, y = cx.SizedAxis('x', 4), cx.SizedAxis('y', 4)
+    time_dim = cx.SizedAxis('time', 10)
+
+    rng = np.random.RandomState(0)
+    u_data = rng.normal(size=(time_dim.size, x.size, y.size))
+    v_data = rng.normal(size=(time_dim.size, x.size, y.size))
+    inputs = {
+        'u': cx.field(u_data, time_dim, x, y),
+        'v': cx.field(v_data, time_dim, x, y),
+    }
+    coords = {'u': cx.coords.compose(x, y), 'v': cx.coords.compose(x, y)}
+
+    # Generate random masks
+    rng_jax = jax.random.key(0)
+    mask_shape = (time_dim.size, x.size, y.size)
+    mask_u = jax.random.bernoulli(rng_jax, p=0.8, shape=mask_shape)
+    mask_v = jax.random.bernoulli(rng_jax, p=0.5, shape=mask_shape)
+
+    masks = {
+        'u': cx.field(mask_u, time_dim, x, y),
+        'v': cx.field(mask_v, time_dim, x, y),
+    }
+
+    normalizer = normalizations.StreamNorm(coords)
+    _ = _stream_norm_apply(normalizer, inputs, mask=masks)
+    means, vars_ = normalizer.stats(ddof=1)
+
+    # Verify u stats
+    mask_u_np = np.array(mask_u)
+    expected_mean_u = np.zeros((x.size, y.size))
+    expected_var_u = np.zeros((x.size, y.size))
+    for i in range(x.size):
+      for j in range(y.size):
+        valid_data = u_data[mask_u_np[:, i, j], i, j]
+        expected_mean_u[i, j] = np.mean(valid_data)
+        expected_var_u[i, j] = np.var(valid_data, ddof=1)
+
+    np.testing.assert_allclose(means['u'].data, expected_mean_u, atol=1e-5)
+    np.testing.assert_allclose(vars_['u'].data, expected_var_u, atol=1e-5)
+
+    # Verify v stats
+    mask_v_np = np.array(mask_v)
+    expected_mean_v = np.zeros((x.size, y.size))
+    expected_var_v = np.zeros((x.size, y.size))
+    for i in range(x.size):
+      for j in range(y.size):
+        valid_data = v_data[mask_v_np[:, i, j], i, j]
+        expected_mean_v[i, j] = np.mean(valid_data)
+        expected_var_v[i, j] = np.var(valid_data, ddof=1)
+
+    np.testing.assert_allclose(means['v'].data, expected_mean_v, atol=1e-5)
+    np.testing.assert_allclose(vars_['v'].data, expected_var_v, atol=1e-5)
+
   def test_stream_norma_skip_unspecified(self):
     normalizer = normalizations.StreamNorm(
         {'u': cx.Scalar()}, skip_unspecified=True, epsilon=0.0

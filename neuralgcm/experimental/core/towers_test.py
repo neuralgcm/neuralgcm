@@ -510,7 +510,6 @@ class TransformerTowerSequentialTest(parameterized.TestCase):
         rngs=nnx.Rngs(0),
     )
     input_coord = cx.coords.compose(cx.DummyAxis('c', input_size), levels, grid)
-    inputs_shape = (input_size,) + levels.shape + grid.shape
     inputs = cx.field(jnp.ones(input_coord.shape), input_coord)
     out = seq_tower(inputs)
     expected = cx.coords.compose(cx.DummyAxis('c', output_size), levels, grid)

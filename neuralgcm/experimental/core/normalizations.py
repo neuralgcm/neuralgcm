@@ -107,7 +107,9 @@ class StreamNorm(nnx.Module):
     )
 
   def _update_stats(
-      self, inputs: dict[str, cx.Field], mask: cx.Field | None = None
+      self,
+      inputs: dict[str, cx.Field],
+      mask: cx.Field | dict[str, cx.Field] | None = None,
   ):
     """Updates the statistics using the given inputs."""
     counters = self.counters.get_value()
@@ -127,8 +129,12 @@ class StreamNorm(nnx.Module):
 
       w = None
       if mask is not None:
-        mask_batch_dims = tuple(d for d in batch_dims if d in mask.dims)
-        w = cx.cmap(lambda m: m.astype(jnp.int32))(mask.untag(*mask_batch_dims))
+        m = mask.get(k) if isinstance(mask, dict) else mask
+        if m is not None:
+          if not cx.is_field(m):
+            raise ValueError(f'mask {m=} is not a field for {k=}')
+          mask_batch_dims = tuple(d for d in batch_dims if d in m.dims)
+          w = cx.cmap(lambda m: m.astype(jnp.int32))(m.untag(*mask_batch_dims))
         # Broadcast w to x to count valid entries correctly.
         ones = cx.cmap(lambda x: jnp.ones_like(x, dtype=jnp.int32))(x)
         w = w * ones
@@ -190,7 +196,7 @@ class StreamNorm(nnx.Module):
       self,
       inputs: dict[str, cx.Field],
       update_stats: bool = True,
-      mask: cx.Field | None = None,
+      mask: cx.Field | dict[str, cx.Field] | None = None,
   ) -> dict[str, cx.Field]:
     """Returns the current mean & std and updates state if update_stats=True."""
     input_keys = set(inputs.keys())

@@ -524,6 +524,10 @@ class InferenceModel:
   ):
     """Initializes a temporary model with given simulation parameters."""
     model = self._dummy_model()
+    # TODO(dkochkov): Consider delegating coupling init to Coupler classes.
+    coupling_state = nnx.state(model, typing.Coupling)
+    zeros_coupling_state = jax.tree.map(jnp.zeros_like, coupling_state)
+    nnx.update(model, zeros_coupling_state)
     if dynamic_inputs is not None:
       model.update_dynamic_inputs(dynamic_inputs)
     if simulation_state is not None:
@@ -608,14 +612,13 @@ class InferenceModel:
 def _inference_model_flatten(model: InferenceModel):
   """Flattens InferenceModel."""
   children = (model.model_state,)
-  dummy_simulation_state_coords = jax.tree.map(
-      lambda x: x.coordinate,
-      model.dummy_simulation_state,
-      is_leaf=cx.is_field,
+  dummy_sim_state_leaves, dummy_sim_state_treedef = jax.tree.flatten(
+      model.dummy_simulation_state
   )
   aux_data = (
       model.model_graph_def,
-      dummy_simulation_state_coords,
+      dummy_sim_state_leaves,
+      dummy_sim_state_treedef,
       model.fiddle_config,
   )
   return children, aux_data
@@ -625,13 +628,16 @@ def _inference_model_unflatten(
     aux_data: tuple[Any, ...], children: tuple[Any, ...]
 ) -> InferenceModel:
   """Unflattens InferenceModel."""
-  model_graph_def, dummy_simulation_state_coords, fiddle_config = aux_data
-  (model_state,) = children
-  dummy_simulation_state = jax.tree.map(
-      cx.shape_struct_field,
-      dummy_simulation_state_coords,
-      is_leaf=cx.is_coord,
+  (
+      model_graph_def,
+      dummy_sim_state_leaves,
+      dummy_sim_state_treedef,
+      fiddle_config,
+  ) = aux_data
+  dummy_simulation_state = jax.tree.unflatten(
+      dummy_sim_state_treedef, dummy_sim_state_leaves
   )
+  (model_state,) = children
   return InferenceModel(
       model_graph_def=model_graph_def,
       model_state=model_state,

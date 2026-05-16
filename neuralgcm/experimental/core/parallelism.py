@@ -454,7 +454,7 @@ def with_dycore_sharding(
     else:
       raise ValueError(f'Unsupported array shape: {y.shape}')
 
-  if mesh is None:
+  if mesh is None or mesh.spmd_mesh is None:
     return inputs
   return pytree_utils.tree_map_over_nonscalars(f, inputs)
 
@@ -476,7 +476,7 @@ def with_physics_sharding(
     else:
       raise ValueError(f'Unsupported array shape: {y.shape}')
 
-  if mesh is None:
+  if mesh is None or mesh.spmd_mesh is None:
     return inputs
   return pytree_utils.tree_map_over_nonscalars(f, inputs)
 

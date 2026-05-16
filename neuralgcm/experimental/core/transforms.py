@@ -95,6 +95,28 @@ class PytreeTransformABC(TransformABC, pytree=True):
     super().__init_subclass__(pytree=pytree, **kwargs)
 
 
+class FieldTransformABC(TransformABC):
+  """Base class for elementwise transforms supporting both single Fields and dicts."""
+
+  def __call__(
+      self, inputs: dict[str, cx.Field] | cx.Field
+  ) -> dict[str, cx.Field] | cx.Field:
+    if cx.is_field(inputs):
+      return self._transform_field(inputs)
+    return {k: self._transform_field(v) for k, v in inputs.items()}
+
+  @abc.abstractmethod
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    raise NotImplementedError()
+
+
+class PytreeFieldTransformABC(FieldTransformABC, pytree=True):
+  """Base class for pytree-safe elementwise transforms."""
+
+  def __init_subclass__(cls, pytree: bool = True, **kwargs):
+    super().__init_subclass__(pytree=pytree, **kwargs)
+
+
 def _masked_nan_to_num(
     x: cx.Field, mask: cx.Field, num: float = 0.0
 ) -> cx.Field:
@@ -153,7 +175,7 @@ def get_partial_jnp_fn(name, **kwargs):
   return functools.partial(fn, **kwargs)
 
 
-class Identity(PytreeTransformABC):
+class Identity(PytreeFieldTransformABC):
   """Returns inputs as they are.
 
   Examples:
@@ -165,8 +187,8 @@ class Identity(PytreeTransformABC):
     {'a': <Field dims=(None,) shape=(2,) axes={} >}
   """
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    return inputs
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    return field
 
 
 class Empty(PytreeTransformABC):
@@ -273,7 +295,7 @@ class Broadcast(PytreeTransformABC):
 
 
 @nnx.dataclass
-class RavelDims(PytreeTransformABC):
+class RavelDims(PytreeFieldTransformABC):
   """Ravels specified dimensions into a new single dimension.
 
   Flattens a sequence of dims in each field into a single output dimension.
@@ -303,12 +325,12 @@ class RavelDims(PytreeTransformABC):
   out_dim: str | cx.Coordinate
   allow_missing: bool = True
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+  def _transform_field(self, field: cx.Field) -> cx.Field:
     untagged = cx.untag(
-        inputs, *self.dims_to_ravel, allow_missing=self.allow_missing
+        field, *self.dims_to_ravel, allow_missing=self.allow_missing
     )
     ravel_fn = cx.cmap(jnp.ravel, out_axes='leading')
-    return {k: ravel_fn(v).tag(self.out_dim) for k, v in untagged.items()}
+    return ravel_fn(untagged).tag(self.out_dim)
 
 
 class SelectKeys(PytreeTransformABC):
@@ -551,7 +573,7 @@ class Isel(PytreeTransformABC):
 
 
 @nnx.dataclass
-class ReduceMean(PytreeTransformABC):
+class ReduceMean(PytreeFieldTransformABC):
   """Computes mean over specified dims, using coordinate methods if available.
 
   Takes the mean over the specified dimensions. If reducing over a coordinate
@@ -572,39 +594,34 @@ class ReduceMean(PytreeTransformABC):
 
   dims: tuple[str | cx.Coordinate, ...]
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    # TODO(dkochkov): Add more flexible support for custom reductions.
-    outputs = {}
-    for k, v in inputs.items():
-      dim_names = set()
-      for d in self.dims:
-        if isinstance(d, cx.Coordinate):
-          dim_names.update(d.dims)
-        else:
-          dim_names.add(d)
-
-      if not all(cx.fields.contains_dims(v, d) for d in self.dims):
-        raise ValueError(f'Dims {self.dims} not found in {v=} for key={k}')
-
-      try:
-        grid = cx.coords.extract(v.coordinate, coordinates.LonLatGrid)
-      except ValueError:
-        grid = None
-
-      if grid is not None:
-        spatial_dims = dim_names & {'latitude', 'longitude'}
-        if spatial_dims:
-          v = grid.mean(v, dims=tuple(spatial_dims))
-          dim_names -= spatial_dims
-
-      if dim_names:
-        # Sort dimensions to untag based on their order in the field.
-        ordered_dims = [d for d in v.dims if d in dim_names]
-        outputs[k] = cx.cmap(jnp.mean)(v.untag(*ordered_dims))
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    dim_names = set()
+    for d in self.dims:
+      if isinstance(d, cx.Coordinate):
+        dim_names.update(d.dims)
       else:
-        outputs[k] = v
+        dim_names.add(d)
 
-    return outputs
+    if not all(cx.fields.contains_dims(field, d) for d in self.dims):
+      raise ValueError(f'Dims {self.dims} not found in {field=}')
+
+    try:
+      grid = cx.coords.extract(field.coordinate, coordinates.LonLatGrid)
+    except ValueError:
+      grid = None
+
+    if grid is not None:
+      spatial_dims = dim_names & {'latitude', 'longitude'}
+      if spatial_dims:
+        field = grid.mean(field, dims=tuple(spatial_dims))
+        dim_names -= spatial_dims
+
+    if dim_names:
+      # Sort dimensions to untag based on their order in the field.
+      ordered_dims = [d for d in field.dims if d in dim_names]
+      return cx.cmap(jnp.mean)(field.untag(*ordered_dims))
+    else:
+      return field
 
 
 @nnx.dataclass
@@ -647,7 +664,7 @@ class Sel(PytreeTransformABC):
 
 
 @nnx.dataclass
-class ExpandDims(PytreeTransformABC):
+class ExpandDims(PytreeFieldTransformABC):
   """Returns inputs with expanded `axis` at `loc`, broadcasting if necessary.
 
   Inserts a new axis into all input fields at the specified location.
@@ -669,7 +686,7 @@ class ExpandDims(PytreeTransformABC):
   axis: cx.Coordinate
   loc: int | str | cx.Coordinate
 
-  def _expand_axis(self, field: cx.Field) -> cx.Field:
+  def _transform_field(self, field: cx.Field) -> cx.Field:
     if isinstance(self.loc, int):
       loc = self.loc
     else:
@@ -680,9 +697,6 @@ class ExpandDims(PytreeTransformABC):
         raise ValueError(f'Axis {self.loc} not present in {field=}')
     out_coord = cx.coords.insert_axes(field.coordinate, {loc: self.axis})
     return field.broadcast_like(out_coord)
-
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    return {k: self._expand_axis(v) for k, v in inputs.items()}
 
 
 def _get_shared_axis(
@@ -1038,7 +1052,7 @@ class ScanOverAxis(TransformABC):
 
 
 @nnx.dataclass
-class ShardFields(PytreeTransformABC):
+class ShardFields(PytreeFieldTransformABC):
   """Adds `mesh.field_partitiotions[schema]` sharding constraint to ``inputs``.
 
   Args:
@@ -1058,8 +1072,8 @@ class ShardFields(PytreeTransformABC):
   mesh: parallelism.Mesh
   schema: str | tuple[str, ...]
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    return self.mesh.with_sharding_constraint(inputs, self.schema)
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    return self.mesh.with_sharding_constraint(field, self.schema)
 
 
 class ScaleFields(PytreeTransformABC):
@@ -1137,7 +1151,7 @@ class StandardizeFields(PytreeTransformABC):
 
 
 @nnx.dataclass
-class ClipWavenumbers(PytreeTransformABC):
+class ClipWavenumbers(PytreeFieldTransformABC):
   """Clips wavenumbers in inputs for grids matching `wavenumbers_for_grid`.
 
   Removes the highest wavenumbers (sets them to zero) for fields represented on
@@ -1162,22 +1176,18 @@ class ClipWavenumbers(PytreeTransformABC):
   wavenumbers_for_grid: dict[coordinates.SphericalHarmonicGrid, int]
   skip_missing: bool = False
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    """Returns `inputs` with top `wavenumbers_to_clip` set to zero."""
-    result = {}
-    for k, v in inputs.items():
-      for grid, n_clip in self.wavenumbers_for_grid.items():
-        if all(ax in v.axes.values() for ax in grid.axes):
-          result[k] = grid.clip_wavenumbers(v, n_clip)
-          break
-      else:
-        if self.skip_missing:
-          result[k] = v
-        else:
-          raise ValueError(
-              f'No matching grid for {k=}, {v=} in {self.wavenumbers_for_grid=}'
-          )
-    return result
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    """Returns `field` with top `wavenumbers_to_clip` set to zero."""
+    for grid, n_clip in self.wavenumbers_for_grid.items():
+      if all(ax in field.axes.values() for ax in grid.axes):
+        return grid.clip_wavenumbers(field, n_clip)
+    
+    if self.skip_missing:
+      return field
+    else:
+      raise ValueError(
+          f'No matching grid for {field=} in {self.wavenumbers_for_grid=}'
+      )
 
   @classmethod
   def for_grids(
@@ -1251,7 +1261,7 @@ class InpaintHarmonics(TransformABC):
 
 
 @nnx.dataclass
-class Regrid(PytreeTransformABC):
+class Regrid(PytreeFieldTransformABC):
   """Applies `regridder` to all fields in `inputs`.
 
   Args:
@@ -1273,8 +1283,8 @@ class Regrid(PytreeTransformABC):
 
   regridder: interpolators.BaseRegridder
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    return self.regridder(inputs)
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    return self.regridder(field)
 
 
 @nnx.dataclass
@@ -1503,7 +1513,7 @@ class RenameKeys(PytreeTransformABC):
 
 
 @nnx.dataclass
-class TanhClip(PytreeTransformABC):
+class TanhClip(PytreeFieldTransformABC):
   """Clips inputs to ``(-scale, scale)`` range via tanh function.
 
   Args:
@@ -1525,9 +1535,9 @@ class TanhClip(PytreeTransformABC):
     if self.scale <= 0:
       raise ValueError(f'scale must be positive, got scale={self.scale}')
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+  def _transform_field(self, field: cx.Field) -> cx.Field:
     clip_fn = cx.cmap(lambda x: self.scale * jnp.tanh(x / self.scale))
-    return {k: clip_fn(v) for k, v in inputs.items()}
+    return clip_fn(field)
 
 
 @nnx.dataclass
@@ -1694,7 +1704,7 @@ class StreamNorm(TransformABC):
 
 
 @nnx.dataclass
-class ToModal(PytreeTransformABC):
+class ToModal(PytreeFieldTransformABC):
   """Transforms inputs from nodal to modal space.
 
   Args:
@@ -1703,15 +1713,12 @@ class ToModal(PytreeTransformABC):
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    modal_outputs = {}
-    for k, v in inputs.items():
-      modal_outputs[k] = self.ylm_map.to_modal(v)
-    return modal_outputs
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    return self.ylm_map.to_modal(field)
 
 
 @nnx.dataclass
-class ToNodal(PytreeTransformABC):
+class ToNodal(PytreeFieldTransformABC):
   """Transforms inputs from modal to nodal space.
 
   Args:
@@ -1720,11 +1727,8 @@ class ToNodal(PytreeTransformABC):
 
   ylm_map: spherical_harmonics.FixedYlmMapping | spherical_harmonics.YlmMapper
 
-  def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    nodal_outputs = {}
-    for k, v in inputs.items():
-      nodal_outputs[k] = self.ylm_map.to_nodal(v)
-    return nodal_outputs
+  def _transform_field(self, field: cx.Field) -> cx.Field:
+    return self.ylm_map.to_nodal(field)
 
 
 @nnx.dataclass

@@ -148,6 +148,13 @@ class Transform(Protocol):
     ...
 
 
+class FieldTransform(Protocol):
+  """Protocol for elementwise transforms supporting single item delivery."""
+
+  def __call__(self, inputs: cx.Field) -> cx.Field:
+    ...
+
+
 class ObservationOperator(Protocol):
   """Protocol for observation operators."""
 

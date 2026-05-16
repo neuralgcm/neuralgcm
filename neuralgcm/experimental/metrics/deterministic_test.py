@@ -234,6 +234,49 @@ class DeterministicMetricsTest(parameterized.TestCase):
           0.7 * expected_mae / expected_total,
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='prediction_passthrough',
+          stat_cls=deterministic_metrics.PredictionPassthrough,
+          target_is_broadcaster=True,
+      ),
+      dict(
+          testcase_name='target_passthrough',
+          stat_cls=deterministic_metrics.TargetPassthrough,
+          target_is_broadcaster=False,
+      ),
+  )
+  def test_passthrough_statistics(self, stat_cls, target_is_broadcaster):
+    time = cx.SizedAxis('time', 3)
+    space = cx.SizedAxis('space', 2)
+
+    a_data = np.array([1.0, 2.0, 3.0])
+    b_data = np.array([[1.0, np.nan], [2.0, 2.0], [np.nan, 3.0]])
+
+    field_a = cx.field(a_data, time)
+    field_b = cx.field(b_data, time, space)
+
+    if target_is_broadcaster:
+      predictions = {'x': field_a}
+      targets = {'x': field_b}
+    else:
+      predictions = {'x': field_b}
+      targets = {'x': field_a}
+
+    with self.subTest('broadcast_without_nans'):
+      stat = stat_cls(False)
+      res = stat.compute(predictions, targets)
+      expected = field_a.broadcast_like(field_b)
+      cx.testing.assert_fields_allclose(res['x'], expected)
+
+    with self.subTest('copy_nans'):
+      stat = stat_cls(True)
+      res = stat.compute(predictions, targets)
+      expected_data = np.broadcast_to(a_data[:, None], (3, 2)).copy()
+      expected_data[np.isnan(b_data)] = np.nan
+      expected = cx.field(expected_data, time, space)
+      cx.testing.assert_fields_allclose(res['x'], expected)
+
 
 if __name__ == '__main__':
   jax.config.update('jax_traceback_filtering', 'off')

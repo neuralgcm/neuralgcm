@@ -189,6 +189,46 @@ class WindVectorRMSE(base.Metric):
     return {k: cx.cmap(jnp.sqrt)(v) for k, v in wind_vector_se.items()}
 
 
+@dataclasses.dataclass
+class PredictionPassthrough(base.PerVariableStatistic):
+  """Returns predictions, potentially broadcasted to the shape of targets."""
+  copy_nans_from_targets: bool = False
+
+  @property
+  def unique_name(self) -> str:
+    return 'PredictionPassthrough'
+
+  def _compute_per_variable(
+      self, predictions: cx.Field, targets: cx.Field
+  ) -> cx.Field:
+    p, t = predictions, targets
+    result = p.broadcast_like(t) if set(p.dims).issubset(t.dims) else p
+    if self.copy_nans_from_targets:
+      set_nan = cx.cmap(lambda r, t: jnp.where(jnp.isnan(t), jnp.nan, r))
+      result = set_nan(result, targets)
+    return result
+
+
+@dataclasses.dataclass
+class TargetPassthrough(base.PerVariableStatistic):
+  """Returns targets, potentially broadcasted to the shape of predictions."""
+  copy_nans_from_predictions: bool = False
+
+  @property
+  def unique_name(self) -> str:
+    return 'TargetPassthrough'
+
+  def _compute_per_variable(
+      self, predictions: cx.Field, targets: cx.Field
+  ) -> cx.Field:
+    p, t = predictions, targets
+    result = t.broadcast_like(p) if set(t.dims).issubset(p.dims) else t
+    if self.copy_nans_from_predictions:
+      set_nan = cx.cmap(lambda r, p: jnp.where(jnp.isnan(p), jnp.nan, r))
+      result = set_nan(result, predictions)
+    return result
+
+
 MSE = SquaredError
 MAE = AbsoluteError
 Bias = Error

@@ -75,7 +75,7 @@ class MockSmallModel(nnx.Module):
 
 class ModelCalibratorsTest(absltest.TestCase):
 
-  def test_shared_params_subset(self):
+  def test_load_component_tracks_shared_alias_in_incoming_params(self):
     model = MockSmallModel(l2=nnx.Param(0.0))
     loaded_model = MockLargeModel(l1=nnx.Param(42.0), l3=nnx.Param(99.0))
 
@@ -83,6 +83,27 @@ class ModelCalibratorsTest(absltest.TestCase):
         model_calibrators.checkpointing, 'load_model_checkpoint'
     ) as mock_load:
       mock_load.return_value = loaded_model
+      # This ensures calibrator receives the loaded model that also defines l2
+      # as an alias of l1.
+
+      calibrator = model_calibrators.LoadModelComponentParams(
+          component_key=None,
+          ckpt_path_or_dir='/dummy/path',
+          load_subset=True,
+      )
+      calibrator(model, None, None)
+      self.assertEqual(model.l2.get_value(), 42.0)
+
+  def test_load_component_tracks_shared_alias_in_source_params(self):
+    model = MockLargeModel(l1=nnx.Param(0.0), l3=nnx.Param(0.0))
+    loaded_model = MockSmallModel(l2=nnx.Param(42.0))
+
+    with mock.patch.object(
+        model_calibrators.checkpointing, 'load_model_checkpoint'
+    ) as mock_load:
+      mock_load.return_value = loaded_model
+      # Incoming parameters provide values for l2, which in model is shared with
+      # l1 and hence both should be updated.
 
       calibrator = model_calibrators.LoadModelComponentParams(
           component_key=None,
@@ -92,6 +113,7 @@ class ModelCalibratorsTest(absltest.TestCase):
       calibrator(model, None, None)
 
       self.assertEqual(model.l2.get_value(), 42.0)
+      self.assertEqual(model.l1.get_value(), 42.0)
 
   def test_update_submodules_from_xarray(self):
     model = Model()

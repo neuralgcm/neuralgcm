@@ -221,6 +221,16 @@ class LoadModelComponentParams(ModelCalibrator):
           for path, node in nnx.graph.iter_graph(to_update)
           if isinstance(node, self.param_types)
       }
+      # Expanding target_vars to include duplicate aliases symmetrically.
+      # This ensures that if module has extra references that affect the
+      # traversal order in `to_update`, we still identify such duplicates.
+      for group in nnx.graph.find_duplicates(to_update):
+        canonical = next((p for p in group if p in target_vars), None)
+        if canonical is not None:
+          val = target_vars[canonical]
+          for p in group:
+            target_vars[p] = val
+
       common_keys = set(loaded_vars.keys()).intersection(target_vars.keys())
       for path in common_keys:
         target_vars[path].set_value(loaded_vars[path].get_value())

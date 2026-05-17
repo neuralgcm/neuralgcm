@@ -1768,6 +1768,9 @@ class RolloutTrainer:
         self._total_train_steps, auto_restart, experiment_state
     )
     self.checkpoint_manager.close()
+    # Update the model to the final params after training is complete.
+    nnx.update(self.model, experiment_state.params)
+    nnx.update(self.model, experiment_state.non_params)
 
   @functools.cached_property
   def max_lookback_interval(self) -> int:

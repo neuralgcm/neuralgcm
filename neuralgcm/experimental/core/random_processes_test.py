@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import coordax as cx
+import coordax.testing as cx_testing
 from flax import nnx
 import jax
 import jax.numpy as jnp
@@ -753,6 +754,145 @@ class UncorrelatedRandomFieldsTest(parameterized.TestCase):
       corr = scipy.stats.pearsonr(sample, advanced_sample, axis=None).statistic
       standard_error = 2 / np.sqrt(math.prod(sample.shape))
       np.testing.assert_array_less(corr, 4 * standard_error)
+
+
+class SamplerTest(parameterized.TestCase):
+  """Tests for Samplers."""
+
+  def test_recording_sampler_tape_values(self):
+    max_steps = 4
+    coord = cx.coords.compose(cx.SizedAxis('x', 2), cx.SizedAxis('y', 3))
+
+    dist = random_processes.NormalDistribution()
+    base_sampler = random_processes.DistributionSampler(dist, coord)
+    sampler = random_processes.RecordingSampler.with_fixed_tape_length(
+        base_sampler, max_steps
+    )
+    seed = jax.random.key(42)
+    draws = []
+    for i in range(5):
+      actual_tape_position = sampler.tape_position.get_value()
+      cx_testing.assert_fields_equal(actual_tape_position, cx.field(i))
+      key = jax.random.fold_in(seed, i)
+      val = sampler.draw(cx.field(key))
+      draws.append(val)
+
+    actual_tape = sampler.tape.get_value()
+    expected_tape = cx.cmap(jnp.stack)(draws[:max_steps]).tag(sampler.tape_axis)
+    cx_testing.assert_fields_allclose(actual_tape, expected_tape)
+
+  def test_tape_sampler(self):
+    tape_data = jnp.arange(12, dtype=jnp.float32).reshape(4, 3)
+
+    dist = random_processes.NormalDistribution()
+    x = cx.SizedAxis('x', 3)
+    tape_axis = cx.SizedAxis('tape_idx', 4)
+    tape = cx.field(tape_data, tape_axis, x)
+
+    base_sampler = random_processes.DistributionSampler(dist, x)
+    sampler = random_processes.TapeSampler(base_sampler, tape)
+    seed = jax.random.key(42)
+
+    val1 = sampler.draw(cx.field(seed))
+    val2 = sampler.draw(cx.field(seed))
+
+    with self.subTest('replay_values'):
+      cx_testing.assert_fields_allclose(val1, cx.field(tape_data[0], x))
+      cx_testing.assert_fields_allclose(val2, cx.field(tape_data[1], x))
+
+    with self.subTest('tape_log_prob_value'):
+      expected_log_prob = cx.field(jnp.sum(dist.log_prob(tape_data[:2])))
+      actual_log_prob = sampler.tape_log_prob()
+      cx_testing.assert_fields_allclose(actual_log_prob, expected_log_prob)
+
+  def test_samplers_jit(self):
+    """Verifies that RecordingSampler and TapeSampler work under JIT."""
+    max_steps = 4
+    x = cx.SizedAxis('x', 3)
+    dist = random_processes.NormalDistribution()
+    base_sampler = random_processes.DistributionSampler(dist, x)
+    tape_axis = cx.SizedAxis('tape_idx', max_steps)
+    tape_data = jnp.ones(tape_axis.shape + x.shape)
+    tape = cx.field(tape_data, tape_axis, x)
+    seed = jax.random.key(42)
+
+    @nnx.jit
+    def run_draws(s, k):
+      for i in range(3):
+        key = jax.random.fold_in(k, i)
+        s.draw(cx.field(key))
+
+    with self.subTest('recording_sampler'):
+      sampler = random_processes.RecordingSampler(base_sampler, tape)
+      run_draws(sampler, seed)
+      self.assertEqual(int(sampler.tape_position.get_value().data), 3)
+
+    with self.subTest('tape_sampler'):
+      sampler = random_processes.TapeSampler(base_sampler, tape)
+      run_draws(sampler, seed)
+      self.assertEqual(int(sampler.tape_position.get_value().data), 3)
+
+  def test_tape_sampler_broadcasting(self):
+    tape_data = jnp.arange(12, dtype=jnp.float32).reshape(4, 3)
+    dist = random_processes.NormalDistribution()
+    x = cx.SizedAxis('x', 3)
+    tape_axis = cx.SizedAxis('tape_idx', 4)
+    tape = cx.field(tape_data, tape_axis, x)
+
+    base_sampler = random_processes.DistributionSampler(dist, x)
+    seed = jax.random.key(42)
+    b = cx.SizedAxis('batch', 2)
+    batched_seed = cx.field(jax.random.split(seed, 2), b)
+
+    with self.subTest('disallows_broadcasting'):
+      sampler = random_processes.TapeSampler(
+          base_sampler, tape, allow_broadcasting=False
+      )
+      with self.assertRaises(ValueError):
+        sampler.draw(batched_seed)
+
+    with self.subTest('allows_broadcasting'):
+      sampler = random_processes.TapeSampler(
+          base_sampler, tape, allow_broadcasting=True
+      )
+      val = sampler.draw(batched_seed)
+      self.assertEqual(val.shape, b.shape + x.shape)
+
+    with self.subTest('matches_coordinates'):
+      batched_tape = tape.broadcast_like(cx.coords.compose(b, tape.coordinate))
+      sampler = random_processes.TapeSampler(
+          base_sampler, batched_tape, allow_broadcasting=False
+      )
+      val = sampler.draw(batched_seed)
+      self.assertEqual(val.shape, b.shape + x.shape)
+
+
+class DistributionsTest(parameterized.TestCase):
+  """Tests for basic probability distribution implementations."""
+
+  def test_uniform_distribution_log_prob(self):
+    dist = random_processes.UniformDistribution(0.0, 1.0)
+    values = jnp.array([-0.5, 0.0, 0.5, 1.0, 1.5])
+    scipy_dist = scipy.stats.uniform(loc=0.0, scale=1.0)
+    expected_log_prob = scipy_dist.logpdf(values)
+    actual_log_prob = dist.log_prob(values)
+    np.testing.assert_allclose(actual_log_prob, expected_log_prob, atol=1e-5)
+
+  def test_normal_distribution_log_prob(self):
+    dist = random_processes.NormalDistribution(0.0, 1.0)
+    values = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    scipy_dist = scipy.stats.norm(loc=0.0, scale=1.0)
+    expected_log_prob = scipy_dist.logpdf(values)
+    actual_log_prob = dist.log_prob(values)
+    np.testing.assert_allclose(actual_log_prob, expected_log_prob, atol=1e-5)
+
+  def test_truncated_normal_distribution_log_prob(self):
+    dist = random_processes.TruncatedNormalDistribution(-3.0, 3.0, 0.0, 1.0)
+    values = jnp.array([-4.0, -2.0, 0.0, 2.0, 4.0])
+    scipy_dist = scipy.stats.truncnorm(-3.0, 3.0, loc=0.0, scale=1.0)
+    expected_log_prob = scipy_dist.logpdf(values)
+    actual_log_prob = dist.log_prob(values)
+    np.testing.assert_allclose(actual_log_prob, expected_log_prob, atol=1e-5)
 
 
 if __name__ == '__main__':

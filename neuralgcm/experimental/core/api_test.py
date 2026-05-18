@@ -110,10 +110,10 @@ def construct_mock_model() -> MockModel:
       keys_to_coords={'modulation': x},
       observation_key='modulation',
   )
-  random_increment = random_processes.NormalUncorrelated(
+  random_increment = random_processes.NormalUncorrelated.construct(
+      coord=x,
       mean=0.0,
       std=1.0,
-      coord=x,
       rngs=nnx.Rngs(0),
   )
   # Adding demo operators with different output types for testing purposes.

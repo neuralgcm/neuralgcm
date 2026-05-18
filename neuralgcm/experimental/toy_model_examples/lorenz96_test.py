@@ -110,8 +110,8 @@ class Lorenz96Test(parameterized.TestCase):
   def test_lorenz96_with_param(self):
     """Tests Lorenz96 with parameterization produce expected outputs."""
     k, t0 = self.k, self.t0
-    random_process = random_processes.NormalUncorrelated(
-        mean=0.0, std=1.0, coord=k, rngs=nnx.Rngs(0)
+    random_process = random_processes.NormalUncorrelated.construct(
+        coord=k, mean=0.0, std=1.0, rngs=nnx.Rngs(0)
     )
     param = lorenz96.StochasticLinearParameterization(
         random_process=random_process

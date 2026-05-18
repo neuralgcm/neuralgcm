@@ -24,6 +24,7 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 from neuralgcm.experimental.core import coordinates
+from neuralgcm.experimental.core import module_utils
 from neuralgcm.experimental.core import spherical_harmonics
 from neuralgcm.experimental.core import typing
 from neuralgcm.experimental.core import units
@@ -320,6 +321,12 @@ def _advance_prng_key(prng_key: jax.Array, prng_step: int):
 class RandomProcessModule(nnx.Module, abc.ABC):
   """Base class for random processes."""
 
+  def __init__(
+      self,
+      samplers: dict[str, Sampler],
+  ):
+    self.samplers = nnx.Dict(samplers)
+
   @abc.abstractmethod
   def unconditional_sample(
       self,
@@ -351,33 +358,30 @@ class UniformUncorrelated(RandomProcessModule):
 
   def __init__(
       self,
-      minval: float,
-      maxval: float,
-      coord: cx.Coordinate,
+      sampler: Sampler,
       rngs: nnx.Rngs,
   ):
-    self.coord = coord
-    self.minval = minval
-    self.maxval = maxval
+    super().__init__(samplers={'uniform': sampler})
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
     self.rng_step = Randomness(cx.field(0))
     self.core = Randomness(k)
 
-  def _sample_core(
-      self, rng: cx.Field, coord: cx.Coordinate | None
-  ) -> cx.Field:
-    """Samples the core of the uniform random field."""
-    if coord is None:
-      coord = self.coord
-    sample_fn = lambda rng: jax.random.uniform(
-        rng,
-        minval=self.minval,
-        maxval=self.maxval,
-        shape=coord.shape,
-    )
-    out_axes = {c: i for i, c in enumerate(rng.axes)}
-    return cx.cmap(sample_fn, out_axes)(rng).tag(coord)
+  @classmethod
+  def construct(
+      cls,
+      coord: cx.Coordinate,
+      minval: float,
+      maxval: float,
+      rngs: nnx.Rngs,
+  ):
+    dist = UniformDistribution(minval, maxval)
+    sampler = DistributionSampler(dist, coord)
+    return cls(sampler=sampler, rngs=rngs)
+
+  @property
+  def sampler(self) -> Sampler:
+    return self.samplers['uniform']
 
   def unconditional_sample(self, rng: cx.Field) -> None:
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
@@ -398,7 +402,7 @@ class UniformUncorrelated(RandomProcessModule):
       self,
       coord: cx.Coordinate | None = None,
   ) -> cx.Field:
-    return self._sample_core(self.core.get_value(), coord)
+    return self.sampler.draw(self.core.get_value())
 
 
 class NormalUncorrelated(RandomProcessModule):
@@ -406,30 +410,30 @@ class NormalUncorrelated(RandomProcessModule):
 
   def __init__(
       self,
-      mean: float,
-      std: float,
-      coord: cx.Coordinate,
+      sampler: Sampler,
       rngs: nnx.Rngs,
   ):
-    self.coord = coord
-    self.mean = mean
-    self.std = std
+    super().__init__(samplers={'normal': sampler})
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
     self.rng_step = Randomness(cx.field(0))
-    self.core = Randomness(k)  # core of uncorrelated is just a key.
+    self.core = Randomness(k)
 
-  def _sample_core(
-      self, rng: cx.Field, coord: cx.Coordinate | None
-  ) -> cx.Field:
-    """Samples the core of the normal random field."""
-    if coord is None:
-      coord = self.coord
-    sample_fn = lambda rng: self.mean + self.std * jax.random.normal(
-        rng, shape=coord.shape
-    )
-    out_axes = {c: i for i, c in enumerate(rng.axes)}
-    return cx.cmap(sample_fn, out_axes)(rng).tag(coord)
+  @classmethod
+  def construct(
+      cls,
+      coord: cx.Coordinate,
+      mean: float,
+      std: float,
+      rngs: nnx.Rngs,
+  ):
+    dist = NormalDistribution(mean, std)
+    sampler = DistributionSampler(dist, coord)
+    return cls(sampler=sampler, rngs=rngs)
+
+  @property
+  def sampler(self) -> Sampler:
+    return self.samplers['normal']
 
   def unconditional_sample(self, rng: cx.Field):
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k)))(rng)
@@ -450,7 +454,7 @@ class NormalUncorrelated(RandomProcessModule):
       self,
       coord: cx.Coordinate | None = None,
   ) -> cx.Field:
-    return self._sample_core(self.core.get_value(), coord)
+    return self.sampler.draw(self.core.get_value())
 
 
 class GaussianRandomFieldCore(nnx.Module):
@@ -601,27 +605,41 @@ class GaussianRandomFieldCore(nnx.Module):
     # have L2 norm = radius.
     return normalization * sigmas_unnormed / dinosaur_grid.radius
 
-  def sample_core(self, rng: typing.PRNGKeyArray) -> jax.Array:
+  def sample_core(
+      self, rng: typing.PRNGKeyArray, sampler: Sampler | None = None
+  ) -> jax.Array:
     """Helper method for sampling the core of the gaussian random field."""
+    if sampler is None:
+      dist = TruncatedNormalDistribution(-self.clip, self.clip)
+      sampler = DistributionSampler(dist, self.core_grid)
+
     dinosaur_grid = self.ylm_map.dinosaur_grid
     modal_shape = dinosaur_grid.modal_shape
     sigmas = self._sigma_array()
     weights = jnp.where(
         dinosaur_grid.mask,
-        jax.random.truncated_normal(rng, -self.clip, self.clip, modal_shape),
+        sampler.draw(cx.field(rng)).data,
         jnp.zeros(modal_shape),
     )
     one_minus_phi2 = -jnp.expm1(-2 * self.dt / self.corr_time)
     return one_minus_phi2 ** (-0.5) * sigmas * weights
 
   def advance_core(
-      self, state_core: jax.Array, state_key: jax.Array, state_step: int
+      self,
+      state_core: jax.Array,
+      state_key: jax.Array,
+      state_step: int,
+      sampler: Sampler | None = None,
   ) -> jax.Array:
     """Helper method for advancing the core of the gaussian random field."""
+    if sampler is None:
+      dist = TruncatedNormalDistribution(-self.clip, self.clip)
+      sampler = DistributionSampler(dist, self.core_grid)
+
     dinosaur_grid = self.ylm_map.dinosaur_grid
     modal_shape = dinosaur_grid.modal_shape
     rng = _advance_prng_key(state_key, state_step)
-    eta = jax.random.truncated_normal(rng, -self.clip, self.clip, modal_shape)
+    eta = sampler.draw(cx.field(rng)).data
     return state_core * self.phi + self._sigma_array() * jnp.where(
         dinosaur_grid.mask, eta, jnp.zeros(modal_shape)
     )
@@ -642,14 +660,15 @@ class GaussianRandomField(RandomProcessModule):
       correlation_time: typing.Numeric | typing.Quantity,
       correlation_length: typing.Numeric | typing.Quantity,
       variance: typing.Numeric,
+      sampler: Sampler,
       correlation_time_type: nnx.Param | RandomnessParam = RandomnessParam,
       correlation_length_type: nnx.Param | RandomnessParam = RandomnessParam,
       variance_type: nnx.Param | RandomnessParam = RandomnessParam,
-      clip: float = 6.0,
       *,
       rngs: nnx.Rngs,
   ):
     """Initializes a Gaussian Random Field."""
+    super().__init__(samplers={'modal_normal': sampler})
     self.grf = GaussianRandomFieldCore(
         ylm_map=ylm_map,
         dt=dt,
@@ -660,15 +679,50 @@ class GaussianRandomField(RandomProcessModule):
         correlation_time_type=correlation_time_type,
         correlation_length_type=correlation_length_type,
         variance_type=variance_type,
-        clip=clip,
     )
     self.ylm_map = ylm_map
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
     self.rng_step = Randomness(cx.field(0))
-    self.core = Randomness(
-        cx.cmap(self.grf.sample_core)(k).tag(self.grf.core_grid)
+    sample_fn = lambda k: self.grf.sample_core(k, self.sampler)
+    self.core = Randomness(cx.cmap(sample_fn)(k).tag(self.grf.core_grid))
+
+  @classmethod
+  def construct(
+      cls,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
+      dt: float,
+      sim_units: units.SimUnits,
+      correlation_time: typing.Numeric | typing.Quantity,
+      correlation_length: typing.Numeric | typing.Quantity,
+      variance: typing.Numeric,
+      clip: float = 6.0,
+      correlation_time_type: nnx.Param | RandomnessParam = RandomnessParam,
+      correlation_length_type: nnx.Param | RandomnessParam = RandomnessParam,
+      variance_type: nnx.Param | RandomnessParam = RandomnessParam,
+      *,
+      rngs: nnx.Rngs,
+  ):
+    dist = TruncatedNormalDistribution(-clip, clip)
+    coord = ylm_map.modal_grid
+    sampler = DistributionSampler(dist, coord)
+    return cls(
+        sampler=sampler,
+        ylm_map=ylm_map,
+        dt=dt,
+        sim_units=sim_units,
+        correlation_time=correlation_time,
+        correlation_length=correlation_length,
+        variance=variance,
+        correlation_time_type=correlation_time_type,
+        correlation_length_type=correlation_length_type,
+        variance_type=variance_type,
+        rngs=rngs,
     )
+
+  @property
+  def sampler(self) -> Sampler:
+    return self.samplers['modal_normal']
 
   def unconditional_sample(self, rng: cx.Field) -> None:
     """Returns a randomly initialized state for the autoregressive process."""
@@ -677,13 +731,17 @@ class GaussianRandomField(RandomProcessModule):
     self.rng_step.set_value(
         cx.field(jnp.zeros(k.shape, jnp.uint32), k.coordinate)
     )
-    sample_core = cx.cmap(self.grf.sample_core, out_axes='leading')
+    sample_fn = lambda k: self.grf.sample_core(k, self.sampler)
+    sample_core = cx.cmap(sample_fn, out_axes='leading')
     self.core.set_value(sample_core(k).tag(self.grf.core_grid))
 
   def advance(self) -> None:
     """Updates the CoreRandomState of a random gaussian field."""
+    advance_fn = lambda core, key, step: self.grf.advance_core(
+        core, key, step, self.sampler
+    )
     self.core.set_value(
-        cx.cpmap(self.grf.advance_core)(
+        cx.cpmap(advance_fn)(
             self.core.get_value().untag(self.grf.core_grid),
             self.state_rng.get_value(),
             self.rng_step.get_value(),
@@ -720,10 +778,10 @@ class VectorizedGaussianRandomField(RandomProcessModule):
       correlation_times: typing.Numeric | typing.Quantity,
       correlation_lengths: typing.Numeric | typing.Quantity,
       variances: Sequence[float],
+      sampler: Sampler,
       correlation_time_type: nnx.Param | RandomnessParam = RandomnessParam,
       correlation_length_type: nnx.Param | RandomnessParam = RandomnessParam,
       variance_type: nnx.Param | RandomnessParam = RandomnessParam,
-      clip: float = 6.0,
       *,
       rngs: nnx.Rngs,
   ):
@@ -757,7 +815,6 @@ class VectorizedGaussianRandomField(RandomProcessModule):
         correlation_time_type=correlation_time_type,
         correlation_length_type=correlation_length_type,
         variance_type=variance_type,
-        clip=clip,
     )
     self.n_fields = n_fields
     self.axis = axis
@@ -765,11 +822,53 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     self.batch_grf_core = nnx.vmap(make_grf, axis_size=self.n_fields)(
         correlation_lengths, correlation_times, variances
     )
+
+    super().__init__(samplers={'modal_normal': sampler})
+
     # Initializing the state of the process.
     k, rng = cx.cmap(lambda k: tuple(jax.random.split(k, 2)))(rngs.params())
     self.state_rng = Randomness(rng)
     self.rng_step = Randomness(cx.field(0))
     self.core = Randomness(self._sample_core(k))
+
+  @classmethod
+  def construct(
+      cls,
+      ylm_map: spherical_harmonics.FixedYlmMapping,
+      dt: float,
+      sim_units: units.SimUnits,
+      axis: cx.Coordinate,
+      correlation_times: typing.Numeric | typing.Quantity,
+      correlation_lengths: typing.Numeric | typing.Quantity,
+      variances: Sequence[float],
+      clip: float = 6.0,
+      correlation_time_type: nnx.Param | RandomnessParam = RandomnessParam,
+      correlation_length_type: nnx.Param | RandomnessParam = RandomnessParam,
+      variance_type: nnx.Param | RandomnessParam = RandomnessParam,
+      *,
+      rngs: nnx.Rngs,
+  ):
+    dist = TruncatedNormalDistribution(-clip, clip)
+    coord = ylm_map.modal_grid
+    sampler = DistributionSampler(dist, coord)
+    return cls(
+        sampler=sampler,
+        ylm_map=ylm_map,
+        dt=dt,
+        sim_units=sim_units,
+        axis=axis,
+        correlation_times=correlation_times,
+        correlation_lengths=correlation_lengths,
+        variances=variances,
+        correlation_time_type=correlation_time_type,
+        correlation_length_type=correlation_length_type,
+        variance_type=variance_type,
+        rngs=rngs,
+    )
+
+  @property
+  def sampler(self) -> Sampler:
+    return self.samplers['modal_normal']
 
   @property
   def event_shape(self) -> tuple[int, ...]:
@@ -779,10 +878,10 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     """Samples the core state of a collection of gaussian random fields."""
     split = lambda k: jax.random.split(k, self.n_fields)
     rngs = cx.cmap(split)(rng).tag(self.axis)
-    sample_single = lambda grf, rng: grf.sample_core(rng)
-    sample_collection = nnx.vmap(sample_single)
+    sample_single = lambda grf, sampler, rng: grf.sample_core(rng, sampler)
+    sample_collection = nnx.vmap(sample_single, in_axes=(0, 0, 0))
     return cx.cmap(sample_collection, vmap=nnx.vmap, out_axes='leading')(
-        self.batch_grf_core, rngs.untag(self.axis)
+        self.batch_grf_core, self.sampler, rngs.untag(self.axis)
     ).tag(self.axis, self.batch_grf_core.core_grid)
 
   def unconditional_sample(self, rng: cx.Field) -> None:
@@ -798,10 +897,13 @@ class VectorizedGaussianRandomField(RandomProcessModule):
     split = lambda k: jax.random.split(k, self.n_fields)
     rngs = cx.cmap(split)(rng).tag(self.axis)
     advance_keys = cx.cmap(_advance_prng_key)(rngs, step)
-    advance_single = lambda grf, core, k, step: grf.advance_core(core, k, step)
-    advance_collection = nnx.vmap(advance_single, in_axes=(0, 0, 0, None))
+    advance_single = lambda grf, sampler, core, k, step: grf.advance_core(
+        core, k, step, sampler
+    )
+    advance_collection = nnx.vmap(advance_single, in_axes=(0, 0, 0, 0, None))
     next_core = cx.cmap(advance_collection, vmap=nnx.vmap, out_axes='leading')(
         self.batch_grf_core,
+        self.sampler,
         self.core.get_value().untag(self.axis, self.batch_grf_core.core_grid),
         advance_keys.untag(self.axis),
         step,
@@ -920,7 +1022,7 @@ class VectorizedGaussianRandomField(RandomProcessModule):
         variances.append(1.0)
 
     axis = cx.SizedAxis(axis_name, n_fields + extra_n_constant_fields)
-    return cls(
+    return cls.construct(
         ylm_map=ylm_map,
         dt=dt,
         sim_units=sim_units,
@@ -928,9 +1030,20 @@ class VectorizedGaussianRandomField(RandomProcessModule):
         correlation_times=correlation_times,
         correlation_lengths=correlation_lengths,
         variances=variances,
+        clip=clip,
         correlation_time_type=correlation_time_type,
         correlation_length_type=correlation_length_type,
         variance_type=variance_type,
-        clip=clip,
         rngs=rngs,
     )
+
+
+def rewind_samplers(module: nnx.Module) -> None:
+  """Resets sampler playback state on all Tape/RecordingSamplers."""
+  random_processes_list = module_utils.retrieve_subclass_modules(
+      module, RandomProcessModule
+  )
+  for rnd_process in random_processes_list:
+    for base_sampler in rnd_process.samplers.values():
+      if isinstance(base_sampler, (TapeSampler, RecordingSampler)):
+        base_sampler.rewind()

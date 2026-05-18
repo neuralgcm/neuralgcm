@@ -639,6 +639,7 @@ class CheckpointConfig:
   keep_every_n_steps: int
   model_config_str: str
   metadata: dict[str, Any] | None = None
+  timeout_secs: int = 3600
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1786,6 +1787,9 @@ class RolloutTrainer:
     options = ocp.CheckpointManagerOptions(
         file_options=ocp.checkpoint_manager.FileOptions(
             path_permission_mode=0o775,  # world-readable
+        ),
+        async_options=ocp.AsyncOptions(
+            timeout_secs=self.checkpoint_config.timeout_secs
         ),
         save_interval_steps=self.checkpoint_config.save_interval_steps,
         preservation_policy=ocp_managers.AnyPreservationPolicy([

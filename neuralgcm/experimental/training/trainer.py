@@ -1791,6 +1791,7 @@ class RolloutTrainer:
         async_options=ocp.AsyncOptions(
             timeout_secs=self.checkpoint_config.timeout_secs
         ),
+        cleanup_tmp_directories=True,
         save_interval_steps=self.checkpoint_config.save_interval_steps,
         preservation_policy=ocp_managers.AnyPreservationPolicy([
             checkpointing.LastNSteps(self.max_lookback_interval),

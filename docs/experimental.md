@@ -13,12 +13,4 @@ Tutorials below introduce key concepts of the new API including:
 
 ## Contents
 
-```{toctree}
-:maxdepth: 1
-data_model_intro.ipynb
-model_api_intro.ipynb
-simulation_state_components_intro.ipynb
-inference_model_api_intro.ipynb
-model_vectorization_tutorial.ipynb
-forced_parmeterized_coupled_l96.ipynb
-```
+The experimental tutorials have been migrated to the `terrax` repository.

@@ -5,11 +5,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = [
     "neuralgcm",
-    "neuralgcm.experimental",
-    "neuralgcm.experimental.atmosphere",
-    "neuralgcm.experimental.core",
     "neuralgcm.experimental.training",
-    "neuralgcm.experimental.xreader",
     "neuralgcm.legacy",
 ]
 package-data = {neuralgcm = ["data/*"]}
@@ -47,18 +43,11 @@ tests = [
     "pytest",
 ]
 experimental = [
+    "terrax @ git+https://github.com/neuralgcm/terrax.git",
     "coordax>=0.2.7",
-    "einops",
     "etils",
-    # TODO(shoyer): use pypi version when there is a newer release than 0.3.0
-    "fiddle @ git+https://github.com/google/fiddle.git",
-    # TODO(shoyer): use pypi version when there is a newer release than 0.12.1
-    "flax @ git+https://github.com/google/flax.git",
     "grain",
     "jax-datetime @ git+https://github.com/google/jax-datetime.git",
-    "jax-solar",
-    "orbax",
-    "treescope",
     "tqdm",
     "zarr>= 3.1.4",
     # require dev version of xarray until 2025.09.0 release

@@ -28,17 +28,16 @@ import jax
 from jax.experimental import colocated_python
 import jax.numpy as jnp
 import jax.sharding
-from neuralgcm.experimental import xreader
-from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import data_specs
-from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import typing
-from neuralgcm.experimental.core import xarray_utils
-from neuralgcm.experimental.training import train_utils
 import numpy as np
 import pandas as pd
+from terrax import xreader
+from terrax.core import coordinates
+from terrax.core import data_specs
+from terrax.core import parallelism
+from terrax.core import typing
+from terrax.core import xarray_utils
+from terrax.training import train_utils
 import xarray
-
 
 PyTree = typing.Pytree
 

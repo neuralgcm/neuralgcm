@@ -15,14 +15,14 @@ from absl.testing import absltest
 import coordax as cx
 import jax
 import jax.numpy as jnp
-from neuralgcm.experimental import xreader
-from neuralgcm.experimental.core import coordinates
-from neuralgcm.experimental.core import data_specs
-from neuralgcm.experimental.core import parallelism
-from neuralgcm.experimental.core import scan_utils
 from neuralgcm.experimental.training import data_loading
 import numpy as np
 import pandas as pd
+from terrax import xreader
+from terrax.core import coordinates
+from terrax.core import data_specs
+from terrax.core import parallelism
+from terrax.core import scan_utils
 import xarray
 
 

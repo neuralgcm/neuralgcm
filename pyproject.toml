@@ -5,7 +5,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = [
     "neuralgcm",
-    "neuralgcm.experimental.training",
     "neuralgcm.legacy",
 ]
 package-data = {neuralgcm = ["data/*"]}
@@ -41,15 +40,4 @@ tests = [
     "absl-py",
     "chex",
     "pytest",
-]
-experimental = [
-    "terrax @ git+https://github.com/neuralgcm/terrax.git",
-    "coordax>=0.2.7",
-    "etils",
-    "grain",
-    "jax-datetime @ git+https://github.com/google/jax-datetime.git",
-    "tqdm",
-    "zarr>= 3.1.4",
-    # require dev version of xarray until 2025.09.0 release
-    "xarray @ git+https://github.com/pydata/xarray.git",
 ]

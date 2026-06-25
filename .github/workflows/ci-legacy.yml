@@ -34,4 +34,4 @@ jobs:
         pip install -e .[tests]
     - name: Run unit tests
       run: |
-        pytest -v neuralgcm --ignore=neuralgcm/experimental
+        pytest -v neuralgcm

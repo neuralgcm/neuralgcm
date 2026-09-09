@@ -159,7 +159,7 @@ class PrecipitationMinusEvaporationDiagnostics:
     moisture_tendencies = sum(self.to_nodal_fn(moisture_tendencies))
     scale = p_surface / self.physics_specs.g
     e_minus_p = scale * sigma_coordinates.sigma_integral(
-        moisture_tendencies, self.coords.vertical, keepdims=False
+        moisture_tendencies, self.coords.vertical, keepdims=False  # pyrefly: ignore[bad-argument-type]
     )
     return e_minus_p
 
@@ -228,7 +228,7 @@ class PrecipitableWaterDiagnostics:
     water_density = self.physics_specs.nondimensionalize(scales.WATER_DENSITY)
     scale = p_surface / (self.physics_specs.g * water_density)
     water = scale * sigma_coordinates.sigma_integral(
-        moisture, self.coords.vertical, keepdims=False
+        moisture, self.coords.vertical, keepdims=False  # pyrefly: ignore[bad-argument-type]
     )
     return {'precipitable_water': water}
 

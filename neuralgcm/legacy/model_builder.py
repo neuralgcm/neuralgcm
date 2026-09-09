@@ -594,12 +594,12 @@ class WhirlModel:
     specs = ModelSpecs(coords, dt, physics_specs, aux_features)
     model_cls = functools.partial(
         model_cls,
-        coords=coords,
-        dt=dt,
-        physics_specs=physics_specs,
-        aux_features=aux_features,
-        input_coords=input_coords,
-        output_coords=output_coords,
+        coords=coords,  # pyrefly: ignore[unexpected-keyword]
+        dt=dt,  # pyrefly: ignore[unexpected-keyword]
+        physics_specs=physics_specs,  # pyrefly: ignore[unexpected-keyword]
+        aux_features=aux_features,  # pyrefly: ignore[unexpected-keyword]
+        input_coords=input_coords,  # pyrefly: ignore[unexpected-keyword]
+        output_coords=output_coords,  # pyrefly: ignore[unexpected-keyword]
     )
 
     def forcing_fwd(forcing_data, sim_time):

@@ -161,7 +161,7 @@ class RepeatedStep(BaseStep, hk.Module):
       forcing: typing.Forcing,
   ) -> ModelState:
     """Computes the state of the system evolved in time by `dt`."""
-    step_fn = functools.partial(self.step_fn, forcing=forcing)
+    step_fn = functools.partial(self.step_fn, forcing=forcing)  # pyrefly: ignore[unexpected-keyword]
     step_fn = time_integration.repeated(step_fn, self.num_inner_steps, hk.scan)
     return step_fn(state)
 

@@ -83,7 +83,7 @@ class PrimitiveEquationsDiagnosticState(hk.Module):
     if not isinstance(inputs, primitive_equations.State):
       inputs = primitive_equations.State(**inputs)
     d_state = primitive_equations.compute_diagnostic_state(inputs, self.coords)
-    return self.features_transform_fn(d_state.asdict())
+    return self.features_transform_fn(d_state.asdict())  # pyrefly: ignore[missing-attribute]
 
 
 @gin.register(denylist=['coords', 'dt', 'physics_specs', 'aux_features'])

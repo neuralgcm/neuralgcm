@@ -430,7 +430,7 @@ class PrimitiveToWeatherbenchDecoder(hk.Module):
     self.geopotential_fn = functools.partial(
         primitive_equations.get_geopotential_with_moisture,
         nodal_orography=self.nodal_orography,
-        coordinates=coords.vertical,
+        coordinates=coords.vertical,  # pyrefly: ignore[bad-argument-type]
         gravity_acceleration=physics_specs.gravity_acceleration,
         ideal_gas_constant=physics_specs.ideal_gas_constant,
         water_vapor_gas_constant=physics_specs.water_vapor_gas_constant,

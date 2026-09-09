@@ -91,7 +91,7 @@ class CombinedDiagnostics:
       dt: float,
       physics_specs: Any,
       aux_features: dict[str, Any],
-      diagnostic_modules: abc.Sequence[DiagnosticModule] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      diagnostic_modules: abc.Sequence[DiagnosticModule] = gin.REQUIRED,
   ):
     self.diagnostic_fns = [
         module(coords, dt, physics_specs, aux_features)

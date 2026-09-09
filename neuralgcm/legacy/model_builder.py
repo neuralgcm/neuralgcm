@@ -564,7 +564,7 @@ class WhirlModel:
       aux_features: Optional[AuxFeatures] = None,
       input_coords: Optional[coordinate_systems.CoordinateSystem] = None,
       output_coords: Optional[coordinate_systems.CoordinateSystem] = None,
-      model_cls: Callable[[], DynamicalSystem] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      model_cls: Callable[[], DynamicalSystem] = gin.REQUIRED,
       to_xarray_fn: Optional[Callable[..., xarray.Dataset]] = None,
       from_xarray_fn: Optional[Callable[..., DataState]] = None,
   ):

@@ -40,8 +40,8 @@ class MlpUniform(hk.nets.MLP):
   def __init__(
       self,
       output_size: int,
-      num_hidden_units: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      num_hidden_layers: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      num_hidden_units: int = gin.REQUIRED,
+      num_hidden_layers: int = gin.REQUIRED,
       w_init: Optional[hk.initializers.Initializer] = None,
       b_init: Optional[hk.initializers.Initializer] = None,
       with_bias: bool = True,
@@ -90,7 +90,7 @@ class ConvLonLat(hk.Module):
   def __init__(
       self,
       output_size: int,
-      kernel_shape: Tuple[int, int] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      kernel_shape: Tuple[int, int] = gin.REQUIRED,
       with_bias: bool = True,
       name: Optional[str] = None,
   ):
@@ -381,8 +381,8 @@ class LevelBiLSTM(hk.Module):
   def __init__(
       self,
       output_size: int,
-      hidden_size: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      n_layers: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      hidden_size: int = gin.REQUIRED,
+      n_layers: int = gin.REQUIRED,
       final_activation: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,
       window_size: int = 1,
       name='lstm'):

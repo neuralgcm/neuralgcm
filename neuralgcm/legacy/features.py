@@ -486,7 +486,7 @@ class OneHotAuxFeatures(hk.Module):
       dt: float,
       physics_specs: Any,
       aux_features: typing.AuxFeatures,
-      covariate_keys: Sequence[str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      covariate_keys: Sequence[str] = gin.REQUIRED,
       convert_float_to_int: bool = False,
       name: Optional[str] = None,
   ):
@@ -678,8 +678,8 @@ class FloatDataFeatures(hk.Module):
       dt: float,
       physics_specs: Any,
       aux_features: typing.AuxFeatures,
-      covariate_data_path: str = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      covariate_keys: Sequence[str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      covariate_data_path: str = gin.REQUIRED,
+      covariate_keys: Sequence[str] = gin.REQUIRED,
       renaming_dict: Optional[Mapping[str, str]] = None,
       compute_gradients_module: TransformModule = transforms.EmptyTransform,
       name: Optional[str] = None,
@@ -738,7 +738,7 @@ class CombinedFeatures(hk.Module):
       dt: float,
       physics_specs: Any,
       aux_features: typing.AuxFeatures,
-      feature_modules: Sequence[FeaturesModule] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      feature_modules: Sequence[FeaturesModule] = gin.REQUIRED,
       feature_module_names_to_exclude: Sequence[str] = tuple(),
       features_to_exclude: Sequence[str] = tuple(),
       features_transform_module: TransformModule = transforms.IdentityTransform,

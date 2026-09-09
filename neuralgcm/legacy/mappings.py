@@ -39,7 +39,7 @@ class NodalMapping(hk.Module):
   def __init__(
       self,
       output_shapes: typing.Pytree,
-      tower_factory: Tower = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      tower_factory: Tower = gin.REQUIRED,
       name: Optional[str] = None,
   ):
     super().__init__(name=name)
@@ -84,7 +84,7 @@ class NodalVolumeMapping(hk.Module):
   def __init__(
       self,
       output_shapes: typing.Pytree,
-      tower_factory: Tower = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      tower_factory: Tower = gin.REQUIRED,
       name: Optional[str] = None
   ):
     super().__init__(name=name)
@@ -136,9 +136,9 @@ class NodalVolumeTransformerMapping(hk.Module):
   def __init__(
       self,
       output_shapes: typing.Pytree,
-      encoder_transformer_tower_factory: Tower = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      decoder_transformer_tower_factory: Tower = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      latent_size: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      encoder_transformer_tower_factory: Tower = gin.REQUIRED,
+      decoder_transformer_tower_factory: Tower = gin.REQUIRED,
+      latent_size: int = gin.REQUIRED,
       encoder_inputs_selection_module=gin.REQUIRED,
       decoder_inputs_selection_module=transforms.EmptyTransform,
       encoder_pos_encoding_module=transforms.EmptyTransform,
@@ -195,7 +195,7 @@ class ParallelMapping(hk.Module):
   def __init__(
       self,
       output_shapes: typing.Pytree,
-      mappings: Sequence[MappingModule] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      mappings: Sequence[MappingModule] = gin.REQUIRED,
       name: Optional[str] = None,
   ):
     super().__init__(name=name)

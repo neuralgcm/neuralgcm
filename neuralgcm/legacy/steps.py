@@ -182,7 +182,7 @@ class CustomCoordsStep(BaseStep, hk.Module):
       physics_specs: Any,
       aux_features: typing.AuxFeatures,
       step_module: typing.StepModule,
-      custom_coords: coordinate_systems.CoordinateSystem = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      custom_coords: coordinate_systems.CoordinateSystem = gin.REQUIRED,
       name: Optional[str] = None,
   ):
     hk.Module.__init__(self, name=name)

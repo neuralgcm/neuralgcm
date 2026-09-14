@@ -38,7 +38,7 @@ class ColumnTower(hk.Module):
   def __init__(
       self,
       output_size: int,
-      column_net_factory: LayerFactory = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      column_net_factory: LayerFactory = gin.REQUIRED,
       checkpoint_tower: bool = False,
       name: Optional[str] = None,
   ):
@@ -84,8 +84,8 @@ class VerticalConvTower(hk.Module):
   def __init__(
       self,
       output_size: int,  # The number of channels in the last layer
-      channels: abc.Sequence[int] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      kernel_shape: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      channels: abc.Sequence[int] = gin.REQUIRED,
+      kernel_shape: int = gin.REQUIRED,
       with_bias: bool = True,
       activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.relu,
       activate_final: bool = False,
@@ -130,9 +130,9 @@ class Conv2DTower(hk.Module):
   def __init__(
       self,
       output_size: int,
-      num_hidden_units: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      num_hidden_layers: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      kernel_shape: Tuple[int, int] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      num_hidden_units: int = gin.REQUIRED,
+      num_hidden_layers: int = gin.REQUIRED,
+      kernel_shape: Tuple[int, int] = gin.REQUIRED,
       with_bias: bool = True,
       activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.relu,
       activate_final: bool = False,
@@ -169,11 +169,11 @@ class EpdTower(hk.Module):
   def __init__(
       self,
       output_size: int,
-      latent_size: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      num_process_blocks: int = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      encode_tower_factory: TowerFactory = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      process_tower_factory: TowerFactory = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      decode_tower_factory: TowerFactory = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      latent_size: int = gin.REQUIRED,
+      num_process_blocks: int = gin.REQUIRED,
+      encode_tower_factory: TowerFactory = gin.REQUIRED,
+      process_tower_factory: TowerFactory = gin.REQUIRED,
+      decode_tower_factory: TowerFactory = gin.REQUIRED,
       post_encode_activation: Optional[Callable[[Array], Array]] = None,
       pre_decode_activation: Optional[Callable[[Array], Array]] = None,
       final_activation: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,

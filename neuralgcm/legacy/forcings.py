@@ -100,9 +100,7 @@ class DynamicDataForcing(hk.Module):
       time_axis: int = 0,
       data_time_step: float | QuantityOrStr | None = None,
       dt_tolerance: Union[float, QuantityOrStr] = '1 hour',
-      # TODO(langmore) Remove checking once bug arising from http://cl/624039690
-      # is fixed.
-      check_sim_time_errors: bool = False,
+      check_sim_time_errors: bool = True,
       name: Optional[str] = None,
   ):
     logging.info(f'[NGCM] Initializing DynamicDataForcing with {dt_tolerance=}')
@@ -151,15 +149,7 @@ class DynamicDataForcing(hk.Module):
     _assert_no_scalars(forcing_data)
     forcing = tree_map(field_index_fn, forcing_data)
 
-    # Replace leaf values with nan if forcing['sim_time'] does not match
-    # the requested sim_time value within dt_tolerance.
-    abs_error = jnp.abs(forcing['sim_time'] - sim_time)
-    is_valid = abs_error < self.dt_tolerance
-    forcing = jax.tree_util.tree_map(
-        lambda x: jnp.where(is_valid, x, jnp.nan), forcing
-    )
-
-    # Also add errors (if any) to _FORCING_ERRORS so _check_errors can be called
+    # Add errors (if any) to _FORCING_ERRORS so _check_errors can be called
     # to raise.
     if self._check_sim_time_errors:
       jax.experimental.io_callback(
@@ -169,6 +159,15 @@ class DynamicDataForcing(hk.Module):
           forcing_sim_time=forcing['sim_time'],
           tolerance=self.dt_tolerance,
       )
+
+    # Replace leaf values with nan if forcing['sim_time'] does not match
+    # the requested sim_time value within dt_tolerance.
+    abs_error = jnp.abs(forcing['sim_time'] - sim_time)
+    is_valid = abs_error < self.dt_tolerance
+    forcing = jax.tree_util.tree_map(
+        lambda x: jnp.where(is_valid, x, jnp.nan), forcing
+    )
+
     return self.forcing_transform_fn(forcing)
 
 

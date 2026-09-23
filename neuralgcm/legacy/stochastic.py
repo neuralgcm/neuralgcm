@@ -621,9 +621,9 @@ class BatchGaussianRandomFieldModule(hk.Module):
       dt: float,
       physics_specs: Any,
       aux_features: Any,
-      initial_correlation_times: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      initial_correlation_lengths: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      variances: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      initial_correlation_times: Sequence[Quantity | str] = gin.REQUIRED,
+      initial_correlation_lengths: Sequence[Quantity | str] = gin.REQUIRED,
+      variances: Sequence[Quantity | str] = gin.REQUIRED,
       field_subset: Optional[Sequence[int]] = None,
       n_fixed_fields: Optional[int] = None,
       clip: float = 6.0,
@@ -800,9 +800,9 @@ class DictOfGaussianRandomFieldModules(hk.Module):
       dt: float,
       physics_specs: Any,
       aux_features: Any,
-      initial_correlation_times: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      initial_correlation_lengths: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      variances: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      initial_correlation_times: Sequence[Quantity | str] = gin.REQUIRED,
+      initial_correlation_lengths: Sequence[Quantity | str] = gin.REQUIRED,
+      variances: Sequence[Quantity | str] = gin.REQUIRED,
       field_names: Optional[Sequence[str]] = None,
       field_subset: Optional[Sequence[int]] = None,
       clip: float = 6.0,
@@ -1034,11 +1034,11 @@ class SumOfGaussianLikeRandomFields(SumOfRandomFields, abc.ABC):
       aux_features: Any,
       correlation_times: Sequence[
           Union[jax.Array, Quantity, str]
-      ] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      ] = gin.REQUIRED,
       correlation_lengths: Sequence[
           Union[jax.Array, Quantity, str]
-      ] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      variances: Sequence[Union[jax.Array, Quantity, str]] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      ] = gin.REQUIRED,
+      variances: Sequence[Union[jax.Array, Quantity, str]] = gin.REQUIRED,
       clip: float = 6.0,
   ):
     """Constructs a SumOfGaussianLikeRandomFields."""
@@ -1083,10 +1083,10 @@ class SumOfGaussianLikeRandomFieldsModule(
       dt: float,
       physics_specs: Any,
       aux_features: Any,
-      initial_correlation_times: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      initial_correlation_lengths: Sequence[Quantity | str] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      initial_variances: Optional[Sequence[Quantity | str]] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
-      variance_bounds: Optional[Sequence[Quantity | str]] = gin.REQUIRED,  # pyrefly: ignore[bad-function-definition]
+      initial_correlation_times: Sequence[Quantity | str] = gin.REQUIRED,
+      initial_correlation_lengths: Sequence[Quantity | str] = gin.REQUIRED,
+      initial_variances: Optional[Sequence[Quantity | str]] = gin.REQUIRED,
+      variance_bounds: Optional[Sequence[Quantity | str]] = gin.REQUIRED,
       clip: float = 6.0,
       name: Optional[str] = None,
   ):

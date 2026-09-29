@@ -111,7 +111,7 @@ class ExponentialLeapfrogFilter(hk.Module):
     super().__init__(name=name)
     tau = physics_specs.nondimensionalize(scales.Quantity(tau))
     self.filter_fn = time_integration.exponential_leapfrog_step_filter(
-        coords.horizontal, dt, tau, order, cutoff)
+        coords.horizontal, dt, tau, order, cutoff)  # pyrefly: ignore[bad-argument-type]
 
   def __call__(
       self,
@@ -141,7 +141,7 @@ class ExponentialFilter(hk.Module):
     super().__init__(name=name)
     tau = physics_specs.nondimensionalize(scales.Quantity(tau))
     self.filter_fn = time_integration.exponential_step_filter(
-        coords.horizontal, dt, tau, order, cutoff)
+        coords.horizontal, dt, tau, order, cutoff)  # pyrefly: ignore[bad-argument-type]
 
   def __call__(
       self,
@@ -170,7 +170,7 @@ class HorizontalDiffusionFilter(hk.Module):
     super().__init__(name=name)
     tau = physics_specs.nondimensionalize(scales.Quantity(tau))
     self.filter_fn = time_integration.horizontal_diffusion_step_filter(
-        coords.horizontal, dt, tau, order)
+        coords.horizontal, dt, tau, order)  # pyrefly: ignore[bad-argument-type]
 
   def __call__(
       self,

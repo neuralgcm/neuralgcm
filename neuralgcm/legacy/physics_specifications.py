@@ -69,9 +69,9 @@ def shallow_water_specs_constructor(
   densities = np.asarray(density_vals) * scales.Quantity(density_units)
   return shallow_water.ShallowWaterSpecs.from_si(
       densities=densities,  # pyrefly: ignore[unexpected-keyword]
-      radius_si=scales.Quantity(radius_si),
-      angular_velocity_si=scales.Quantity(angular_velocity_si),
-      gravity_acceleration_si=scales.Quantity(gravity_acceleration_si),
+      radius_si=scales.Quantity(radius_si),  # pyrefly: ignore[bad-argument-type]
+      angular_velocity_si=scales.Quantity(angular_velocity_si),  # pyrefly: ignore[bad-argument-type]
+      gravity_acceleration_si=scales.Quantity(gravity_acceleration_si),  # pyrefly: ignore[bad-argument-type]
       scale=scale)
 
 
@@ -104,12 +104,12 @@ def primitive_eq_specs_constructor(
     PrimitiveEquationsSpecs object containing physical parameters of the system.
   """
   return primitive_equations.PrimitiveEquationsSpecs.from_si(
-      radius_si=scales.Quantity(radius_si),
-      angular_velocity_si=scales.Quantity(angular_velocity_si),
-      gravity_acceleration_si=scales.Quantity(gravity_acceleration_si),
-      ideal_gas_constant_si=scales.Quantity(ideal_gas_constant_si),
-      water_vapor_gas_constant_si=scales.Quantity(water_vapor_gas_constant_si),
-      water_vapor_isobaric_heat_capacity_si=scales.Quantity(
+      radius_si=scales.Quantity(radius_si),  # pyrefly: ignore[bad-argument-type]
+      angular_velocity_si=scales.Quantity(angular_velocity_si),  # pyrefly: ignore[bad-argument-type]
+      gravity_acceleration_si=scales.Quantity(gravity_acceleration_si),  # pyrefly: ignore[bad-argument-type]
+      ideal_gas_constant_si=scales.Quantity(ideal_gas_constant_si),  # pyrefly: ignore[bad-argument-type]
+      water_vapor_gas_constant_si=scales.Quantity(water_vapor_gas_constant_si),  # pyrefly: ignore[bad-argument-type]
+      water_vapor_isobaric_heat_capacity_si=scales.Quantity(  # pyrefly: ignore[bad-argument-type]
           water_vapor_isobaric_heat_capacity_si),
-      kappa_si=scales.Quantity(kappa_si),
+      kappa_si=scales.Quantity(kappa_si),  # pyrefly: ignore[bad-argument-type]
       scale=scale)

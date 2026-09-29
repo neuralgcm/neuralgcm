@@ -303,7 +303,7 @@ class GaussianRandomField(RandomField):
     )
 
     tau = maybe_nondimensionalize(correlation_time, physics_specs)
-    correlation_length = maybe_nondimensionalize(
+    correlation_length = maybe_nondimensionalize(  # pyrefly: ignore[bad-assignment]
         correlation_length, physics_specs
     )
 
@@ -509,8 +509,8 @@ class GaussianRandomFieldModule(GaussianRandomField, hk.Module):
     else:
       variance_raw = 0.0
 
-    initial_variance = maybe_nondimensionalize(initial_variance, physics_specs)
-    _assert_positive_or_none(initial_variance, 'initial_variance')
+    initial_variance = maybe_nondimensionalize(initial_variance, physics_specs)  # pyrefly: ignore[bad-assignment]
+    _assert_positive_or_none(initial_variance, 'initial_variance')  # pyrefly: ignore[bad-argument-type]
 
     if initial_variance is None:
       variance = None
@@ -519,14 +519,14 @@ class GaussianRandomFieldModule(GaussianRandomField, hk.Module):
           variance_raw, initial_variance  # pyrefly: ignore[bad-argument-type]
       )
     else:
-      variance_bound = maybe_nondimensionalize(variance_bound, physics_specs)
-      _assert_positive_or_none(variance_bound, 'variance_bound')
+      variance_bound = maybe_nondimensionalize(variance_bound, physics_specs)  # pyrefly: ignore[bad-assignment]
+      _assert_positive_or_none(variance_bound, 'variance_bound')  # pyrefly: ignore[bad-argument-type]
       _assert_positive_or_none(
           variance_bound - initial_variance, 'variance_bound - initial_variance'  # pyrefly: ignore[unsupported-operation]
       )
       variance = convert_hk_param_to_bounded_scalar(
           variance_raw,  # pyrefly: ignore[bad-argument-type]
-          initial_variance,
+          initial_variance,  # pyrefly: ignore[bad-argument-type]
           low=0.0,
           high=variance_bound,  # pyrefly: ignore[bad-argument-type]
       )
@@ -1043,7 +1043,7 @@ class SumOfGaussianLikeRandomFields(SumOfRandomFields, abc.ABC):
   ):
     """Constructs a SumOfGaussianLikeRandomFields."""
     n_fields = len(correlation_times)
-    variances = variances or [None] * n_fields
+    variances = variances or [None] * n_fields  # pyrefly: ignore[bad-assignment]
     random_fields = []
     logging.info(
         '[NGCM] Initializing SumOfGaussianLikeRandomFields with '
@@ -1095,14 +1095,14 @@ class SumOfGaussianLikeRandomFieldsModule(
     hk.Module.__init__(self, name=name)
 
     n_fields = len(initial_correlation_times)
-    initial_variances = initial_variances or [None] * n_fields
-    variance_bounds = variance_bounds or [None] * n_fields
+    initial_variances = initial_variances or [None] * n_fields  # pyrefly: ignore[bad-assignment]
+    variance_bounds = variance_bounds or [None] * n_fields  # pyrefly: ignore[bad-assignment]
     random_fields = []
     for tau, lam, var, bound in zip(
         initial_correlation_times,
         initial_correlation_lengths,
-        initial_variances,
-        variance_bounds,
+        initial_variances,  # pyrefly: ignore[bad-argument-type]
+        variance_bounds,  # pyrefly: ignore[bad-argument-type]
         strict=True,
     ):
       random_fields.append(
@@ -1215,7 +1215,7 @@ def maybe_nondimensionalize(
   """Calls nondimensionalize on Quantity or str, otherwise passthrough."""
   if x == 'None':  # Allow strings for gin
     return None
-  return nondimensionalize(x, physics_specs)
+  return nondimensionalize(x, physics_specs)  # pyrefly: ignore[bad-argument-type]
 
 
 def _assert_positive_or_none(x: typing.Numeric | None, name: str) -> None:

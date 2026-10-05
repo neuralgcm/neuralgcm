@@ -78,7 +78,7 @@ class FilteredCustomOrography(hk.Module):
     nodal_orography = xarray_utils.nodal_orography_from_ds(ds)
     # TODO(dkochkov) Insist on having units specified in variable attrs.
     self.nodal_orography = physics_specs.nondimensionalize(
-        nodal_orography * units.meter)  # pyrefly: ignore[unsupported-operation]
+        nodal_orography * units.meter)
     self.coords = coords
     # Note: here we explicitly use linear truncation to preserve full signal.
     # Smoothing is then achieved by interpolation to self.coords and filtering.
@@ -128,4 +128,4 @@ class LearnedOrography(hk.Module):
     mask = self.coords.horizontal.mask
     correction_2d = jnp.zeros(self.coords.horizontal.modal_shape)
     correction_2d = correction_2d.at[mask].set(self.correction)
-    return self.base_orography_fn() + correction_2d * self.scale  # pytype: disable=not-callable  # jax-ndarray
+    return self.base_orography_fn() + correction_2d * self.scale  # pyrefly: ignore[not-callable]

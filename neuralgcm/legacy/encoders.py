@@ -306,7 +306,7 @@ class ShallowWaterStateEncoder(hk.Module):
   ) -> shallow_water.State:
     del forcing
     state = self.transform_fn(shallow_water.State(**self.slice_fn(inputs)))
-    return ModelState(state)  # pyrefly: ignore[bad-argument-count, bad-return]
+    return ModelState(state)  # pyrefly: ignore[bad-return]
 
 
 @gin.register
@@ -342,7 +342,7 @@ class ShallowWaterLeapfrogEncoder(hk.Module):
     state = self.transform_fn(
         tuple(shallow_water.State(**items) for items in last_two_frames)
     )
-    return ModelState(state)  # pyrefly: ignore[bad-argument-count, bad-return]
+    return ModelState(state)  # pyrefly: ignore[bad-return]
 
 
 @gin.register
@@ -373,7 +373,7 @@ class PrimitiveEquationStateEncoder(hk.Module):
     del forcing
     state = self.transform_fn(
         primitive_equations.State(**self.slice_fn(inputs)))
-    return ModelState(state)  # pyrefly: ignore[bad-argument-count, bad-return]
+    return ModelState(state)  # pyrefly: ignore[bad-return]
 
 
 @gin.register
@@ -409,7 +409,7 @@ class PrimitiveEquationLeapfrogEncoder(hk.Module):
     state = self.transform_fn(
         tuple(primitive_equations.State(**items) for items in last_two_frames)
     )
-    return ModelState(state)  # pyrefly: ignore[bad-argument-count, bad-return]
+    return ModelState(state)  # pyrefly: ignore[bad-return]
 
 
 @gin.register
@@ -441,7 +441,7 @@ class PrimitiveEquationStateWithTimeEncoder(hk.Module):
     sliced_inputs = self.slice_fn(inputs)
     state = self.transform_fn(
         primitive_equations.StateWithTime(**sliced_inputs))
-    return ModelState(state)  # pyrefly: ignore[bad-argument-count]
+    return ModelState(state)
 
 
 @gin.register
@@ -470,7 +470,7 @@ class WeatherbenchToPrimitiveEncoder(hk.Module):
     modal_orography_init_fn = orography_module(
         coords, dt, physics_specs, aux_features
     )
-    modal_orography = modal_orography_init_fn()  # pytype: disable=not-callable  # jax-ndarray
+    modal_orography = modal_orography_init_fn()  # pyrefly: ignore[not-callable]
     self.surface_pressure_fn = functools.partial(
         vertical_interpolation.get_surface_pressure,
         input_coords.vertical,
@@ -513,12 +513,12 @@ class WeatherbenchToPrimitiveEncoder(hk.Module):
         self.curl_and_div_fn(u, v)
     )
     pe_state_on_sigma = primitive_equations.StateWithTime(
-        divergence=divergence,  # pyrefly: ignore[unexpected-keyword]
-        vorticity=vorticity,  # pyrefly: ignore[unexpected-keyword]
-        temperature_variation=(wb_state_on_sigma.t - self.ref_temps),  # pyrefly: ignore[unexpected-keyword]
-        log_surface_pressure=jnp.log(surface_pressure),  # pyrefly: ignore[unexpected-keyword]
-        sim_time=wb_state_on_sigma.sim_time,  # pyrefly: ignore[unexpected-keyword]
-        tracers=wb_state_on_sigma.tracers,  # pyrefly: ignore[unexpected-keyword]
+        divergence=divergence,
+        vorticity=vorticity,
+        temperature_variation=(wb_state_on_sigma.t - self.ref_temps),
+        log_surface_pressure=jnp.log(surface_pressure),
+        sim_time=wb_state_on_sigma.sim_time,
+        tracers=wb_state_on_sigma.tracers,
     )
     return pe_state_on_sigma  # pyrefly: ignore[bad-return]
 
@@ -533,7 +533,7 @@ class WeatherbenchToPrimitiveEncoder(hk.Module):
     pe_state = self.weatherbench_to_primitive(wb_state)
     pe_state = coordinate_systems.maybe_to_modal(pe_state, self.input_coords)
     pe_state = self.modal_interpolate_fn(pe_state)
-    return ModelState(state=self.transform_fn(pe_state))  # pyrefly: ignore[unexpected-keyword]
+    return ModelState(state=self.transform_fn(pe_state))
 
 
 @gin.register
@@ -666,7 +666,7 @@ class LearnedWeatherbenchToPrimitiveEncoder(WeatherbenchToPrimitiveEncoder):
             ),
         )
     )
-    return ModelState(state=self.transform_fn(corrected_pe_state))  # pyrefly: ignore[unexpected-keyword]
+    return ModelState(state=self.transform_fn(corrected_pe_state))
 
 
 @gin.register
@@ -868,7 +868,7 @@ class DimensionalLearnedWeatherbenchToPrimitiveWithMemoryEncoder(hk.Module):
     memory = self.memory_encoder(nondim_inputs, forcing=forcing)
     model_state = self.state_encoder(nondim_inputs, forcing=forcing)
     return ModelState(
-        state=model_state.state,  # pyrefly: ignore[unexpected-keyword]
-        memory=memory.state,  # pyrefly: ignore[unexpected-keyword]
-        randomness=model_state.randomness,  # pyrefly: ignore[unexpected-keyword]
+        state=model_state.state,
+        memory=memory.state,
+        randomness=model_state.randomness,
     )

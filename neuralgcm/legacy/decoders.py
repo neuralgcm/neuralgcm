@@ -425,7 +425,7 @@ class PrimitiveToWeatherbenchDecoder(hk.Module):
     modal_orography_init_fn = orography_module(
         coords, dt, physics_specs, aux_features
     )
-    orography = modal_orography_init_fn()  # pytype: disable=not-callable  # jax-ndarray
+    orography = modal_orography_init_fn()  # pyrefly: ignore[not-callable]
     self.nodal_orography = coords.horizontal.to_nodal(orography)
     self.geopotential_fn = functools.partial(
         primitive_equations.get_geopotential_with_moisture,
@@ -486,12 +486,12 @@ class PrimitiveToWeatherbenchDecoder(hk.Module):
     # use constant extrapolation for `u, v, tracers`.
     # use linear extrapolation for `z, t`.
     return weatherbench_utils.State(
-        u=regrid_with_constant_fn(u),  # pyrefly: ignore[unexpected-keyword]
-        v=regrid_with_constant_fn(v),  # pyrefly: ignore[unexpected-keyword]
-        t=regrid_with_linear_fn(t),  # pyrefly: ignore[unexpected-keyword]
-        z=regrid_with_linear_fn(z),  # pyrefly: ignore[unexpected-keyword]
-        sim_time=inputs.sim_time,  # pyrefly: ignore[unexpected-keyword]
-        tracers=regrid_with_constant_fn(tracers),  # pyrefly: ignore[unexpected-keyword]
+        u=regrid_with_constant_fn(u),
+        v=regrid_with_constant_fn(v),
+        t=regrid_with_linear_fn(t),
+        z=regrid_with_linear_fn(z),
+        sim_time=inputs.sim_time,
+        tracers=regrid_with_constant_fn(tracers),
     )
 
   def __call__(

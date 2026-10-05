@@ -66,7 +66,7 @@ class ShallowWaterEquations(shallow_water.ShallowWaterEquations):
       raise ValueError(f'must supply {REF_POTENTIAL_KEY} in `aux_features`.')
     modal_orography_init_fn = orography_module(
         coords, dt, physics_specs, aux_features)
-    modal_orography = modal_orography_init_fn()  # pytype: disable=not-callable  # jax-ndarray
+    modal_orography = modal_orography_init_fn()  # pyrefly: ignore[not-callable]
     super().__init__(
         coords=coords,
         physics_specs=physics_specs,  # pyrefly: ignore[bad-argument-type]
@@ -97,7 +97,7 @@ class PrimitiveEquations(primitive_equations.PrimitiveEquations):
       raise ValueError(f'must supply {REF_TEMP_KEY} in `aux_features`.')
     modal_orography_init_fn = orography_module(
         coords, dt, physics_specs, aux_features)
-    modal_orography = modal_orography_init_fn()  # pytype: disable=not-callable  # jax-ndarray
+    modal_orography = modal_orography_init_fn()  # pyrefly: ignore[not-callable]
     super().__init__(
         coords=coords,
         physics_specs=physics_specs,  # pyrefly: ignore[bad-argument-type]
@@ -132,7 +132,7 @@ class PrimitiveEquationsWithTime(
       raise ValueError(f'must supply {REF_TEMP_KEY} in `aux_features`.')
     modal_orography_init_fn = orography_module(
         coords, dt, physics_specs, aux_features)
-    modal_orography = modal_orography_init_fn()  # pytype: disable=not-callable  # jax-ndarray
+    modal_orography = modal_orography_init_fn()  # pyrefly: ignore[not-callable]
     super().__init__(
         coords=coords,
         physics_specs=physics_specs,  # pyrefly: ignore[bad-argument-type]
@@ -167,7 +167,7 @@ class MoistPrimitiveEquations(
       raise ValueError(f'must supply {REF_TEMP_KEY} in `aux_features`.')
     modal_orography_init_fn = orography_module(
         coords, dt, physics_specs, aux_features)
-    modal_orography = modal_orography_init_fn()  # pytype: disable=not-callable  # jax-ndarray
+    modal_orography = modal_orography_init_fn()  # pyrefly: ignore[not-callable]
     super().__init__(
         coords=coords,
         physics_specs=physics_specs,  # pyrefly: ignore[bad-argument-type]
@@ -202,7 +202,7 @@ class MoistPrimitiveEquationsWithCloudMoisture(
       raise ValueError(f'must supply {REF_TEMP_KEY} in `aux_features`.')
     modal_orography_init_fn = orography_module(
         coords, dt, physics_specs, aux_features)
-    modal_orography = modal_orography_init_fn()  # pytype: disable=not-callable  # jax-ndarray
+    modal_orography = modal_orography_init_fn()  # pyrefly: ignore[not-callable]
     super().__init__(
         coords=coords,
         physics_specs=physics_specs,  # pyrefly: ignore[bad-argument-type]

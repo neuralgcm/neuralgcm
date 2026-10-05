@@ -152,7 +152,7 @@ class NodalVolumeTransformerMapping(hk.Module):
     self.decoder_tower = decoder_transformer_tower_factory(output_size)
     self.output_shapes = output_shapes
     self.feature_axis = feature_axis
-    self.get_encoder_inputs_fn = encoder_inputs_selection_module()  # pyrefly: ignore[not-callable]
+    self.get_encoder_inputs_fn = encoder_inputs_selection_module()
     self.get_decode_inputs_fn = decoder_inputs_selection_module()
     self.encoder_positional_encodings_fn = encoder_pos_encoding_module()
     self.decoder_positional_encodings_fn = decoder_pos_encoding_module()

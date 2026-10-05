@@ -203,7 +203,7 @@ class NodalSurfaceModelEmbedding(hk.Module):
     # snow data is provided as depth (in meters). It is converted to snow_cover
     # by choosing a threshold such that snow_cover = 0 below that value and
     # snow cover = 1 above that value.
-    self.snow_cover_threshold = physics_specs.nondimensionalize(1 * units.meter)  # pyrefly: ignore[unsupported-operation]
+    self.snow_cover_threshold = physics_specs.nondimensionalize(1 * units.meter)
 
   def __call__(
       self,

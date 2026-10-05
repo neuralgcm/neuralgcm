@@ -178,7 +178,7 @@ class HorizontalDiffusionFilter(hk.Module):
       u_next: typing.PyTreeState
   ) -> typing.PyTreeState:
     del u  # unused
-    return self.filter_fn(u_next)  # pytype: disable=wrong-arg-count  # always-use-return-annotations
+    return self.filter_fn(u_next)
 
 
 @gin.register
@@ -238,7 +238,7 @@ class LearnedExponentialFilter(hk.Module):
     a = jax.nn.softplus(a_logit)
     p = jax.nn.softplus(p_logit)
     c = jax.nn.sigmoid(c_logit)
-    filter_fn = filtering.exponential_filter(self.coords.horizontal, a, p, c)  # pytype: disable=wrong-arg-types  # jax-nn-types
+    filter_fn = filtering.exponential_filter(self.coords.horizontal, a, p, c)  # pyrefly: ignore[bad-argument-type]
     return filter_fn(u_next)
 
 

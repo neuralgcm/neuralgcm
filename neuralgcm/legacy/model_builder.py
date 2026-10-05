@@ -281,7 +281,7 @@ def get_model_specs(
     if reference_datetime_str is not None:
       raise ValueError('reference datetime already specified in aux_data')
 
-  if isinstance(model_time_step, (str, scales.Quantity)):  # pyrefly: ignore[invalid-argument]
+  if isinstance(model_time_step, (str, scales.Quantity)):
     dt = physics_specs.nondimensionalize(scales.Quantity(model_time_step))
   else:
     dt = model_time_step
@@ -395,11 +395,11 @@ class ModularStepModel(DynamicalSystem):
         output_coords,
         name=name,
     )
-    self.advance_fn = advance_module(coords, dt, physics_specs, aux_features)  # pyrefly: ignore[not-callable]
-    self.encoder_fn = encoder_module(  # pyrefly: ignore[not-callable]
+    self.advance_fn = advance_module(coords, dt, physics_specs, aux_features)
+    self.encoder_fn = encoder_module(
         coords, dt, physics_specs, aux_features, input_coords
     )
-    self.decoder_fn = decoder_module(  # pyrefly: ignore[not-callable]
+    self.decoder_fn = decoder_module(
         coords, dt, physics_specs, aux_features, output_coords
     )
     self.forcing_fn = forcing_module(coords, dt, physics_specs, aux_features)
@@ -448,11 +448,11 @@ class StochasticModularStepModel(DynamicalSystem):
         output_coords,
         name=name,
     )
-    self.advance_fn = advance_module(coords, dt, physics_specs, aux_features)  # pyrefly: ignore[not-callable]
-    self.encoder_fn = encoder_module(  # pyrefly: ignore[not-callable]
+    self.advance_fn = advance_module(coords, dt, physics_specs, aux_features)
+    self.encoder_fn = encoder_module(
         coords, dt, physics_specs, aux_features, input_coords
     )
-    self.decoder_fn = decoder_module(  # pyrefly: ignore[not-callable]
+    self.decoder_fn = decoder_module(
         coords, dt, physics_specs, aux_features, output_coords
     )
     self.forcing_fn = forcing_module(coords, dt, physics_specs, aux_features)
@@ -603,14 +603,14 @@ class WhirlModel:
     )
 
     def forcing_fwd(forcing_data, sim_time):
-      return model_cls().forcing_fn(forcing_data, sim_time)  # pytype: disable=wrong-keyword-args
+      return model_cls().forcing_fn(forcing_data, sim_time)
 
     forcing_fn = hk.transform(forcing_fwd).apply
-    encode_fwd = lambda x, forcing: model_cls().encode(x, forcing)  # pytype: disable=wrong-keyword-args
+    encode_fwd = lambda x, forcing: model_cls().encode(x, forcing)
     encode_fn = hk.transform(encode_fwd).apply
-    decode_fwd = lambda x, forcing: model_cls().decode(x, forcing)  # pytype: disable=wrong-keyword-args
+    decode_fwd = lambda x, forcing: model_cls().decode(x, forcing)
     decode_fn = hk.transform(decode_fwd).apply
-    advance_fwd = lambda x, forcing: model_cls().advance(x, forcing)  # pytype: disable=wrong-keyword-args
+    advance_fwd = lambda x, forcing: model_cls().advance(x, forcing)
     advance_fn = hk.transform(advance_fwd).apply
     if to_xarray_fn is not None:
       to_xarray_fn = functools.partial(to_xarray_fn, coords=output_coords)
@@ -640,7 +640,7 @@ class WhirlModel:
     """Returns model parameters by initializing encode/advance/decode fn."""
 
     def fwd(x):
-      model = self.model_cls()  # pytype: disable=wrong-keyword-args
+      model = self.model_cls()
       decode = model_utils.with_forcing(
           model.decode, model.forcing_fn, forcing_data
       )

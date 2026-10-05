@@ -122,7 +122,7 @@ class DynamicDataForcing(hk.Module):
     self.forcing_transform_fn = forcing_transform(
         coords, dt, physics_specs, aux_features
     )
-    if isinstance(dt_tolerance, (str, scales.Quantity)):  # pyrefly: ignore[invalid-argument]
+    if isinstance(dt_tolerance, (str, scales.Quantity)):
       dt_tolerance = physics_specs.nondimensionalize(
           scales.Quantity(dt_tolerance)
       )
@@ -241,7 +241,7 @@ class IncrementSSTForcingTransform(hk.Module):
     super().__init__(name=name)
     del coords, dt, aux_features  # unused
     self.temperature_change = physics_specs.nondimensionalize(
-        units.Quantity(temperature_change)  # pyrefly: ignore[not-callable]
+        units.Quantity(temperature_change)
     )
     self.key = key
 

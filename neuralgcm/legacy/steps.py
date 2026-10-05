@@ -131,7 +131,7 @@ class EquationStep(BaseStep, hk.Module):
     del forcing
     next_state = time_integration.maybe_fix_sim_time_roundoff(
         self.step_fn(x.state), self.dt)
-    return ModelState(next_state)  # pyrefly: ignore[bad-argument-count]
+    return ModelState(next_state)
 
 
 @gin.register
@@ -296,8 +296,8 @@ class StochasticPhysicsParameterizationStep(BaseStep, hk.Module):
       next_memory = x.state if x.memory is not None else None
       next_diagnostics = self.diagnostics_fn(x, pp_tendency, forcing)
       x_next = ModelState(
-          state=next_state, memory=next_memory, diagnostics=next_diagnostics,  # pyrefly: ignore[unexpected-keyword]
-          randomness=next_randomness)  # pyrefly: ignore[unexpected-keyword]
+          state=next_state, memory=next_memory, diagnostics=next_diagnostics,
+          randomness=next_randomness)
       x_next = self.coords.with_dycore_sharding(x_next)
       return x_next
 

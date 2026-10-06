@@ -227,6 +227,7 @@ class RadiationFeatures(hk.Module):
         coords=coords,
         physics_specs=physics_specs,
         reference_datetime=np.datetime64(ref_datetime_str),
+        dt=dt,
     )
 
   def __call__(
@@ -270,6 +271,7 @@ class OrbitalTimeFeatures(hk.Module):
         coords=coords,
         physics_specs=physics_specs,
         reference_datetime=np.datetime64(ref_datetime_str),
+        dt=dt,
     )
 
   def __call__(

@@ -7,6 +7,9 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # Auto-publish when version is increased
   publish-job:
@@ -23,7 +26,7 @@ jobs:
 
     steps:
     # Publish the package (if local `__version__` > pip version)
-    - uses: etils-actions/pypi-auto-publish@v1
+    - uses: etils-actions/pypi-auto-publish@d0603b1e896ce8b754fd7df30731623c93546e89 # v1.5.6
       with:
         pypi-token: ${{ secrets.PYPI_API_TOKEN }}
         gh-token: ${{ secrets.GITHUB_TOKEN }}

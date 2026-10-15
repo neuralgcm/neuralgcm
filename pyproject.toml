@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 packages = [
     "neuralgcm",
     "neuralgcm.classical",
+    "neuralgcm.hybrid",
     "neuralgcm.legacy",
+    "neuralgcm.ml",
+    "neuralgcm.utils",
 ]
 package-data = {neuralgcm = ["data/*"]}
 
@@ -19,14 +22,14 @@ authors = [
 ]
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
-    "coordax>=0.1.5",
-    "dinosaur @ git+https://github.com/neuralgcm/dinosaur.git",
+    "coordax>=0.2.9",
+    "dinosaur>=1.5.1",
     "dm-haiku",
     "flax>=0.12.0",
     "gin-config",
-    "jax",
+    "jax<0.11.2",
     "jax-datetime>=0.1.2",
     "jaxlib",
     "numpy",

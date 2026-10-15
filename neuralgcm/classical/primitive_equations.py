@@ -21,6 +21,10 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
+from neuralgcm.utils import defaults
+from neuralgcm.utils import observation_operators as ngcm_observations
+from neuralgcm.utils import stepping
+from neuralgcm.utils import time_utils
 import numpy as np
 from terrax.atmosphere import equations as atmos_equations
 from terrax.core import api
@@ -41,84 +45,10 @@ from terrax.core import units
 
 # pylint: disable=g-classes-have-attributes
 
-DEFAULT_UNITS_MAPPING = {
-    'u_component_of_wind': 'meter / second',
-    'v_component_of_wind': 'meter / second',
-    'temperature': 'kelvin',
-    'temperature_variation': 'kelvin',
-    'geopotential': 'm**2 s**-2',
-    'sim_time': 'dimensionless',
-    'specific_humidity': 'dimensionless',
-    'specific_cloud_ice_water_content': 'dimensionless',
-    'specific_cloud_liquid_water_content': 'dimensionless',
-    'divergence': '1 / second',
-    'vorticity': '1 / second',
-    'surface_pressure': 'pascal',
-    'log_surface_pressure': 'dimensionless',
-    'tracer': 'dimensionless',
-    'orography': 'meter',
-}
-
 DycoreEquation = (
     time_integrators.ImplicitExplicitODE
     | time_integrators.SemiLagrangianImplicitExplicitODE
 )
-
-
-def _repeat(step_fn: Callable[..., typing.Pytree], length: int):
-  """Returns `step_fn(module, carry)` applied `length` times via `nnx.scan`."""
-  if length == 1:
-    return step_fn
-  return nnx.scan(
-      step_fn,
-      length=length,
-      in_axes=(api.DEFAULT_MODEL_STATE_AXES, nnx.Carry),
-      out_axes=nnx.Carry,
-  )
-
-
-def _select_zero_timedelta(field: cx.Field) -> cx.Field:
-  """Returns `field` at timedelta=0, or `field` as is if it has no timedelta."""
-  if 'timedelta' not in field.dims:
-    return field
-  timedelta = field.axes.get('timedelta')
-  if isinstance(timedelta, parallelism.CoordinateShard):
-    timedelta = timedelta.coordinate
-  if not isinstance(timedelta, coordinates.TimeDelta):
-    raise ValueError(
-        'Expected `timedelta` dimension to be associated with a TimeDelta '
-        f'coordinate, got {timedelta=} in {field=}'
-    )
-  [indices] = np.nonzero(timedelta.deltas == np.timedelta64(0, 's'))
-  if indices.size == 0:
-    raise ValueError(
-        f'Inputs must include timedelta=0, got {timedelta.deltas=} in {field=}'
-    )
-  idx = int(indices[0])
-  return cx.cmap(lambda x: x[idx])(field.untag('timedelta'))
-
-
-def nodal_prognostics_operator(
-    ylm_map: spherical_harmonics.FixedYlmMapping,
-) -> observation_operators.TransformObservationOperator:
-  """Returns an operator observing nodal prognostics, winds, and surface pressure."""
-  to_nodal = transforms.ModalToNodal(ylm_map, include_remaining=True)
-  surface_pressure = transforms.Sequential([
-      transforms.ApplyFnToKeys(cx.cpmap(jnp.exp), ['log_surface_pressure']),
-      transforms.RenameKeys({'log_surface_pressure': 'surface_pressure'}),
-  ])
-  transform = transforms.Sequential([  # pyrefly: ignore[bad-argument-type]
-      transforms.SelectKeys('time', invert=True),
-      transforms.Merge({
-          'uv': transforms.VelocityFromDivCurl(ylm_map),
-          'nodal': to_nodal,
-      }),
-      transforms.Merge({
-          'nodal': transforms.Identity(),  # pyrefly: ignore[bad-assignment]
-          'sp': surface_pressure,
-      }),
-  ])
-  return observation_operators.TransformObservationOperator(transform)
 
 
 class SpectralPrimitiveEquationsModel(api.Model):
@@ -217,7 +147,7 @@ class SpectralPrimitiveEquationsModel(api.Model):
     self.prognostics_data_key = prognostics_data_key
     self.extra_dycore_kwargs = extra_dycore_kwargs
 
-    units_mapping = DEFAULT_UNITS_MAPPING | {
+    units_mapping = defaults.DEFAULT_UNITS_MAPPING | {
         k: 'dimensionless' for k in self.tracer_names
     }
     if nondim_transform is None:
@@ -261,7 +191,9 @@ class SpectralPrimitiveEquationsModel(api.Model):
     )
     if not operators:
       operators = {
-          'prognostics': nodal_prognostics_operator(self.ylm_map),
+          'prognostics': ngcm_observations.primitive_equations_nodal_operator(
+              self.ylm_map
+          ),
       }
     self.operators = nnx.data(dict(operators))
     self.nodal_tracers = tuple(
@@ -357,7 +289,9 @@ class SpectralPrimitiveEquationsModel(api.Model):
           f'Prognostic variables {missing} not found in inputs. '
           f'Available variables: {list(inputs.keys())}'
       )
-    prognostics = {k: _select_zero_timedelta(inputs[k]) for k in expected}
+    prognostics = {
+        k: time_utils.select_zero_timedelta(inputs[k]) for k in expected
+    }
     time = prognostics.pop('time')
     if nondimensionalize:
       assert self.nondim_transform is not None
@@ -394,7 +328,9 @@ class SpectralPrimitiveEquationsModel(api.Model):
     """Advances `prognostics` in time by `self.model_timestep`."""
     prognostics = self.prognostics.get_value().copy()
     time = prognostics.pop('time')
-    step_fn = _repeat(lambda model, x: model.substep(x), self.num_substeps)
+    step_fn = stepping.repeat_step(
+        lambda model, x: model.substep(x), self.num_substeps
+    )
     next_state = step_fn(self, prognostics)
     time = time + self.model_timestep
     self.prognostics.set_value(next_state | {'time': time})

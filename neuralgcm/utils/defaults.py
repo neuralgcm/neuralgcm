@@ -1,0 +1,87 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Default unit mappings for NeuralGCM models."""
+
+DEFAULT_UNITS_MAPPING = {
+    'u_component_of_wind': 'meter / second',
+    'v_component_of_wind': 'meter / second',
+    'temperature': 'kelvin',
+    'temperature_variation': 'kelvin',
+    '2m_temperature': 'kelvin',
+    'skin_temperature': 'kelvin',
+    '2m_dewpoint_temperature': 'kelvin',
+    'sea_surface_temperature': 'kelvin',
+    'soil_temperature': 'kelvin',
+    'soil_temperature_level_1': 'kelvin',
+    'soil_temperature_level_2': 'kelvin',
+    'soil_temperature_level_3': 'kelvin',
+    'soil_temperature_level_4': 'kelvin',
+    '10m_u_component_of_wind': 'meter / second',
+    '10m_v_component_of_wind': 'meter / second',
+    '10m_wind_speed': 'meter / second',
+    '10m_wind_direction': 'dimensionless',
+    'geopotential': 'm**2 s**-2',
+    'geopotential_at_surface': 'm**2 s**-2',
+    'orography': 'meter',
+    'elevation': 'meter',
+    'divergence': '1 / second',
+    'vorticity': '1 / second',
+    'surface_pressure': 'pascal',
+    'mean_sea_level_pressure': 'pascal',
+    'log_surface_pressure': 'dimensionless',
+    'sim_time': 'dimensionless',
+    'specific_humidity': 'dimensionless',
+    'specific_cloud_ice_water_content': 'dimensionless',
+    'specific_cloud_liquid_water_content': 'dimensionless',
+    'tracer': 'dimensionless',
+    'total_precipitation': 'meter',
+    'total_precipitation_6hr': 'meter',
+    'total_precipitation_8hr': 'meter',
+    'total_precipitation_sum': 'meter',
+    'cumulative_precipitation': 'meter',
+    'snowfall': 'meter',
+    'snow_depth': 'meter',
+    'snow_density': 'kg meter**-3',
+    'snow_cover_fraction': 'dimensionless',
+    'snow_water_equivalent_daily_diff_PST': 'meter',
+    'snow_water_equivalent_day_before_PST': 'meter',
+    'evaporation': 'kg  meter**-2  s**-1',
+    'mean_evaporation_rate': 'kg  meter**-2  s**-1',
+    'mean_evaporation_rate_6hr': 'kg  meter**-2  s**-1',
+    'mean_evaporation_rate_8hr': 'kg  meter**-2  s**-1',
+    'cumulative_evaporation': 'meter',
+    'total_evaporation_6hr': 'meter',
+    'total_evaporation_8hr': 'meter',
+    'surface_solar_radiation_downwards': 'J / meter**2',
+    'surface_thermal_radiation_downwards': 'J / meter**2',
+    'top_net_thermal_radiation': 'joule meter **-2',
+    'top_net_solar_radiation': 'joule meter **-2',
+    'surface_sensible_heat_flux': 'joule meter **-2',
+    'surface_latent_heat_flux': 'joule meter **-2',
+    'surface_net_solar_radiation': 'joule meter **-2',
+    'surface_net_thermal_radiation': 'joule meter **-2',
+    'sea_ice_cover': 'dimensionless',
+    'land_sea_mask': 'dimensionless',
+    'lake_cover': 'dimensionless',
+    'low_vegetation_cover': 'dimensionless',
+    'high_vegetation_cover': 'dimensionless',
+    'leaf_area_index_low_vegetation': 'dimensionless',
+    'leaf_area_index_high_vegetation': 'dimensionless',
+    'volumetric_soil_water': 'dimensionless',
+    'volumetric_soil_water_layer_1': 'dimensionless',
+    'volumetric_soil_water_layer_2': 'dimensionless',
+    'volumetric_soil_water_layer_3': 'dimensionless',
+    'volumetric_soil_water_layer_4': 'dimensionless',
+}

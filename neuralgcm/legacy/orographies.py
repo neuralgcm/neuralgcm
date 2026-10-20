@@ -78,7 +78,7 @@ class FilteredCustomOrography(hk.Module):
     nodal_orography = xarray_utils.nodal_orography_from_ds(ds)
     # TODO(dkochkov) Insist on having units specified in variable attrs.
     self.nodal_orography = physics_specs.nondimensionalize(
-        nodal_orography * units.meter)
+        nodal_orography * units.meter)  # pyrefly: ignore[unsupported-operation]
     self.coords = coords
     # Note: here we explicitly use linear truncation to preserve full signal.
     # Smoothing is then achieved by interpolation to self.coords and filtering.

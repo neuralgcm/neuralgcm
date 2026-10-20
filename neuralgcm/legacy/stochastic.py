@@ -522,7 +522,7 @@ class GaussianRandomFieldModule(GaussianRandomField, hk.Module):
       variance_bound = maybe_nondimensionalize(variance_bound, physics_specs)  # pyrefly: ignore[bad-assignment]
       _assert_positive_or_none(variance_bound, 'variance_bound')  # pyrefly: ignore[bad-argument-type]
       _assert_positive_or_none(
-          variance_bound - initial_variance, 'variance_bound - initial_variance'  # pyrefly: ignore[unsupported-operation]
+          variance_bound - initial_variance, 'variance_bound - initial_variance'  # pyrefly: ignore[unsupported-operation, bad-argument-type]
       )
       variance = convert_hk_param_to_bounded_scalar(
           variance_raw,  # pyrefly: ignore[bad-argument-type]

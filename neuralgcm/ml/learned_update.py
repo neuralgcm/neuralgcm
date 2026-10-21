@@ -21,11 +21,11 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
-from neuralgcm.utils import defaults
-from neuralgcm.utils import stepping
-from neuralgcm.utils import time_utils
+from neuralgcm.base import defaults
+from neuralgcm.base import model
+from neuralgcm.base import stepping
+from neuralgcm.base import time_utils
 import numpy as np
-from terrax.core import api
 from terrax.core import coordinates
 from terrax.core import data_specs
 from terrax.core import diagnostics
@@ -41,8 +41,6 @@ from terrax.core import standard_layers  # pylint: disable=unused-import
 from terrax.core import transformer_layers  # pylint: disable=unused-import
 from terrax.core import transforms
 from terrax.core import typing
-from terrax.core import units
-
 
 # pylint: disable=g-classes-have-attributes
 
@@ -83,7 +81,7 @@ def _check_coordinates(
 
 
 @nnx.dataclass
-class LearnedUpdateModel(api.Model):
+class LearnedUpdateModel(model.Model):
   """Model that advances prognostic variables with a learned update.
 
   The model state consists of nondimensional `prognostics` on
@@ -186,7 +184,9 @@ class LearnedUpdateModel(api.Model):
       during backpropagation.
     prognostics_data_key: Dataset key in `inputs` from which the model state is
       set directly. Nondimensional values are read from `nondim_` prefixed key.
-    operators: Observation operators for querying the prognostics.
+    operators: Observation operators for querying the prognostics. Observations
+      are redimensionalized using `redim_transform`, unless the query key is
+      prefixed with `'nondim_'`, which returns nondimensional values.
   """
 
   prognostics_coords: dict[str, cx.Coordinate]
@@ -205,24 +205,14 @@ class LearnedUpdateModel(api.Model):
   censor_transform: typing.Transform = nnx.data(
       kw_only=True, default_factory=transforms.Identity
   )
-  sim_units: units.SimUnits = nnx.static(kw_only=True, default=units.SI_UNITS)
-  nondim_transform: transforms.Nondimensionalize | None = nnx.data(
-      kw_only=True, default=None
-  )
-  redim_transform: transforms.Redimensionalize | None = nnx.data(
-      kw_only=True, default=None
-  )
   update_diagnostics: dict[str, diagnostics.DiagnosticModule] = nnx.data(
       kw_only=True, default_factory=dict
   )
   step_end_diagnostics: dict[str, diagnostics.DiagnosticModule] = nnx.data(
       kw_only=True, default_factory=dict
   )
-  remat_advance: bool = False
+  remat_advance: bool = nnx.static(kw_only=True, default=False)
   prognostics_data_key: str = nnx.static(kw_only=True, default='prognostics')
-  operators: dict[str, observation_operators.ObservationOperatorABC] = nnx.data(
-      default_factory=dict
-  )
 
   def __post_init__(self):
     if self.nondim_transform is None:
@@ -249,7 +239,7 @@ class LearnedUpdateModel(api.Model):
         self.var_to_dataset_keys.values()
     ):
       raise ValueError(
-          f'var_to_dataset_keys cannot use prognostic dataset keys '
+          'var_to_dataset_keys cannot use prognostic dataset keys '
           f'{sorted(overlapping)}.'
       )
     if unknown := set(self.input_coords) - set(self.prognostics_coords):
@@ -309,6 +299,10 @@ class LearnedUpdateModel(api.Model):
     if not self.num_history_steps:
       return prognostics
     return {k: v.isel(timedelta=-1) for k, v in prognostics.items()}
+
+  def prognostic_values(self) -> dict[str, cx.Field]:
+    """Returns current nondimensional prognostic values of the model."""
+    return self.current_prognostics() | {'time': self.time.get_value()}
 
   @property
   def _prognostics_inputs_spec(self) -> dict[str, data_specs.CoordSpec]:
@@ -395,25 +389,25 @@ class LearnedUpdateModel(api.Model):
   def advance(self) -> None:
     """Evolves the model state by `model_timestep`."""
 
-    def step_fn(model: LearnedUpdateModel):
-      steps_since_update = model.steps_since_update.get_value()
-      if model.steps_per_update == 1:
-        model._apply_update()  # pylint: disable=protected-access
+    def step_fn(m: LearnedUpdateModel):
+      steps_since_update = m.steps_since_update.get_value()
+      if m.steps_per_update == 1:
+        m._apply_update()  # pylint: disable=protected-access
       else:
         nnx.cond(
-            steps_since_update.data == model.steps_per_update - 1,
-            lambda m: m._apply_update(),  # pylint: disable=protected-access
-            lambda m: None,
-            model,
+            steps_since_update.data == m.steps_per_update - 1,
+            lambda x: x._apply_update(),  # pylint: disable=protected-access
+            lambda x: None,
+            m,
         )
-      time = model.time.get_value() + model.model_timestep
-      model.time.set_value(time)
-      next_step = (steps_since_update + 1) % model.steps_per_update
-      model.steps_since_update.set_value(next_step)
-      state = model.current_prognostics() | {'time': time}
-      stepping.update_diagnostics(model.step_end_diagnostics, state, state)
+      time = m.time.get_value() + m.model_timestep
+      m.time.set_value(time)
+      next_step = (steps_since_update + 1) % m.steps_per_update
+      m.steps_since_update.set_value(next_step)
+      state = m.current_prognostics() | {'time': time}
+      stepping.update_diagnostics(m.step_end_diagnostics, state, state)
       stepping.advance_diagnostic_clocks(
-          model.model_timestep, model.step_end_diagnostics
+          m.model_timestep, m.step_end_diagnostics
       )
 
     if self.remat_advance:
@@ -489,7 +483,7 @@ class LearnedUpdateModel(api.Model):
 
   def observe(self, queries: typing.Queries) -> typing.Observation:
     assert self.redim_transform is not None
-    prognostics = self.current_prognostics()
+    prognostics = self.prognostic_values()
     operators = self.operators | {
         'diagnostics': observation_operators.DataObservationOperator(
             self.diagnostic_values()
@@ -497,6 +491,12 @@ class LearnedUpdateModel(api.Model):
     }
     outputs = {}
     for k, query in queries.items():
-      operator = _get_required(operators, k, 'observation operator')
-      outputs[k] = self.redim_transform(operator.observe(prognostics, query))
+      op_key = (
+          k.removeprefix('nondim_')
+          if k not in operators and k.startswith('nondim_')
+          else k
+      )
+      operator = _get_required(operators, op_key, 'observation operator')
+      obs = operator.observe(prognostics, query)
+      outputs[k] = obs if k.startswith('nondim_') else self.redim_transform(obs)
     return outputs

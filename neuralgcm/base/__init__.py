@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared utilities and defaults for NeuralGCM models."""
+"""Base abstractions, parameterization transforms, and utilities for NeuralGCM."""
 
-# pylint: disable=g-importing-member,unused-import
-from neuralgcm.utils import defaults
-from neuralgcm.utils import observation_operators
-from neuralgcm.utils import stepping
-from neuralgcm.utils import time_utils
+# pylint: disable=unused-import
+from neuralgcm.base import defaults
+from neuralgcm.base import model
+from neuralgcm.base import operator_utils
+from neuralgcm.base import parameterizations
+from neuralgcm.base import stepping
+from neuralgcm.base import time_utils

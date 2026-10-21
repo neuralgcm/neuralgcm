@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = [
     "neuralgcm",
+    "neuralgcm.base",
     "neuralgcm.classical",
+    "neuralgcm.coupled",
     "neuralgcm.hybrid",
     "neuralgcm.legacy",
     "neuralgcm.ml",
-    "neuralgcm.utils",
 ]
 package-data = {neuralgcm = ["data/*"]}
 

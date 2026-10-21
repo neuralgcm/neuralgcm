@@ -22,16 +22,16 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
-from neuralgcm.utils import defaults
-from neuralgcm.utils import observation_operators as ngcm_observations
-from neuralgcm.utils import stepping
-from neuralgcm.utils import time_utils
+from neuralgcm.base import defaults
+from neuralgcm.base import model
+from neuralgcm.base import operator_utils
+from neuralgcm.base import stepping
+from neuralgcm.base import time_utils
 import numpy as np
 from terrax.atmosphere import equations as atm_equations
 from terrax.atmosphere import fixers
 from terrax.atmosphere import state_conversion
 from terrax.atmosphere import transforms as atm_transforms
-from terrax.core import api
 from terrax.core import coordinates
 from terrax.core import data_specs
 from terrax.core import diagnostics
@@ -48,8 +48,6 @@ from terrax.core import step_filters
 from terrax.core import time_integrators
 from terrax.core import transforms
 from terrax.core import typing
-from terrax.core import units
-
 
 # pylint: disable=g-classes-have-attributes
 
@@ -116,9 +114,9 @@ class AssimilationSource(nnx.Module):
       `time`) that would be set without it, i.e. after `correction` and
       wavenumber clipping, and must return the same keys on the same
       coordinates. Outputs are clipped again.
-    data_key: Dataset key in `inputs` for the vertical-level variables. If
-      None, defaults to `'era5:pressure'`, `'era5:sigma'` or `'era5:hybrid'`
-      based on the type of `levels`.
+    data_key: Dataset key in `inputs` for the vertical-level variables. If None,
+      defaults to `'era5:pressure'`, `'era5:sigma'` or `'era5:hybrid'` based on
+      the type of `levels`.
     surface_data_key: Dataset key in `inputs` for `surface_pressure` when
       `levels` is `SigmaLevels` or `HybridLevels` (must be None for
       `PressureLevels`). If None, defaults to `'era5:surface'` for sigma and
@@ -164,7 +162,7 @@ class AssimilationSource(nnx.Module):
 
 
 @nnx.dataclass(kw_only=True)
-class LearnedParameterizationSpectralDycore(api.Model):
+class LearnedParameterizationSpectralDycore(model.Model):
   """Hybrid atmospheric model with a spectral dycore and learned physics.
 
   This model combines a spectral dynamical core (primitive equations) with
@@ -274,7 +272,8 @@ class LearnedParameterizationSpectralDycore(api.Model):
   Observations are computed via `observe(queries)`, which dispatches each query
   key to `operators` (or to the built-in `'diagnostics'` operator exposing all
   diagnostic collections) and redimensionalizes the resulting fields into
-  physical units using `redim_transform`.
+  physical units using `redim_transform` (unless the query key is prefixed with
+  `'nondim_'`).
 
   Arguments:
     model_ylm_map: Spherical harmonics mapping for the model grid.
@@ -300,10 +299,10 @@ class LearnedParameterizationSpectralDycore(api.Model):
       of `ylm_grid`. Requires a semi-Lagrangian dycore and matching model and
       dycore grids.
     parameterization_timestep: Time interval between `learned_physics`
-      evaluations, over which the state is advanced with fixed tendencies.
-      Must divide `aggregate_every`. Defaults to `aggregate_every` if None.
-    aggregate_every: Interval at which aggregate diagnostics are collected.
-      Must divide `model_timestep`. Defaults to `model_timestep` if None.
+      evaluations, over which the state is advanced with fixed tendencies. Must
+      divide `aggregate_every`. Defaults to `aggregate_every` if None.
+    aggregate_every: Interval at which aggregate diagnostics are collected. Must
+      divide `model_timestep`. Defaults to `model_timestep` if None.
     dycore_substeps: Number of dycore steps per `parameterization_timestep`.
       Defaults to 1.
     dycore_equation_cls: Factory for the dycore equation, called with `ylm_map`,
@@ -344,18 +343,18 @@ class LearnedParameterizationSpectralDycore(api.Model):
     prognostics_data_key: Dataset key in `inputs` from which the model state is
       set directly. Nondimensional values are read from `nondim_` prefixed key.
     operators: Dict of observation operators for querying model state. Defaults
-      to `{'prognostics': primitive_equations_nodal_operator(model_ylm_map)}`
-      when empty.
-    step_start_diagnostics: Diagnostics evaluated on prognostics at the start
-      of every `parameterization_timestep`, see above.
+      to `primitive_equations_nodal_operator(model_ylm_map)` keyed by
+      `prognostics_data_key` when empty.
+    step_start_diagnostics: Diagnostics evaluated on prognostics at the start of
+      every `parameterization_timestep`, see above.
     tendency_diagnostics: Diagnostics evaluated on `learned_physics` tendencies
       every `parameterization_timestep`, see above.
     step_end_diagnostics: Diagnostics evaluated on prognostics at the end of
       every `parameterization_timestep`, see above.
     aggregation_diagnostics: Diagnostics evaluated on prognostics every
       `aggregate_every`, see above.
-    tendency_fixers: Modules to fix tendencies (e.g. conservation), using
-      values of `tendency_diagnostics` from the same step.
+    tendency_fixers: Modules to fix tendencies (e.g. conservation), using values
+      of `tendency_diagnostics` from the same step.
     state_fixers: Modules to fix the state after the dycore step, using values
       of `step_start_diagnostics` from the start of the step.
     advance_randomness_every: Stage at which `RandomProcessModule` submodules
@@ -407,10 +406,8 @@ class LearnedParameterizationSpectralDycore(api.Model):
   reference_temperatures: Sequence[float] | None = None
   extra_dycore_kwargs: dict[str, Any] = nnx.static(default_factory=dict)
 
-  # Units and nondimensionalization.
-  sim_units: units.SimUnits = units.SI_UNITS
-  nondim_transform: transforms.Nondimensionalize | None = None
-  redim_transform: transforms.Redimensionalize | None = None
+  # `sim_units`, `nondim_transform`, `redim_transform` and `operators` are
+  # inherited from `model.Model`.
 
   # Initialization and observation.
   assimilation_sources: dict[str, AssimilationSource] = nnx.data(
@@ -420,9 +417,6 @@ class LearnedParameterizationSpectralDycore(api.Model):
       default=None
   )
   prognostics_data_key: str = nnx.static(default='atmosphere_prognostics')
-  operators: dict[str, typing.ObservationOperator] = nnx.data(
-      default_factory=dict
-  )
 
   # Diagnostics and conservation fixers.
   step_start_diagnostics: dict[str, diagnostics.DiagnosticModule] = nnx.data(
@@ -476,8 +470,10 @@ class LearnedParameterizationSpectralDycore(api.Model):
       )
     if not self.operators:
       self.operators = {
-          'prognostics': ngcm_observations.primitive_equations_nodal_operator(
-              self.model_ylm_map
+          self.prognostics_data_key: (
+              operator_utils.primitive_equations_nodal_operator(
+                  self.model_ylm_map
+              )
           ),
       }
     if self.aggregate_every is None:
@@ -499,17 +495,9 @@ class LearnedParameterizationSpectralDycore(api.Model):
           'Assimilation sources must have distinct `data_key`s, got '
           f'{data_keys}.'
       )
-    seen_specs: dict[str, dict[str, data_specs.CoordSpec]] = {}
-    for source in self.assimilation_sources.values():
-      for data_key, dataset_spec in self._source_inputs_spec(source).items():
-        existing = seen_specs.setdefault(data_key, {})
-        for var_name, spec in dataset_spec.items():
-          if var_name in existing and existing[var_name] != spec:
-            raise ValueError(
-                f'Conflicting input specs for {var_name!r} in dataset '
-                f'{data_key!r}: {existing[var_name]} vs {spec}.'
-            )
-          existing[var_name] = spec
+    operator_utils.merge_inputs_specs(*(
+        self._source_inputs_spec(s) for s in self.assimilation_sources.values()
+    ))
     if self.assimilation_source_preference_order is None:
       self.assimilation_source_preference_order = tuple(
           self.assimilation_sources
@@ -686,10 +674,9 @@ class LearnedParameterizationSpectralDycore(api.Model):
       self,
   ) -> dict[str, dict[str, data_specs.OptionalSpec[data_specs.CoordSpec]]]:
     """Returns specs of all inputs supported by `assimilate`."""
-    specs = {}
-    for source in self.assimilation_sources.values():
-      for data_key, dataset_spec in self._source_inputs_spec(source).items():
-        specs[data_key] = specs.get(data_key, {}) | dataset_spec
+    specs = operator_utils.merge_inputs_specs(*(
+        self._source_inputs_spec(s) for s in self.assimilation_sources.values()
+    ))
     specs |= {
         self.prognostics_data_key: self._prognostics_inputs_spec,
         self.nondim_prognostics_data_key: self._prognostics_inputs_spec,
@@ -781,9 +768,7 @@ class LearnedParameterizationSpectralDycore(api.Model):
       all_rng_modules = module_utils.retrieve_subclass_modules(
           self, random_processes.RandomProcessModule
       )
-      modules = [
-          m for m in all_rng_modules if id(m) not in excluded_ids
-      ]
+      modules = [m for m in all_rng_modules if id(m) not in excluded_ids]
     else:
       modules = self.randomness_advance_overrides.get(step, ())
     for randomness in modules:
@@ -810,9 +795,7 @@ class LearnedParameterizationSpectralDycore(api.Model):
       x_next = integrator(x)
       x_next = self.step_filter(x, x_next)
       if self.nodal_tracers:
-        modal = {
-            k: v for k, v in x_next.items() if k not in self.nodal_tracers
-        }
+        modal = {k: v for k, v in x_next.items() if k not in self.nodal_tracers}
         nodal = {k: v for k, v in x_next.items() if k in self.nodal_tracers}
         return self.modal_filter.filter_modal(modal) | nodal
       return self.modal_filter.filter_modal(x_next)
@@ -883,7 +866,7 @@ class LearnedParameterizationSpectralDycore(api.Model):
   ) -> dict[str, cx.Field]:
     """Evolves `prognostics` to the next aggregation time."""
     assert self.aggregate_every is not None
-    substep_fn = lambda model, x: model._substep(x)  # pylint: disable=protected-access
+    substep_fn = lambda m, x: m._substep(x)  # pylint: disable=protected-access
     if self.remat_substep:
       substep_fn = nnx.remat(substep_fn)
     prognostics = stepping.repeat_step(substep_fn, self.num_substeps)(
@@ -902,7 +885,7 @@ class LearnedParameterizationSpectralDycore(api.Model):
 
   def advance(self) -> None:
     """Computes `prognostics` evolved in time by `self.model_timestep`."""
-    agg_step_fn = lambda model, x: model._to_next_aggregation_time(x)  # pylint: disable=protected-access
+    agg_step_fn = lambda m, x: m._to_next_aggregation_time(x)  # pylint: disable=protected-access
     # Rematerialize the whole aggregation chunk, rather than just the substeps
     # inside `_to_next_aggregation_time` can be helpful so that aggregate
     # diagnostics are recomputed as well. Otherwise their activations are
@@ -911,9 +894,9 @@ class LearnedParameterizationSpectralDycore(api.Model):
       agg_step_fn = nnx.remat(agg_step_fn)
     agg_steps_fn = stepping.repeat_step(agg_step_fn, self.num_aggregation_steps)
 
-    def step_fn(model, x):
-      x = agg_steps_fn(model, x)
-      model._advance_randomness('advance')  # pylint: disable=protected-access
+    def step_fn(m, x):
+      x = agg_steps_fn(m, x)
+      m._advance_randomness('advance')  # pylint: disable=protected-access
       return x
 
     if self.remat_advance:
@@ -950,11 +933,7 @@ class LearnedParameterizationSpectralDycore(api.Model):
         self._assimilate_source(inputs, source)
         return
     source_keys = {
-        name: [
-            k
-            for k in (s.data_key, s.surface_data_key)
-            if k is not None
-        ]
+        name: [k for k in (s.data_key, s.surface_data_key) if k is not None]
         for name, s in self.assimilation_sources.items()
     }
     raise ValueError(
@@ -1099,17 +1078,29 @@ class LearnedParameterizationSpectralDycore(api.Model):
       pe_state = parallelism.with_dycore_sharding(self.mesh, pe_state)
     self.prognostics.set_value(pe_state | {'time': time})
 
+  def prognostic_values(self) -> dict[str, cx.Field]:
+    """Returns current nondimensional prognostic values of the model."""
+    return parallelism.with_dycore_sharding(
+        self.mesh, self.prognostics.get_value()
+    )
+
   def observe(self, queries: typing.Queries) -> typing.Observation:
     assert self.redim_transform is not None
-    prognostics = self.prognostics.get_value()
-    prognostics = parallelism.with_dycore_sharding(self.mesh, prognostics)
+    prognostics = self.prognostic_values()
     obs_operators = self.operators | {
         'diagnostics': self._diagnostics_operator()
     }
     final_outputs = {}
     for k, query in queries.items():
-      if k not in obs_operators:
+      op_key = (
+          k.removeprefix('nondim_')
+          if k not in obs_operators and k.startswith('nondim_')
+          else k
+      )
+      if op_key not in obs_operators:
         raise ValueError(f'No observation operator for {k=}')
-      observation = obs_operators[k].observe(prognostics, query)
-      final_outputs[k] = self.redim_transform(observation)
+      observation = obs_operators[op_key].observe(prognostics, query)
+      if not k.startswith('nondim_'):
+        observation = self.redim_transform(observation)
+      final_outputs[k] = observation
     return final_outputs

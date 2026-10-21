@@ -21,17 +21,16 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
-from neuralgcm.utils import defaults
-from neuralgcm.utils import observation_operators as ngcm_observations
-from neuralgcm.utils import stepping
-from neuralgcm.utils import time_utils
+from neuralgcm.base import defaults
+from neuralgcm.base import model
+from neuralgcm.base import operator_utils
+from neuralgcm.base import stepping
+from neuralgcm.base import time_utils
 import numpy as np
 from terrax.atmosphere import equations as atmos_equations
-from terrax.core import api
 from terrax.core import coordinates
 from terrax.core import data_specs
 from terrax.core import equations
-from terrax.core import observation_operators
 from terrax.core import orographies
 from terrax.core import parallelism
 from terrax.core import spatial_filters
@@ -42,7 +41,6 @@ from terrax.core import transforms
 from terrax.core import typing
 from terrax.core import units
 
-
 # pylint: disable=g-classes-have-attributes
 
 DycoreEquation = (
@@ -51,7 +49,7 @@ DycoreEquation = (
 )
 
 
-class SpectralPrimitiveEquationsModel(api.Model):
+class SpectralPrimitiveEquationsModel(model.Model):
   """Atmospheric model solving primitive equations on a spectral grid.
 
   This model evolves the primitive equations (Eulerian or semi-Lagrangian) on
@@ -84,15 +82,19 @@ class SpectralPrimitiveEquationsModel(api.Model):
     dycore_equation_cls: Factory for the dynamical core equation (e.g.
       `atmos_equations.PrimitiveEquations` or
       `atmos_equations.SemiLagrangianPrimitiveEquations`).
-    explicit_equations: Tuple of explicit forcing or relaxation equations
-      (e.g. `HeldSuarezForcing`) composed with `dycore_equation`. Tendencies
-      returned by `explicit_equations` must match the coordinate representation
-      of `prognostics` (modal for spectral variables and nodal for any
+    explicit_equations: Tuple of explicit forcing or relaxation equations (e.g.
+      `HeldSuarezForcing`) composed with `dycore_equation`. Tendencies returned
+      by `explicit_equations` must match the coordinate representation of
+      `prognostics` (modal for spectral variables and nodal for any
       `nodal_tracers`).
     step_filter: Step filter applied after each substep; must be compatible with
       the coordinate representation of the prognostic variables it filters.
     tracer_names: Tuple of tracer names evolved by the dynamical core.
-    operators: Observation operators for querying the model state.
+    operators: Observation operators for querying the model state. Defaults to
+      `primitive_equations_nodal_operator(ylm_map)` keyed by
+      `prognostics_data_key` if empty. Observations are redimensionalized using
+      `redim_transform`, unless the query key is prefixed with `'nondim_'`,
+      which returns nondimensional values.
     prognostics_data_key: Dataset key in `inputs` from which the model state is
       initialized. Nondimensional values are read from `nondim_` prefixed key.
     extra_dycore_kwargs: Additional keyword arguments forwarded to
@@ -118,9 +120,7 @@ class SpectralPrimitiveEquationsModel(api.Model):
       explicit_equations: Sequence[time_integrators.ExplicitODE] = (),
       step_filter: step_filters.StepFilter | None = None,
       tracer_names: Sequence[str] = (),
-      operators: (
-          Mapping[str, observation_operators.ObservationOperatorABC] | None
-      ) = None,
+      operators: Mapping[str, typing.ObservationOperator] | None = None,
       prognostics_data_key: str = 'prognostics',
       *,
       mesh: parallelism.Mesh | None = None,
@@ -191,8 +191,8 @@ class SpectralPrimitiveEquationsModel(api.Model):
     )
     if not operators:
       operators = {
-          'prognostics': ngcm_observations.primitive_equations_nodal_operator(
-              self.ylm_map
+          self.prognostics_data_key: (
+              operator_utils.primitive_equations_nodal_operator(self.ylm_map)
           ),
       }
     self.operators = nnx.data(dict(operators))
@@ -318,9 +318,7 @@ class SpectralPrimitiveEquationsModel(api.Model):
       modal = {
           k: v for k, v in next_state.items() if k not in self.nodal_tracers
       }
-      nodal = {
-          k: v for k, v in next_state.items() if k in self.nodal_tracers
-      }
+      nodal = {k: v for k, v in next_state.items() if k in self.nodal_tracers}
       return self.modal_filter.filter_modal(modal) | nodal
     return self.modal_filter.filter_modal(next_state)
 
@@ -328,22 +326,32 @@ class SpectralPrimitiveEquationsModel(api.Model):
     """Advances `prognostics` in time by `self.model_timestep`."""
     prognostics = self.prognostics.get_value().copy()
     time = prognostics.pop('time')
-    step_fn = stepping.repeat_step(
-        lambda model, x: model.substep(x), self.num_substeps
-    )
+    step_fn = stepping.repeat_step(lambda m, x: m.substep(x), self.num_substeps)
     next_state = step_fn(self, prognostics)
     time = time + self.model_timestep
     self.prognostics.set_value(next_state | {'time': time})
 
+  def prognostic_values(self) -> dict[str, cx.Field]:
+    """Returns current nondimensional prognostic values of the model."""
+    return parallelism.with_dycore_sharding(
+        self.mesh, self.prognostics.get_value()
+    )
+
   def observe(self, queries: typing.Queries) -> typing.Observation:
     """Computes observations specified in `queries` from the model state."""
     assert self.redim_transform is not None
-    prognostics = self.prognostics.get_value()
-    prognostics = parallelism.with_dycore_sharding(self.mesh, prognostics)
+    prognostics = self.prognostic_values()
     final_outputs = {}
     for k, query in queries.items():
-      if k not in self.operators:
+      op_key = (
+          k.removeprefix('nondim_')
+          if k not in self.operators and k.startswith('nondim_')
+          else k
+      )
+      if op_key not in self.operators:
         raise ValueError(f'No observation operator for {k=}')
-      observation = self.operators[k].observe(prognostics, query)
-      final_outputs[k] = self.redim_transform(observation)
+      observation = self.operators[op_key].observe(prognostics, query)
+      if not k.startswith('nondim_'):
+        observation = self.redim_transform(observation)
+      final_outputs[k] = observation
     return final_outputs

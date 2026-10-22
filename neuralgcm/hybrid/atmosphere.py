@@ -95,7 +95,10 @@ class AssimilationSource(nnx.Module):
     grid: Optional LonLatGrid of the inputs. Defaults to the model_grid if None.
     correction: Optional transform that computes corrections to the model state
       from nondimensional inputs on `(levels, grid)`. Corrections are nodal
-      fields on `(model_levels, model_grid)`.
+      fields on `(model_levels, model_grid)` keyed by model state variables,
+      except that wind corrections may be given as `u_component_of_wind` and
+      `v_component_of_wind` (both required), which are converted to
+      `divergence` and `vorticity` corrections like the prior state itself.
     correction_timedelta: Optional timedeltas of inputs passed to `correction`,
       e.g. `TimeDelta(np.array([-6, 0], 'timedelta64[h]'))` to provide context
       from 6 hours prior. If set, inputs must include these timedeltas, which
@@ -1042,20 +1045,35 @@ class LearnedParameterizationSpectralDycore(model.Model):
         # doesn't support inputs with a `timedelta` axis.
         correction_inputs = fields
       correction = source.correction(correction_inputs | {'time': time})
+      correction = parallelism.with_dycore_sharding(self.mesh, correction)
+      nodal_tracer_corrections = {
+          k: correction.pop(k) for k in self.nodal_tracers if k in correction
+      }
+      uv_keys = {
+          self.to_modal_with_div_curl.u_key,
+          self.to_modal_with_div_curl.v_key,
+      }
+      if uv_keys & set(correction):
+        # Wind corrections are converted to divergence and vorticity like the
+        # prior state, so that they are the exact div/curl of a vector field
+        # (in particular with vanishing global means).
+        if not uv_keys <= set(correction):
+          raise ValueError(
+              'Corrections of wind components must include both '
+              f'{sorted(uv_keys)}, got {sorted(correction)}.'
+          )
+        correction = self.to_modal_with_div_curl(correction)
+      else:
+        to_modal = self.model_ylm_map.to_modal
+        correction = {k: to_modal(v) for k, v in correction.items()}
+      correction = parallelism.with_dycore_sharding(
+          self.mesh, correction | nodal_tracer_corrections
+      )
       if unknown_keys := set(correction) - set(pe_state):
         raise ValueError(
             f'Correction keys {unknown_keys} are not in the model state with '
             f'keys {list(pe_state)}.'
         )
-      correction = parallelism.with_dycore_sharding(self.mesh, correction)
-      to_modal = self.model_ylm_map.to_modal
-      correction = parallelism.with_dycore_sharding(
-          self.mesh,
-          {
-              k: v if k in self.nodal_tracers else to_modal(v)
-              for k, v in correction.items()
-          },
-      )
       _check_coordinates(correction, pe_state, 'Correction of')
       pe_state |= {k: pe_state[k] + v for k, v in correction.items()}
       pe_state = parallelism.with_dycore_sharding(self.mesh, pe_state)

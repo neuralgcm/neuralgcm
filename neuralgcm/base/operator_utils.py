@@ -63,6 +63,22 @@ def merge_prognostics(*components: model.Model) -> dict[str, cx.Field]:
   return merged
 
 
+def get_all_operators(
+    model_instance: model.Model,
+) -> dict[str, typing.ObservationOperator]:
+  """Collects `operators` from `model_instance` and any nested `Model`s."""
+  all_ops: dict[str, typing.ObservationOperator] = {}
+  for value in vars(model_instance).values():
+    if isinstance(value, model.Model):
+      all_ops.update(get_all_operators(value))
+    elif isinstance(value, Mapping):
+      for sub_value in value.values():
+        if isinstance(sub_value, model.Model):
+          all_ops.update(get_all_operators(sub_value))
+  all_ops.update(model_instance.operators)
+  return all_ops
+
+
 def build_coupler_query(*couplers: DataCoupler | None) -> typing.Queries:
   """Builds and merges observation queries for `couplers`."""
   query: dict[str, dict[str, cx.Coordinate]] = {}

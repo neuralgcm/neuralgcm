@@ -15,4 +15,5 @@
 """Coupled Earth-system models."""
 
 # pylint: disable=unused-import
+from neuralgcm.coupled import auxiliary
 from neuralgcm.coupled import models

@@ -118,6 +118,36 @@ class OperatorUtilsTest(absltest.TestCase):
     ):
       operator_utils.merge_prognostics(c1, c_conflict)
 
+  def test_get_all_operators_collects_nested_and_top_level(self):
+    ax = cx.SizedAxis('x', 2)
+    f1 = cx.field(jnp.array([1.0, 2.0]), ax)
+    f2 = cx.field(jnp.array([3.0, 4.0]), ax)
+    f_top = cx.field(jnp.array([5.0, 6.0]), ax)
+    ocean = _DummyComponent(fields_by_key={'ocean_ds': {'sst': f1}})
+    atmosphere = _DummyComponent(
+        fields_by_key={'atm_ds': {'u': f2}, 'shared': {'a': f1}}
+    )
+    aux = _DummyComponent(fields_by_key={'snotel': {'swe': f1}})
+
+    @nnx.dataclass(kw_only=True)
+    class _CompositeModel(_DummyComponent):
+      ocean: model.Model
+      atmosphere: model.Model
+      aux_models: dict[str, model.Model] = nnx.data(default_factory=dict)
+
+    composite = _CompositeModel(
+        fields_by_key={'shared': {'a': f_top}},
+        ocean=ocean,
+        atmosphere=atmosphere,
+        aux_models={'snotel': aux},
+    )
+    all_ops = operator_utils.get_all_operators(composite)
+    self.assertEqual(
+        set(all_ops.keys()), {'ocean_ds', 'atm_ds', 'snotel', 'shared'}
+    )
+    # Top-level operator overrides nested component operator for 'shared'.
+    self.assertIs(all_ops['shared'], composite.operators['shared'])
+
   def test_build_coupler_query_instant_and_multi_time(self):
     grid = coordinates.LonLatGrid.T21()
     self.assertEqual(operator_utils.build_coupler_query(None), {})

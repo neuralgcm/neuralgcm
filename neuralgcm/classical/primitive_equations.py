@@ -218,11 +218,11 @@ class SpectralPrimitiveEquationsModel(model.Model):
 
   @property
   def grid(self) -> cx.Coordinate:
-    return self.ylm_map.nodal_grid
+    return self.ylm_map.lon_lat_grid
 
   @property
   def ylm_grid(self) -> cx.Coordinate:
-    return self.ylm_map.modal_grid
+    return self.ylm_map.ylm_grid
 
   @property
   def timestep(self) -> np.timedelta64:

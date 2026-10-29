@@ -21,7 +21,6 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import jax_datetime as jdt
-from neuralgcm.base import defaults
 from neuralgcm.base import model
 from neuralgcm.base import stepping
 from neuralgcm.base import time_utils
@@ -33,7 +32,6 @@ from terrax.core import dynamic_io  # pylint: disable=unused-import
 from terrax.core import feature_transforms  # pylint: disable=unused-import
 from terrax.core import learned_transforms  # pylint: disable=unused-import
 from terrax.core import module_utils
-from terrax.core import observation_operators
 from terrax.core import parallelism
 from terrax.core import pytree_utils  # pylint: disable=unused-import
 from terrax.core import random_processes
@@ -170,12 +168,8 @@ class LearnedUpdateModel(model.Model):
     censor_transform: Transform applied to updated prognostics, e.g. to enforce
       physical constraints.
     sim_units: Simulation units helper. Defaults to `units.SI_UNITS`.
-    nondim_transform: Transform that nondimensionalizes inputs. Defaults to
-      `transforms.Nondimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` if None.
-    redim_transform: Transform that redimensionalizes observations. Defaults to
-      `transforms.Redimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` if None.
+    units_mapping: Physical units of variables crossing the model boundary.
+      Defaults to `defaults.DEFAULT_UNITS_MAPPING`.
     update_diagnostics: Diagnostics evaluated on outputs of `update_transform`
       on every update, see above.
     step_end_diagnostics: Diagnostics evaluated on prognostics at the end of
@@ -185,8 +179,8 @@ class LearnedUpdateModel(model.Model):
     prognostics_data_key: Dataset key in `inputs` from which the model state is
       set directly. Nondimensional values are read from `nondim_` prefixed key.
     operators: Observation operators for querying the prognostics. Observations
-      are redimensionalized using `redim_transform`, unless the query key is
-      prefixed with `'nondim_'`, which returns nondimensional values.
+      are returned in physical units per `units_mapping`, unless the query key
+      is prefixed with `'nondim_'`, which returns nondimensional values.
   """
 
   prognostics_coords: dict[str, cx.Coordinate]
@@ -215,16 +209,7 @@ class LearnedUpdateModel(model.Model):
   prognostics_data_key: str = nnx.static(kw_only=True, default='prognostics')
 
   def __post_init__(self):
-    if self.nondim_transform is None:
-      self.nondim_transform = transforms.Nondimensionalize(
-          self.sim_units,
-          inputs_to_units_mapping=defaults.DEFAULT_UNITS_MAPPING,
-      )
-    if self.redim_transform is None:
-      self.redim_transform = transforms.Redimensionalize(
-          self.sim_units,
-          inputs_to_units_mapping=defaults.DEFAULT_UNITS_MAPPING,
-      )
+    super().__post_init__()
     expected_keys = {*self.prognostics_coords, 'time'}
     if set(self.var_to_dataset_keys) != expected_keys:
       raise ValueError(
@@ -365,9 +350,10 @@ class LearnedUpdateModel(model.Model):
     if self.predict_state:
       next_prognostics_slice = {k: updates[k] for k in self.prognostics_coords}
     else:
-      assert self.nondim_transform is not None
-      sim_units = self.nondim_transform.sim_units
-      update_dt = sim_units.nondimensionalize_timedelta64(self.update_timestep)
+      assert self.sim_units is not None
+      update_dt = self.sim_units.nondimensionalize_timedelta64(
+          self.update_timestep
+      )
       next_prognostics_slice = {
           k: v + updates[k] * update_dt
           for k, v in self.current_prognostics().items()
@@ -440,7 +426,6 @@ class LearnedUpdateModel(model.Model):
         fields[k] = time_utils.select_timedeltas(field, self.history_axis)
       else:
         fields[k] = time_utils.select_zero_timedelta(field)
-    assert self.nondim_transform is not None
     fields = self.nondim_transform(fields)
     state = self.assimilate_transform(fields)
     if set(state) != set(fields):
@@ -474,29 +459,8 @@ class LearnedUpdateModel(model.Model):
         state[k] = time_utils.select_zero_timedelta(inputs[k])
     time = time_utils.select_zero_timedelta(inputs['time'])
     if nondimensionalize:
-      assert self.nondim_transform is not None
       state = self.nondim_transform(state)
     _check_coordinates(state, self._stored_coords(), 'Prognostic variable')
     self.prognostics.set_value(state)
     self.time.set_value(time)
     self.steps_since_update.set_value(cx.field(jnp.array(0, dtype=jnp.int32)))
-
-  def observe(self, queries: typing.Queries) -> typing.Observation:
-    assert self.redim_transform is not None
-    prognostics = self.prognostic_values()
-    operators = self.operators | {
-        'diagnostics': observation_operators.DataObservationOperator(
-            self.diagnostic_values()
-        )
-    }
-    outputs = {}
-    for k, query in queries.items():
-      op_key = (
-          k.removeprefix('nondim_')
-          if k not in operators and k.startswith('nondim_')
-          else k
-      )
-      operator = _get_required(operators, op_key, 'observation operator')
-      obs = operator.observe(prognostics, query)
-      outputs[k] = obs if k.startswith('nondim_') else self.redim_transform(obs)
-    return outputs

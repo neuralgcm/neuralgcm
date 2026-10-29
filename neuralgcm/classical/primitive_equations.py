@@ -75,8 +75,9 @@ class SpectralPrimitiveEquationsModel(model.Model):
       `(equation, dycore_dt)`.
     modal_filter: Spatial filter applied in spectral space after each substep.
     sim_units: Simulation units helper.
-    nondim_transform: Transform to non-dimensionalize inputs.
-    redim_transform: Transform to re-dimensionalize observations.
+    units_mapping: Physical units of variables crossing the model boundary.
+      Defaults to `defaults.DEFAULT_UNITS_MAPPING`; `tracer_names` are always
+      added as dimensionless.
     num_substeps: Number of dycore steps per `model_timestep`.
     reference_temperatures: Reference temperatures for linearization.
     dycore_equation_cls: Factory for the dynamical core equation (e.g.
@@ -92,9 +93,9 @@ class SpectralPrimitiveEquationsModel(model.Model):
     tracer_names: Tuple of tracer names evolved by the dynamical core.
     operators: Observation operators for querying the model state. Defaults to
       `primitive_equations_nodal_operator(ylm_map)` keyed by
-      `prognostics_data_key` if empty. Observations are redimensionalized using
-      `redim_transform`, unless the query key is prefixed with `'nondim_'`,
-      which returns nondimensional values.
+      `prognostics_data_key` if empty. Observations are returned in physical
+      units per `units_mapping`, unless the query key is prefixed with
+      `'nondim_'`, which returns nondimensional values.
     prognostics_data_key: Dataset key in `inputs` from which the model state is
       initialized. Nondimensional values are read from `nondim_` prefixed key.
     extra_dycore_kwargs: Additional keyword arguments forwarded to
@@ -110,8 +111,7 @@ class SpectralPrimitiveEquationsModel(model.Model):
       time_integrator_cls: Callable[..., time_integrators.DinosaurIntegrator],
       modal_filter: spatial_filters.ModalSpatialFilter,
       sim_units: units.SimUnits,
-      nondim_transform: transforms.Nondimensionalize | None = None,
-      redim_transform: transforms.Redimensionalize | None = None,
+      units_mapping: Mapping[str, str] | None = None,
       num_substeps: int = 1,
       reference_temperatures: Sequence[float] | cx.Field | None = None,
       dycore_equation_cls: Callable[..., DycoreEquation] = (
@@ -126,17 +126,32 @@ class SpectralPrimitiveEquationsModel(model.Model):
       mesh: parallelism.Mesh | None = None,
       **extra_dycore_kwargs,
   ):
+    if units_mapping is None:
+      units_mapping = defaults.DEFAULT_UNITS_MAPPING
+    units_mapping = dict(units_mapping) | {
+        k: 'dimensionless' for k in tracer_names
+    }
+    if not operators:
+      operators = {
+          prognostics_data_key: (
+              operator_utils.primitive_equations_nodal_operator(ylm_map)
+          ),
+      }
+    model_kwargs = dict(
+        sim_units=sim_units,
+        units_mapping=units_mapping,
+        operators=dict(operators),
+    )
     if mesh is None:
-      super().__init__()
+      super().__init__(**model_kwargs)
     else:
-      super().__init__(mesh=mesh)  # pylint: disable=unexpected-keyword-arg
+      super().__init__(mesh=mesh, **model_kwargs)  # pylint: disable=unexpected-keyword-arg
     self.ylm_map = ylm_map
     self.levels = levels
     self.model_timestep = model_timestep
     self.orography = orography
     self.time_integrator_cls = time_integrator_cls
     self.modal_filter = modal_filter
-    self.sim_units = sim_units
     self.num_substeps = num_substeps
     self.dycore_equation_cls = dycore_equation_cls
     self.explicit_equations = nnx.data(tuple(explicit_equations))
@@ -147,19 +162,6 @@ class SpectralPrimitiveEquationsModel(model.Model):
     self.prognostics_data_key = prognostics_data_key
     self.extra_dycore_kwargs = extra_dycore_kwargs
 
-    units_mapping = defaults.DEFAULT_UNITS_MAPPING | {
-        k: 'dimensionless' for k in self.tracer_names
-    }
-    if nondim_transform is None:
-      nondim_transform = transforms.Nondimensionalize(
-          self.sim_units, inputs_to_units_mapping=units_mapping
-      )
-    self.nondim_transform = nondim_transform
-    if redim_transform is None:
-      redim_transform = transforms.Redimensionalize(
-          self.sim_units, inputs_to_units_mapping=units_mapping
-      )
-    self.redim_transform = redim_transform
     if reference_temperatures is None:
       reference_temperatures = atmos_equations.get_reference_temperature(
           self.levels
@@ -168,7 +170,7 @@ class SpectralPrimitiveEquationsModel(model.Model):
     self.dycore_equation = self.dycore_equation_cls(
         ylm_map=self.ylm_map,
         levels=self.levels,
-        sim_units=self.sim_units,
+        sim_units=sim_units,
         reference_temperatures=self.reference_temperatures,
         orography_module=self.orography,
         tracer_names=self.tracer_names,
@@ -181,7 +183,7 @@ class SpectralPrimitiveEquationsModel(model.Model):
     else:
       self.equation = self.dycore_equation
 
-    model_dt = self.sim_units.nondimensionalize_timedelta64(self.model_timestep)
+    model_dt = sim_units.nondimensionalize_timedelta64(self.model_timestep)
     self.dycore_dt = model_dt / self.num_substeps
     self.integrator = self.time_integrator_cls(self.equation, self.dycore_dt)
     self.clip_transform = transforms.ClipWavenumbers.for_grids(
@@ -189,13 +191,6 @@ class SpectralPrimitiveEquationsModel(model.Model):
         wavenumbers_to_clip=1,
         skip_missing=True,
     )
-    if not operators:
-      operators = {
-          self.prognostics_data_key: (
-              operator_utils.primitive_equations_nodal_operator(self.ylm_map)
-          ),
-      }
-    self.operators = nnx.data(dict(operators))
     self.nodal_tracers = tuple(
         getattr(self.dycore_equation, 'nodal_tracers', ())
     )
@@ -294,7 +289,6 @@ class SpectralPrimitiveEquationsModel(model.Model):
     }
     time = prognostics.pop('time')
     if nondimensionalize:
-      assert self.nondim_transform is not None
       # log_surface_pressure is always the log of nondimensional pressure.
       log_sp = prognostics.pop('log_surface_pressure')
       prognostics = self.nondim_transform(prognostics)
@@ -336,22 +330,3 @@ class SpectralPrimitiveEquationsModel(model.Model):
     return parallelism.with_dycore_sharding(
         self.mesh, self.prognostics.get_value()
     )
-
-  def observe(self, queries: typing.Queries) -> typing.Observation:
-    """Computes observations specified in `queries` from the model state."""
-    assert self.redim_transform is not None
-    prognostics = self.prognostic_values()
-    final_outputs = {}
-    for k, query in queries.items():
-      op_key = (
-          k.removeprefix('nondim_')
-          if k not in self.operators and k.startswith('nondim_')
-          else k
-      )
-      if op_key not in self.operators:
-        raise ValueError(f'No observation operator for {k=}')
-      observation = self.operators[op_key].observe(prognostics, query)
-      if not k.startswith('nondim_'):
-        observation = self.redim_transform(observation)
-      final_outputs[k] = observation
-    return final_outputs

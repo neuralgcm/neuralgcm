@@ -274,9 +274,9 @@ class LearnedParameterizationSpectralDycore(model.Model):
 
   Observations are computed via `observe(queries)`, which dispatches each query
   key to `operators` (or to the built-in `'diagnostics'` operator exposing all
-  diagnostic collections) and redimensionalizes the resulting fields into
-  physical units using `redim_transform` (unless the query key is prefixed with
-  `'nondim_'`).
+  diagnostic collections) and returns the resulting fields in physical units
+  per `units_mapping` (unless the query key is prefixed with `'nondim_'`), see
+  `model.Model`.
 
   Arguments:
     model_ylm_map: Spherical harmonics mapping for the model grid.
@@ -326,14 +326,9 @@ class LearnedParameterizationSpectralDycore(model.Model):
     extra_dycore_kwargs: Additional keyword arguments passed to
       `dycore_equation_cls`.
     sim_units: Simulation units helper. Defaults to `units.SI_UNITS`.
-    nondim_transform: Module to non-dimensionalize fields. Defaults to
-      `transforms.Nondimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` (augmented with `tracer_names` as
-      dimensionless) if None.
-    redim_transform: Module to re-dimensionalize fields. Defaults to
-      `transforms.Redimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` (augmented with `tracer_names` as
-      dimensionless) if None.
+    units_mapping: Physical units of variables crossing the model boundary.
+      Defaults to `defaults.DEFAULT_UNITS_MAPPING`; `tracer_names` are always
+      added as dimensionless.
     assimilation_sources: Dict mapping source names to `AssimilationSource`
       instances specifying input coordinates, dataset keys and optional learned
       corrections and state filters from which the model state can be derived.
@@ -409,8 +404,8 @@ class LearnedParameterizationSpectralDycore(model.Model):
   reference_temperatures: Sequence[float] | None = None
   extra_dycore_kwargs: dict[str, Any] = nnx.static(default_factory=dict)
 
-  # `sim_units`, `nondim_transform`, `redim_transform` and `operators` are
-  # inherited from `model.Model`.
+  # `sim_units`, `units_mapping` and `operators` are inherited from
+  # `model.Model`.
 
   # Initialization and observation.
   assimilation_sources: dict[str, AssimilationSource] = nnx.data(
@@ -460,17 +455,11 @@ class LearnedParameterizationSpectralDycore(model.Model):
       self.dycore_orography = self.model_orography
     if self.step_filter is None:
       self.step_filter = step_filters.NoFilter()
-    units_mapping = defaults.DEFAULT_UNITS_MAPPING | {
+    if self.units_mapping is None:
+      self.units_mapping = defaults.DEFAULT_UNITS_MAPPING
+    self.units_mapping = dict(self.units_mapping) | {
         k: 'dimensionless' for k in self.tracer_names
     }
-    if self.nondim_transform is None:
-      self.nondim_transform = transforms.Nondimensionalize(
-          self.sim_units, inputs_to_units_mapping=units_mapping
-      )
-    if self.redim_transform is None:
-      self.redim_transform = transforms.Redimensionalize(
-          self.sim_units, inputs_to_units_mapping=units_mapping
-      )
     if not self.operators:
       self.operators = {
           self.prognostics_data_key: (
@@ -479,6 +468,7 @@ class LearnedParameterizationSpectralDycore(model.Model):
               )
           ),
       }
+    super().__post_init__()
     if self.aggregate_every is None:
       self.aggregate_every = self.model_timestep
     if self.parameterization_timestep is None:
@@ -533,6 +523,7 @@ class LearnedParameterizationSpectralDycore(model.Model):
         f' divide aggregate_every ({self.aggregate_every}).',
     )
     sim_units = self.sim_units
+    assert sim_units is not None
     parameterization_dt = sim_units.nondimensionalize_timedelta64(
         self.parameterization_timestep
     )
@@ -964,7 +955,6 @@ class LearnedParameterizationSpectralDycore(model.Model):
     }
     time = prognostics.pop('time')
     if nondimensionalize:
-      assert self.nondim_transform is not None
       prognostics = self.nondim_transform(prognostics)
     _check_coordinates(prognostics, expected, 'Prognostic variable')
     prognostics = parallelism.with_dycore_sharding(self.mesh, prognostics)
@@ -1013,7 +1003,6 @@ class LearnedParameterizationSpectralDycore(model.Model):
       lvl_dim = source.levels.dims[0]
       sel_levels = transforms.Sel({lvl_dim: source.levels})
       fields = sel_levels(fields)
-    assert self.nondim_transform is not None
     fields = self.nondim_transform(fields)
     # The model state is derived from inputs at timedelta=0.
     input_fields = {
@@ -1026,6 +1015,7 @@ class LearnedParameterizationSpectralDycore(model.Model):
       )
     else:
       regridded_inputs = input_fields
+    assert self.sim_units is not None
     pe_state_nodal = state_conversion.uvtz_to_primitive_equations(
         inputs=regridded_inputs,
         levels=self.model_levels,
@@ -1101,24 +1091,3 @@ class LearnedParameterizationSpectralDycore(model.Model):
     return parallelism.with_dycore_sharding(
         self.mesh, self.prognostics.get_value()
     )
-
-  def observe(self, queries: typing.Queries) -> typing.Observation:
-    assert self.redim_transform is not None
-    prognostics = self.prognostic_values()
-    obs_operators = self.operators | {
-        'diagnostics': self._diagnostics_operator()
-    }
-    final_outputs = {}
-    for k, query in queries.items():
-      op_key = (
-          k.removeprefix('nondim_')
-          if k not in obs_operators and k.startswith('nondim_')
-          else k
-      )
-      if op_key not in obs_operators:
-        raise ValueError(f'No observation operator for {k=}')
-      observation = obs_operators[op_key].observe(prognostics, query)
-      if not k.startswith('nondim_'):
-        observation = self.redim_transform(observation)
-      final_outputs[k] = observation
-    return final_outputs

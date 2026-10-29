@@ -21,3 +21,4 @@ from neuralgcm.base import operator_utils
 from neuralgcm.base import parameterizations
 from neuralgcm.base import stepping
 from neuralgcm.base import time_utils
+from neuralgcm.base import units_utils

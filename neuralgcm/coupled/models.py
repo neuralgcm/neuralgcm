@@ -14,37 +14,43 @@
 
 """Coupled ocean-atmosphere and ocean-land-atmosphere models."""
 
+from collections.abc import Sequence
+
 import coordax as cx
 from flax import nnx
-from neuralgcm.base import defaults
 from neuralgcm.base import model
 from neuralgcm.base import operator_utils
+from neuralgcm.base import units_utils
 import numpy as np
 from terrax.core import data_specs
-from terrax.core import transforms
 from terrax.core import typing
-from terrax.core import units
 
 # pylint: disable=g-classes-have-attributes
 
 DataCoupler = operator_utils.DataCoupler
 
 
-def _default_units_transforms(
-    sim_units: units.SimUnits,
-    nondim_transform: transforms.Nondimensionalize | None,
-    redim_transform: transforms.Redimensionalize | None,
-) -> tuple[transforms.Nondimensionalize, transforms.Redimensionalize]:
-  """Returns `nondim_transform` and `redim_transform`, filling in defaults."""
-  if nondim_transform is None:
-    nondim_transform = transforms.Nondimensionalize(
-        sim_units, inputs_to_units_mapping=defaults.DEFAULT_UNITS_MAPPING
-    )
-  if redim_transform is None:
-    redim_transform = transforms.Redimensionalize(
-        sim_units, inputs_to_units_mapping=defaults.DEFAULT_UNITS_MAPPING
-    )
-  return nondim_transform, redim_transform
+def _setup_composite_units(
+    composite: model.Model, components: Sequence[model.Model]
+) -> None:
+  """Defaults `sim_units` and `units_mapping` of `composite` from components.
+
+  `sim_units` defaults to the units of the first component (so that passages
+  between the composite and its primary component are no-ops) and
+  `units_mapping` to the merged mappings of all components.
+
+  Args:
+    composite: composite model whose unset units attributes are defaulted.
+    components: model components of `composite`; the first one is primary.
+  """
+  if composite.sim_units is None:
+    composite.sim_units = components[0].sim_units
+  if composite.units_mapping is None:
+    mappings = []
+    for component in components:
+      assert component.units_mapping is not None
+      mappings.append(component.units_mapping)
+    composite.units_mapping = units_utils.merge_units_mappings(*mappings)
 
 
 def _validate_coupler_units(
@@ -66,16 +72,21 @@ def _validate_coupler_units(
         f'({source.sim_units}) and target ({target.sim_units}).'
     )
   dim_keys = sorted(k for k in data_keys if not k.startswith('nondim_'))
-  if (
-      dim_keys
-      and source.sim_units.scale != target.sim_units.scale
-      and source.redim_transform is None
-  ):
-    raise ValueError(
-        f'{coupler_name} converts query keys {dim_keys} between distinct '
-        '`sim_units` scales, which requires a units mapping '
-        f'(`redim_transform`) on source model {type(source).__name__}.'
-    )
+  assert source.sim_units is not None and target.sim_units is not None
+  if dim_keys and source.sim_units.scale != target.sim_units.scale:
+    assert source.units_mapping is not None
+    coupler_query = operator_utils.build_coupler_query(coupler)
+    coupler_vars: set[str] = set()
+    for data_key in dim_keys:
+      coupler_vars.update(coupler_query[data_key])
+    coupler_vars.discard('time')
+    missing = sorted(coupler_vars - set(source.units_mapping))
+    if missing:
+      raise ValueError(
+          f'{coupler_name} converts {missing} between distinct `sim_units` '
+          'scales, which requires their units in `units_mapping` of source '
+          f'model {type(source).__name__}.'
+      )
 
 
 def _nondim_query_key(data_key: str) -> str:
@@ -102,7 +113,7 @@ def _nondim_for_coupler(
 
   `observations` are the response of `source.observe` to
   `_nondim_coupler_query`. They are re-expressed in `target.sim_units` via
-  `operator_utils.units_passage`, which is a no-op when both components share
+  `units_utils.units_passage`, which is a no-op when both components share
   the same scale.
 
   Args:
@@ -115,13 +126,13 @@ def _nondim_for_coupler(
     Observations keyed by `coupler` data keys, expressed in `target.sim_units`.
   """
   coupler_query = operator_utils.build_coupler_query(coupler)
-  units_mapping = operator_utils.units_mapping_of(source)
+  assert source.units_mapping is not None
   outputs: typing.Observation = {}
   for data_key, query in coupler_query.items():
     nondim_obs = observations[_nondim_query_key(data_key)]
     fields = {var: nondim_obs[var] for var in query}
-    outputs[data_key] = operator_utils.units_passage(
-        fields, source.sim_units, target.sim_units, units_mapping
+    outputs[data_key] = units_utils.units_passage(
+        fields, source.sim_units, target.sim_units, source.units_mapping
     )
   return outputs
 
@@ -137,7 +148,7 @@ class OceanAtmosphere(model.Model):
 
   Coupler queries observe nondimensional fields from the source component and
   re-express them in the receiving component's `sim_units` via
-  `operator_utils.units_passage` (a no-op when both components share the same
+  `units_utils.units_passage` (a no-op when both components share the same
   scale, and otherwise a static per-variable rescaling defined by the source
   component's units mapping). Coupler queries prefixed with `'nondim_'` require
   matching `sim_units` between the components.
@@ -159,14 +170,13 @@ class OceanAtmosphere(model.Model):
   expected by the ocean (e.g. endpoints of the time interval).
 
   `observe(queries)` dispatches each query key via
-  `operator_utils.dispatch_observe` to top-level `operators` (evaluated on the
-  merged `prognostic_values()` across `ocean` and `atmosphere` and
-  redimensionalized via `redim_transform`), to the built-in `'diagnostics'`
-  operator exposing all `DiagnosticModule` submodules across `ocean` and
-  `atmosphere` (redimensionalized via `redim_transform`), or to the unique
-  component model whose `operators` contain the key. Query keys prefixed with
-  `'nondim_'` return nondimensional observations directly without
-  redimensionalization.
+  `operator_utils.dispatch_observe_nondim` to top-level `operators` (evaluated
+  on `prognostic_values()` merged across `ocean` and `atmosphere`), to the
+  built-in `'diagnostics'` operator exposing all `DiagnosticModule` submodules
+  across `ocean` and `atmosphere`, or to the unique component model whose
+  `operators` contain the key. Observations are returned in the units of this
+  model (physical units per `units_mapping`, or nondimensional `sim_units` for
+  query keys prefixed with `'nondim_'`), see `model.Model`.
 
   Attributes:
     ocean: Ocean model component (including sea ice when applicable).
@@ -178,15 +188,11 @@ class OceanAtmosphere(model.Model):
     model_timestep: Outer time step of the coupled model. Defaults to
       `atmosphere.timestep` if `None`. Must match both `ocean.timestep` and
       `atmosphere.timestep`.
-    sim_units: Simulation units helper for top-level operators and diagnostics.
-      Defaults to `units.SI_UNITS`.
-    nondim_transform: Transform that nondimensionalizes top-level inputs.
-      Defaults to `transforms.Nondimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` if `None`.
-    redim_transform: Transform that redimensionalizes observations from
-      top-level `operators` and `'diagnostics'`. Defaults to
-      `transforms.Redimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` if `None`.
+    sim_units: Simulation units of the coupled model. Defaults to
+      `atmosphere.sim_units` if `None`.
+    units_mapping: Physical units of variables observed from the coupled model.
+      Defaults to the merged `units_mapping` of `ocean` and `atmosphere` if
+      `None`.
     operators: Optional top-level observation operators on the coupled model.
     remat_advance: Whether to wrap `advance` with `nnx.remat`.
   """
@@ -211,11 +217,8 @@ class OceanAtmosphere(model.Model):
           f'ocean.timestep={self.ocean.timestep} and '
           f'atmosphere.timestep={self.atmosphere.timestep}.'
       )
-    self.nondim_transform, self.redim_transform = _default_units_transforms(
-        self.sim_units,
-        self.nondim_transform,
-        self.redim_transform,
-    )
+    _setup_composite_units(self, [self.atmosphere, self.ocean])
+    super().__post_init__()
     _validate_coupler_units(
         self.ocean_to_atmosphere_coupler,
         self.ocean,
@@ -289,13 +292,11 @@ class OceanAtmosphere(model.Model):
       step_fn = nnx.remat(step_fn)
     step_fn(self)
 
-  def observe(self, queries: typing.Queries) -> typing.Observation:
-    return operator_utils.dispatch_observe(
+  def observe_nondim(self, queries: typing.Queries) -> typing.Observation:
+    return operator_utils.dispatch_observe_nondim(
         queries,
+        composite=self,
         components={'ocean': self.ocean, 'atmosphere': self.atmosphere},
-        operators=self.operators,
-        redim_transform=self.redim_transform,
-        get_diagnostic_values_fn=self.diagnostic_values,
     )
 
   @property
@@ -318,7 +319,7 @@ class OceanLandAtmosphere(model.Model):
 
   Coupler queries observe nondimensional fields from the source component and
   re-express them in the receiving component's `sim_units` via
-  `operator_utils.units_passage` (a no-op when both components share the same
+  `units_utils.units_passage` (a no-op when both components share the same
   scale, and otherwise a static per-variable rescaling defined by the source
   component's units mapping). Coupler queries prefixed with `'nondim_'` require
   matching `sim_units` between the components.
@@ -343,14 +344,14 @@ class OceanLandAtmosphere(model.Model):
   the time interval).
 
   `observe(queries)` dispatches each query key via
-  `operator_utils.dispatch_observe` to top-level `operators` (evaluated on the
-  merged `prognostic_values()` across `ocean`, `land`, and `atmosphere` and
-  redimensionalized via `redim_transform`), to the built-in `'diagnostics'`
-  operator exposing all `DiagnosticModule` submodules across `ocean`, `land`,
-  and `atmosphere` (redimensionalized via `redim_transform`), or to the unique
-  component model whose `operators` contain the key. Query keys prefixed with
-  `'nondim_'` return nondimensional observations directly without
-  redimensionalization.
+  `operator_utils.dispatch_observe_nondim` to top-level `operators` (evaluated
+  on `prognostic_values()` merged across `ocean`, `land`, and `atmosphere`), to
+  the built-in `'diagnostics'` operator exposing all `DiagnosticModule`
+  submodules across `ocean`, `land`, and `atmosphere`, or to the unique
+  component model whose `operators` contain the key. Observations are returned
+  in the units of this model (physical units per `units_mapping`, or
+  nondimensional `sim_units` for query keys prefixed with `'nondim_'`), see
+  `model.Model`.
 
   Attributes:
     ocean: Ocean model component (including sea ice when applicable).
@@ -367,15 +368,11 @@ class OceanLandAtmosphere(model.Model):
     model_timestep: Outer time step of the coupled model. Defaults to
       `atmosphere.timestep` if `None`. Must match `ocean.timestep`,
       `land.timestep`, and `atmosphere.timestep`.
-    sim_units: Simulation units helper for top-level operators and diagnostics.
-      Defaults to `units.SI_UNITS`.
-    nondim_transform: Transform that nondimensionalizes top-level inputs.
-      Defaults to `transforms.Nondimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` if `None`.
-    redim_transform: Transform that redimensionalizes observations from
-      top-level `operators` and `'diagnostics'`. Defaults to
-      `transforms.Redimensionalize` using `sim_units` and
-      `defaults.DEFAULT_UNITS_MAPPING` if `None`.
+    sim_units: Simulation units of the coupled model. Defaults to
+      `atmosphere.sim_units` if `None`.
+    units_mapping: Physical units of variables observed from the coupled model.
+      Defaults to the merged `units_mapping` of `ocean`, `land`, and
+      `atmosphere` if `None`.
     operators: Optional top-level observation operators on the coupled model.
     remat_advance: Whether to wrap `advance` with `nnx.remat`.
   """
@@ -405,11 +402,8 @@ class OceanLandAtmosphere(model.Model):
           f'land.timestep={self.land.timestep}, and '
           f'atmosphere.timestep={self.atmosphere.timestep}.'
       )
-    self.nondim_transform, self.redim_transform = _default_units_transforms(
-        self.sim_units,
-        self.nondim_transform,
-        self.redim_transform,
-    )
+    _setup_composite_units(self, [self.atmosphere, self.ocean, self.land])
+    super().__post_init__()
     _validate_coupler_units(
         self.ocean_to_atmosphere_coupler,
         self.ocean,
@@ -542,17 +536,15 @@ class OceanLandAtmosphere(model.Model):
       step_fn = nnx.remat(step_fn)
     step_fn(self)
 
-  def observe(self, queries: typing.Queries) -> typing.Observation:
-    return operator_utils.dispatch_observe(
+  def observe_nondim(self, queries: typing.Queries) -> typing.Observation:
+    return operator_utils.dispatch_observe_nondim(
         queries,
+        composite=self,
         components={
             'ocean': self.ocean,
             'land': self.land,
             'atmosphere': self.atmosphere,
         },
-        operators=self.operators,
-        redim_transform=self.redim_transform,
-        get_diagnostic_values_fn=self.diagnostic_values,
     )
 
   @property

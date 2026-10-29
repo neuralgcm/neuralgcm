@@ -255,7 +255,7 @@ class CoupledModelsTest(parameterized.TestCase):
           dict[str, diagnostics.DiagnosticModule] | None
       ) = None,
       sim_units: units.SimUnits | None = None,
-      nondim_transform: transforms.Nondimensionalize | None = None,
+      units_mapping: dict[str, str] | None = None,
   ) -> learned_update.LearnedUpdateModel:
     var_names = ('sea_surface_temperature', 'sea_ice_cover')
     if update_transform is None:
@@ -273,7 +273,7 @@ class CoupledModelsTest(parameterized.TestCase):
         update_timestep=update_timestep,
         predict_state=True,
         sim_units=sim_units or self.sim_units,
-        nondim_transform=nondim_transform,
+        units_mapping=units_mapping,
         prognostics_data_key='ocean_prognostics',
         operators={OCEAN_KEY: op},
         step_end_diagnostics=step_end_diagnostics or {},
@@ -350,6 +350,9 @@ class CoupledModelsTest(parameterized.TestCase):
         atmosphere=atmosphere,
     )
     self.assertEqual(coupled.timestep, np.timedelta64(6, 'h'))
+    # Units default to those of the components.
+    self.assertEqual(coupled.sim_units, atmosphere.sim_units)
+    self.assertEqual(coupled.units_mapping, atmosphere.units_mapping)
     self.assertIsInstance(
         coupled.nondim_transform, transforms.Nondimensionalize
     )
@@ -715,25 +718,30 @@ class CoupledModelsTest(parameterized.TestCase):
         field_coords={'temperature_variation': self.grid},
         var_to_data_keys={'temperature_variation': ATM_SURFACE_KEY},
     )
+    ocean_units_mapping = {
+        'sea_surface_temperature': 'degK',
+        'sea_ice_cover': 'dimensionless',
+        'temperature_variation': 'millikelvin',
+    }
     ocean_nondim = transforms.Nondimensionalize(
-        units.DEFAULT_UNITS,
-        inputs_to_units_mapping={
-            'sea_surface_temperature': 'degK',
-            'sea_ice_cover': 'dimensionless',
-            'temperature_variation': 'millikelvin',
-        },
+        units.DEFAULT_UNITS, inputs_to_units_mapping=ocean_units_mapping
     )
     ocean = self._make_ocean(
         atm_coupler=atm_to_ocean,
         sim_units=units.DEFAULT_UNITS,
-        nondim_transform=ocean_nondim,
+        units_mapping=ocean_units_mapping,
     )
     atmosphere = self._make_atmosphere(ocean_coupler=ocean_to_atm)
+    # Units mappings conflict on `temperature_variation`, so the coupled model
+    # needs an explicit `units_mapping`.
+    with self.assertRaisesRegex(ValueError, 'Conflicting units'):
+      models.OceanAtmosphere(ocean=ocean, atmosphere=atmosphere)
     coupled = models.OceanAtmosphere(
         ocean=ocean,
         atmosphere=atmosphere,
         ocean_to_atmosphere_coupler=ocean_to_atm,
         atmosphere_to_ocean_coupler=atm_to_ocean,
+        units_mapping=atmosphere.units_mapping,
     )
     inputs = self._initial_inputs()
     # Non-zero temperature so that unit conversion factors are exercised.

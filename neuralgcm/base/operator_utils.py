@@ -14,19 +14,18 @@
 
 """Observation operators and dispatch utilities for NeuralGCM models."""
 
-from collections.abc import Callable, Mapping
-from typing import Any, TypeAlias, TypeVar
+from collections.abc import Mapping
+from typing import TypeAlias, TypeVar
 
 import coordax as cx
 import jax.numpy as jnp
-import jax_datetime as jdt
 from neuralgcm.base import model
+from neuralgcm.base import units_utils
 from terrax.core import module_utils
 from terrax.core import observation_operators
 from terrax.core import spherical_harmonics
 from terrax.core import transforms
 from terrax.core import typing
-from terrax.core import units
 from terrax.couplers import generic
 
 DataCoupler: TypeAlias = (
@@ -122,192 +121,65 @@ def build_coupler_query(*couplers: DataCoupler | None) -> typing.Queries:
   return {k: v for k, v in query.items()}
 
 
-def unit_factor(sim_units: units.SimUnits | None, unit: str) -> float:
-  """Returns the nondimensional value of one `unit` in `sim_units`.
-
-  Args:
-    sim_units: simulation units to express `unit` in. `None` denotes physical
-      units, for which the factor is `1.0`.
-    unit: physical unit string, e.g. `'meter / second'`.
-
-  Returns:
-    The nondimensional value of `1 unit` in `sim_units`.
-  """
-  if sim_units is None:
-    return 1.0
-  return float(sim_units.nondimensionalize(typing.Quantity(unit)))
-
-
-def units_mapping_of(model_instance: model.Model) -> Mapping[str, str]:
-  """Returns the variable -> physical unit mapping used by `model_instance`."""
-  if model_instance.redim_transform is None:
-    return {}
-  return model_instance.redim_transform.inputs_to_units_mapping
-
-
-def units_passage(
-    fields: Mapping[str, cx.Field],
-    source_units: units.SimUnits | None,
-    target_units: units.SimUnits | None,
-    units_mapping: Mapping[str, str],
-) -> dict[str, cx.Field]:
-  """Converts `fields` from `source_units` to `target_units`.
-
-  Each field is rescaled according to its physical unit in `units_mapping`.
-  `None` stands for physical units, so the same function nondimensionalizes
-  (`source_units=None`), redimensionalizes (`target_units=None`) or converts
-  between two simulation unit systems.
-
-  Conversions between simulation units with the same `scale` are exact no-ops
-  and return `fields` unchanged. Fields with a unit factor of one (e.g.
-  `dimensionless`) and datetime fields are also returned as-is, which preserves
-  their dtype; other fields are multiplied by a static factor in their own
-  floating point dtype.
-
-  Args:
-    fields: Fields keyed by variable name.
-    source_units: Units in which `fields` are expressed; `None` for physical
-      units.
-    target_units: Units to express `fields` in; `None` for physical units.
-    units_mapping: Physical unit of each variable, defining the quantity that
-      its nondimensional values represent (the units mapping of the model on
-      the nondimensional side; with both sides nondimensional, the source's).
-
-  Returns:
-    `fields` in `target_units`, in the same key order.
-
-  Raises:
-    ValueError: If a rescaled key is missing from `units_mapping` or has an
-      integer or boolean dtype.
-  """
-  if (
-      source_units is not None
-      and target_units is not None
-      and source_units.scale == target_units.scale
-  ):
-    return dict(fields)
-  outputs = {}
-  for k, field in fields.items():
-    if isinstance(field.data, jdt.Datetime):
-      outputs[k] = field
-      continue
-    if k not in units_mapping:
-      raise ValueError(f'Key {k!r} not found in {units_mapping=}')
-    unit = units_mapping[k]
-    factor = unit_factor(target_units, unit) / unit_factor(source_units, unit)
-    if factor == 1.0:
-      outputs[k] = field
-      continue
-    dtype = field.dtype
-    if dtype is None or not jnp.issubdtype(dtype, jnp.inexact):
-      raise ValueError(
-          f'Cannot rescale {k!r} of dtype {dtype} by {factor}; only '
-          'floating point fields can change units.'
-      )
-    outputs[k] = field * factor
-  return outputs
-
-
-def _resolve_operator_key(
-    key: str, operators: Mapping[str, Any]
-) -> tuple[str | None, bool]:
-  """Returns `(matched_operator_key, is_nondim)` for `key` in `operators`."""
-  if key in operators:
-    return key, key.startswith('nondim_')
-  if key.startswith('nondim_'):
-    base_key = key.removeprefix('nondim_')
-    if base_key in operators:
-      return base_key, True
-  return None, False
-
-
-def dispatch_observe(
+def dispatch_observe_nondim(
     queries: typing.Queries,
     *,
+    composite: model.Model,
     components: Mapping[str, model.Model],
-    operators: Mapping[str, typing.ObservationOperator] | None = None,
-    redim_transform: typing.Transform | None = None,
-    get_diagnostic_values_fn: Callable[[], dict[str, cx.Field]] | None = None,
 ) -> typing.Observation:
-  """Dispatches `queries` across top-level `operators` and `components`.
+  """Dispatches nondimensional `queries` across `composite` and `components`.
 
-  Each query key in `queries` is resolved in the following order:
-    1. Top-level `operators` take precedence over component operators, are
-       evaluated with the merged `prognostic_values()` across `components` as
-       `inputs`, and are passed through `redim_transform` (when provided).
-    2. If `get_diagnostic_values_fn` is provided, the `'diagnostics'` key
-       observes the fields returned by `get_diagnostic_values_fn()`, which are
-       passed through `redim_transform` (when provided).
+  Implements `observe_nondim` for composite models: each query key (without
+  `'nondim_'` prefix) is resolved in the following order:
+    1. Top-level `composite.operators` take precedence over component operators
+       and are evaluated with `composite.prognostic_values()` as `inputs`.
+    2. The `'diagnostics'` key observes `composite.diagnostic_values()`.
     3. Remaining keys are routed to the unique component in `components` whose
-       `operators` contain the key, and all queries for a given component are
-       evaluated in a single `component.observe(sub_queries)` call.
-    4. Any query key prefixed with `'nondim_'` (when not explicitly present in
-       `operators`) matches the operator for `key.removeprefix('nondim_')` and
-       returns nondimensional values directly (skipping `redim_transform` for
-       top-level operators and `'diagnostics'`, and forwarding the
-       `'nondim_'`-prefixed key to `component.observe` for component
-       operators).
-  The merged prognostics and diagnostic values are only computed if a query key
-  requires them.
+       `operators` contain the key. All queries for a given component are
+       evaluated in a single `component.observe_nondim(sub_queries)` call, and
+       the results are re-expressed in `composite.sim_units` via
+       `units_utils.units_passage` (a no-op when the component shares the
+       composite's scale).
+  Field entries of `queries` are expected in `composite.sim_units` and are
+  re-expressed in the receiving component's `sim_units` accordingly.
 
   Args:
-    queries: Observation queries keyed by dataset/operator key.
+    queries: Nondimensional observation queries keyed by dataset/operator key.
+    composite: The composite model whose `observe_nondim` is being implemented.
     components: Component models keyed by component name.
-    operators: Optional top-level observation operators on the composite model.
-    redim_transform: Optional transform applied to dimensional outputs of
-      top-level `operators` and `'diagnostics'`.
-    get_diagnostic_values_fn: Optional function returning nondimensional
-      diagnostic values of the composite model, observed with the
-      `'diagnostics'` key.
 
   Returns:
-    Observations keyed by dataset/operator key in the same order as `queries`.
+    Nondimensional observations in `composite.sim_units`, keyed like `queries`.
   """
-  top_operators = dict(operators) if operators is not None else {}
+  assert composite.sim_units is not None and composite.units_mapping is not None
   component_operators = {
       name: component.operators for name, component in components.items()
   }
-
   prognostics: dict[str, cx.Field] | None = None
-  diagnostics: dict[str, cx.Field] | None = None
   top_outputs: typing.Observation = {}
   component_queries: dict[str, typing.Queries] = {}
   for k, query in queries.items():
-    top_key, is_nondim = _resolve_operator_key(k, top_operators)
-    if top_key is not None:
+    if k in composite.operators:
       if prognostics is None:
-        prognostics = merge_prognostics(*components.values())
-      obs = top_operators[top_key].observe(prognostics, query)
-      if redim_transform is not None and not is_nondim:
-        obs = redim_transform(obs)
-      top_outputs[k] = obs
+        prognostics = composite.prognostic_values()
+      top_outputs[k] = composite.operators[k].observe(prognostics, query)
       continue
-    is_diagnostics = k.removeprefix('nondim_') == 'diagnostics'
-    if get_diagnostic_values_fn is not None and is_diagnostics:
-      if diagnostics is None:
-        diagnostics = get_diagnostic_values_fn()
+    if k == 'diagnostics':
       diagnostics_operator = observation_operators.DataObservationOperator(
-          diagnostics
+          composite.diagnostic_values()
       )
-      obs = diagnostics_operator.observe({}, query)
-      if redim_transform is not None and not k.startswith('nondim_'):
-        obs = redim_transform(obs)
-      top_outputs[k] = obs
+      top_outputs[k] = diagnostics_operator.observe({}, query)
       continue
-    matching = [
-        name
-        for name, ops in component_operators.items()
-        if _resolve_operator_key(k, ops)[0] is not None
-    ]
+    matching = [name for name, ops in component_operators.items() if k in ops]
     if len(matching) > 1:
       raise ValueError(
           f'Observation operator key {k!r} is present on multiple model '
           f'components {matching} and cannot be uniquely dispatched.'
       )
     if not matching:
-      available = set(top_operators).union(*component_operators.values())
-      if get_diagnostic_values_fn is not None:
-        available.add('diagnostics')
+      available = {*composite.operators, 'diagnostics'}.union(
+          *component_operators.values()
+      )
       raise ValueError(
           f'No observation operator for key {k!r}, available: '
           f'{sorted(available)}.'
@@ -317,12 +189,45 @@ def dispatch_observe(
 
   component_outputs: typing.Observation = {}
   for name, sub_queries in component_queries.items():
-    component_outputs.update(components[name].observe(sub_queries))
+    component = components[name]
+    assert component.sim_units is not None
+    assert component.units_mapping is not None
+    sub_queries = {
+        k: _passage_query(q, composite, component)
+        for k, q in sub_queries.items()
+    }
+    for k, obs in component.observe_nondim(sub_queries).items():
+      component_outputs[k] = units_utils.units_passage(
+          obs, component.sim_units, composite.sim_units, component.units_mapping
+      )
 
   return {
       k: top_outputs[k] if k in top_outputs else component_outputs[k]
       for k in queries
   }
+
+
+def _passage_query(
+    query: typing.Query, source_model: model.Model, target_model: model.Model
+) -> typing.Query:
+  """Converts nondimensional `Field` entries of `query` for `target_model`."""
+  source_units, target_units = source_model.sim_units, target_model.sim_units
+  units_mapping = source_model.units_mapping
+  assert source_units is not None and target_units is not None
+  assert units_mapping is not None
+  if source_units.scale == target_units.scale:
+    return query
+  outputs = {}
+  for k, raw_entry in query.items():
+    entry, is_aux = typing.unwrap_auxiliary(raw_entry)
+    if cx.is_field(entry):
+      [entry] = units_utils.units_passage(
+          {k: entry}, source_units, target_units, units_mapping
+      ).values()
+      outputs[k] = typing.Auxiliary(entry) if is_aux else entry
+    else:
+      outputs[k] = raw_entry
+  return outputs
 
 
 def primitive_equations_nodal_operator(

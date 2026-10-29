@@ -736,20 +736,31 @@ class CoupledModelsTest(parameterized.TestCase):
         atmosphere_to_ocean_coupler=atm_to_ocean,
     )
     inputs = self._initial_inputs()
+    # Non-zero temperature so that unit conversion factors are exercised.
+    atm_state = inputs['nondim_atmosphere_prognostics']
+    temperature = atm_state['temperature']
+    atm_state['temperature'] = cx.field(
+        temperature.data.at[..., 0, 0].set(250.0), temperature.coordinate
+    )
     coupled.assimilate(inputs)
 
-    # `atm_to_ocean` stores `temperature_variation` nondimensionalized using
-    # `ocean.nondim_transform` rather than `atmosphere.nondim_transform`.
+    # `atm_to_ocean` stores `temperature_variation` re-expressed in the ocean's
+    # `sim_units`. Its physical value is defined by the atmosphere's units
+    # (kelvin); the ocean's own unit name for it (`millikelvin`) is irrelevant.
     dim_temp = atmosphere.observe(
         {ATM_SURFACE_KEY: {'temperature_variation': self.grid}}
     )[ATM_SURFACE_KEY]
-    expected_ocean_temp = ocean_nondim(dim_temp)['temperature_variation']
-    t = ocean.time.get_value().data
-    cx.testing.assert_fields_allclose(
-        atm_to_ocean(t)['temperature_variation'],
-        expected_ocean_temp,
-        rtol=1e-5,
+    to_ocean_units = transforms.Nondimensionalize(
+        units.DEFAULT_UNITS, {'temperature_variation': 'kelvin'}
     )
+    expected_ocean_temp = to_ocean_units(dim_temp)['temperature_variation']
+    t = ocean.time.get_value().data
+    coupled_temp = atm_to_ocean(t)['temperature_variation']
+    cx.testing.assert_fields_allclose(
+        coupled_temp, expected_ocean_temp, rtol=1e-5
+    )
+    millikelvin_temp = ocean_nondim(dim_temp)['temperature_variation']
+    self.assertFalse(np.allclose(coupled_temp.data, millikelvin_temp.data))
 
 
 if __name__ == '__main__':

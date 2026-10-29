@@ -19,11 +19,14 @@ from typing import Any, TypeAlias, TypeVar
 
 import coordax as cx
 import jax.numpy as jnp
+import jax_datetime as jdt
 from neuralgcm.base import model
+from terrax.core import module_utils
 from terrax.core import observation_operators
 from terrax.core import spherical_harmonics
 from terrax.core import transforms
 from terrax.core import typing
+from terrax.core import units
 from terrax.couplers import generic
 
 DataCoupler: TypeAlias = (
@@ -63,6 +66,35 @@ def merge_prognostics(*components: model.Model) -> dict[str, cx.Field]:
   return merged
 
 
+def get_all_operators(
+    model_instance: model.Model,
+) -> dict[str, typing.ObservationOperator]:
+  """Collects `operators` from `model_instance` and any nested `Model`s.
+
+  Operators of outer models take precedence over those of nested models.
+  Nested models at equal depth are merged in traversal order, so a later
+  sibling overrides an earlier one on duplicate keys.
+
+  Args:
+    model_instance: model whose own and nested `operators` are collected.
+
+  Returns:
+    Mapping from query key to observation operator, with outer models' entries
+    overriding those of nested models.
+  """
+  models, paths = module_utils.retrieve_subclass_modules(
+      model_instance, model.Model, return_paths=True
+  )
+  all_operators: dict[str, typing.ObservationOperator] = {}
+  # Deepest models first, so that outer models override their operators.
+  for _, nested_model in sorted(
+      zip(paths, models), key=lambda item: len(item[0]), reverse=True
+  ):
+    all_operators.update(nested_model.operators)
+  all_operators.update(model_instance.operators)
+  return all_operators
+
+
 def build_coupler_query(*couplers: DataCoupler | None) -> typing.Queries:
   """Builds and merges observation queries for `couplers`."""
   query: dict[str, dict[str, cx.Coordinate]] = {}
@@ -88,6 +120,92 @@ def build_coupler_query(*couplers: DataCoupler | None) -> typing.Queries:
         )
       dataset_query['time'] = cx.Scalar()
   return {k: v for k, v in query.items()}
+
+
+def unit_factor(sim_units: units.SimUnits | None, unit: str) -> float:
+  """Returns the nondimensional value of one `unit` in `sim_units`.
+
+  Args:
+    sim_units: simulation units to express `unit` in. `None` denotes physical
+      units, for which the factor is `1.0`.
+    unit: physical unit string, e.g. `'meter / second'`.
+
+  Returns:
+    The nondimensional value of `1 unit` in `sim_units`.
+  """
+  if sim_units is None:
+    return 1.0
+  return float(sim_units.nondimensionalize(typing.Quantity(unit)))
+
+
+def units_mapping_of(model_instance: model.Model) -> Mapping[str, str]:
+  """Returns the variable -> physical unit mapping used by `model_instance`."""
+  if model_instance.redim_transform is None:
+    return {}
+  return model_instance.redim_transform.inputs_to_units_mapping
+
+
+def units_passage(
+    fields: Mapping[str, cx.Field],
+    source_units: units.SimUnits | None,
+    target_units: units.SimUnits | None,
+    units_mapping: Mapping[str, str],
+) -> dict[str, cx.Field]:
+  """Converts `fields` from `source_units` to `target_units`.
+
+  Each field is rescaled according to its physical unit in `units_mapping`.
+  `None` stands for physical units, so the same function nondimensionalizes
+  (`source_units=None`), redimensionalizes (`target_units=None`) or converts
+  between two simulation unit systems.
+
+  Conversions between simulation units with the same `scale` are exact no-ops
+  and return `fields` unchanged. Fields with a unit factor of one (e.g.
+  `dimensionless`) and datetime fields are also returned as-is, which preserves
+  their dtype; other fields are multiplied by a static factor in their own
+  floating point dtype.
+
+  Args:
+    fields: Fields keyed by variable name.
+    source_units: Units in which `fields` are expressed; `None` for physical
+      units.
+    target_units: Units to express `fields` in; `None` for physical units.
+    units_mapping: Physical unit of each variable, defining the quantity that
+      its nondimensional values represent (the units mapping of the model on
+      the nondimensional side; with both sides nondimensional, the source's).
+
+  Returns:
+    `fields` in `target_units`, in the same key order.
+
+  Raises:
+    ValueError: If a rescaled key is missing from `units_mapping` or has an
+      integer or boolean dtype.
+  """
+  if (
+      source_units is not None
+      and target_units is not None
+      and source_units.scale == target_units.scale
+  ):
+    return dict(fields)
+  outputs = {}
+  for k, field in fields.items():
+    if isinstance(field.data, jdt.Datetime):
+      outputs[k] = field
+      continue
+    if k not in units_mapping:
+      raise ValueError(f'Key {k!r} not found in {units_mapping=}')
+    unit = units_mapping[k]
+    factor = unit_factor(target_units, unit) / unit_factor(source_units, unit)
+    if factor == 1.0:
+      outputs[k] = field
+      continue
+    dtype = field.dtype
+    if dtype is None or not jnp.issubdtype(dtype, jnp.inexact):
+      raise ValueError(
+          f'Cannot rescale {k!r} of dtype {dtype} by {factor}; only '
+          'floating point fields can change units.'
+      )
+    outputs[k] = field * factor
+  return outputs
 
 
 def _resolve_operator_key(

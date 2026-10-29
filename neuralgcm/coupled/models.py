@@ -66,29 +66,63 @@ def _validate_coupler_units(
         f'({source.sim_units}) and target ({target.sim_units}).'
     )
   dim_keys = sorted(k for k in data_keys if not k.startswith('nondim_'))
-  if dim_keys and target.nondim_transform is None:
+  if (
+      dim_keys
+      and source.sim_units.scale != target.sim_units.scale
+      and source.redim_transform is None
+  ):
     raise ValueError(
-        f'{coupler_name} uses dimensional query keys {dim_keys}, which '
-        'requires `nondim_transform` on target model '
-        f'{type(target).__name__}.'
+        f'{coupler_name} converts query keys {dim_keys} between distinct '
+        '`sim_units` scales, which requires a units mapping '
+        f'(`redim_transform`) on source model {type(source).__name__}.'
     )
+
+
+def _nondim_query_key(data_key: str) -> str:
+  return data_key if data_key.startswith('nondim_') else f'nondim_{data_key}'
+
+
+def _nondim_coupler_query(*couplers: DataCoupler | None) -> typing.Queries:
+  """Builds the coupler query requesting nondimensional source observations."""
+  query: typing.Queries = {}
+  coupler_query = operator_utils.build_coupler_query(*couplers)
+  for data_key, dataset_query in coupler_query.items():
+    nondim_key = _nondim_query_key(data_key)
+    query[nondim_key] = {**query.get(nondim_key, {}), **dataset_query}
+  return query
 
 
 def _nondim_for_coupler(
     observations: typing.Observation,
     coupler: DataCoupler,
+    source: model.Model,
     target: model.Model,
 ) -> typing.Observation:
-  """Selects and nondimensionalizes `observations` for `coupler` on `target`."""
+  """Selects nondimensional source `observations` for `coupler` on `target`.
+
+  `observations` are the response of `source.observe` to
+  `_nondim_coupler_query`. They are re-expressed in `target.sim_units` via
+  `operator_utils.units_passage`, which is a no-op when both components share
+  the same scale.
+
+  Args:
+    observations: response of `source.observe` to `_nondim_coupler_query`.
+    coupler: data coupler whose query selects the fields to pass to `target`.
+    source: model component that produced `observations`.
+    target: model component that consumes the selected fields.
+
+  Returns:
+    Observations keyed by `coupler` data keys, expressed in `target.sim_units`.
+  """
   coupler_query = operator_utils.build_coupler_query(coupler)
+  units_mapping = operator_utils.units_mapping_of(source)
   outputs: typing.Observation = {}
   for data_key, query in coupler_query.items():
-    fields = {var: observations[data_key][var] for var in query}
-    if data_key.startswith('nondim_'):
-      outputs[data_key] = fields
-    else:
-      assert target.nondim_transform is not None
-      outputs[data_key] = target.nondim_transform(fields)
+    nondim_obs = observations[_nondim_query_key(data_key)]
+    fields = {var: nondim_obs[var] for var in query}
+    outputs[data_key] = operator_utils.units_passage(
+        fields, source.sim_units, target.sim_units, units_mapping
+    )
   return outputs
 
 
@@ -101,12 +135,12 @@ class OceanAtmosphere(model.Model):
   couplers (`InstantDataCoupler` or `MultiTimeDataCoupler`). Either coupler may
   be `None` to configure one-way coupling.
 
-  Coupler queries using regular dataset keys observe dimensional fields from the
-  source component and convert them to the receiving component's nondimensional
-  units using the receiving component's `nondim_transform` (supporting
-  components with distinct `sim_units` or unit mappings). Coupler queries
-  prefixed with `'nondim_'` pass nondimensional observations directly between
-  components without unit conversion (requiring matching `sim_units`).
+  Coupler queries observe nondimensional fields from the source component and
+  re-express them in the receiving component's `sim_units` via
+  `operator_utils.units_passage` (a no-op when both components share the same
+  scale, and otherwise a static per-variable rescaling defined by the source
+  component's units mapping). Coupler queries prefixed with `'nondim_'` require
+  matching `sim_units` between the components.
 
   `assimilate(inputs)` initializes `ocean` and `atmosphere` from `inputs` and
   populates any active couplers with nondimensionalized initial observations.
@@ -194,12 +228,8 @@ class OceanAtmosphere(model.Model):
         self.ocean,
         'atmosphere_to_ocean_coupler',
     )
-    self.ocean_query = operator_utils.build_coupler_query(
-        self.ocean_to_atmosphere_coupler
-    )
-    self.atm_query = operator_utils.build_coupler_query(
-        self.atmosphere_to_ocean_coupler
-    )
+    self.ocean_query = _nondim_coupler_query(self.ocean_to_atmosphere_coupler)
+    self.atm_query = _nondim_coupler_query(self.atmosphere_to_ocean_coupler)
     _ = self.inputs_spec
 
   @property
@@ -216,6 +246,7 @@ class OceanAtmosphere(model.Model):
     return _nondim_for_coupler(
         self.ocean.observe(self.ocean_query),
         self.ocean_to_atmosphere_coupler,
+        self.ocean,
         self.atmosphere,
     )
 
@@ -225,6 +256,7 @@ class OceanAtmosphere(model.Model):
     return _nondim_for_coupler(
         self.atmosphere.observe(self.atm_query),
         self.atmosphere_to_ocean_coupler,
+        self.atmosphere,
         self.ocean,
     )
 
@@ -284,12 +316,12 @@ class OceanLandAtmosphere(model.Model):
   data couplers (`InstantDataCoupler` or `MultiTimeDataCoupler`). Any subset of
   couplers may be `None` to configure one-way or partial coupling.
 
-  Coupler queries using regular dataset keys observe dimensional fields from the
-  source component and convert them to the receiving component's nondimensional
-  units using the receiving component's `nondim_transform` (supporting
-  components with distinct `sim_units` or unit mappings). Coupler queries
-  prefixed with `'nondim_'` pass nondimensional observations directly between
-  components without unit conversion (requiring matching `sim_units`).
+  Coupler queries observe nondimensional fields from the source component and
+  re-express them in the receiving component's `sim_units` via
+  `operator_utils.units_passage` (a no-op when both components share the same
+  scale, and otherwise a static per-variable rescaling defined by the source
+  component's units mapping). Coupler queries prefixed with `'nondim_'` require
+  matching `sim_units` between the components.
 
   `assimilate(inputs)` initializes `ocean`, `land`, and `atmosphere` from
   `inputs` and populates any active couplers with nondimensionalized initial
@@ -402,13 +434,9 @@ class OceanLandAtmosphere(model.Model):
         self.land,
         'atmosphere_to_land_coupler',
     )
-    self.ocean_query = operator_utils.build_coupler_query(
-        self.ocean_to_atmosphere_coupler
-    )
-    self.land_query = operator_utils.build_coupler_query(
-        self.land_to_atmosphere_coupler
-    )
-    self.atm_query = operator_utils.build_coupler_query(
+    self.ocean_query = _nondim_coupler_query(self.ocean_to_atmosphere_coupler)
+    self.land_query = _nondim_coupler_query(self.land_to_atmosphere_coupler)
+    self.atm_query = _nondim_coupler_query(
         self.atmosphere_to_ocean_coupler,
         self.atmosphere_to_land_coupler,
     )
@@ -430,6 +458,7 @@ class OceanLandAtmosphere(model.Model):
     return _nondim_for_coupler(
         self.ocean.observe(self.ocean_query),
         self.ocean_to_atmosphere_coupler,
+        self.ocean,
         self.atmosphere,
     )
 
@@ -439,6 +468,7 @@ class OceanLandAtmosphere(model.Model):
     return _nondim_for_coupler(
         self.land.observe(self.land_query),
         self.land_to_atmosphere_coupler,
+        self.land,
         self.atmosphere,
     )
 
@@ -450,12 +480,18 @@ class OceanLandAtmosphere(model.Model):
     to_ocean = None
     if self.atmosphere_to_ocean_coupler is not None:
       to_ocean = _nondim_for_coupler(
-          atmosphere_values, self.atmosphere_to_ocean_coupler, self.ocean
+          atmosphere_values,
+          self.atmosphere_to_ocean_coupler,
+          self.atmosphere,
+          self.ocean,
       )
     to_land = None
     if self.atmosphere_to_land_coupler is not None:
       to_land = _nondim_for_coupler(
-          atmosphere_values, self.atmosphere_to_land_coupler, self.land
+          atmosphere_values,
+          self.atmosphere_to_land_coupler,
+          self.atmosphere,
+          self.land,
       )
     return to_ocean, to_land
 

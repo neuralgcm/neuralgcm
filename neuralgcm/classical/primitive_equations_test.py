@@ -15,11 +15,13 @@
 """Tests for primitive_equations model instantiation."""
 
 import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
+import coordax as cx
 from flax import nnx
-import numpy as np
 from neuralgcm.classical import primitive_equations
+import numpy as np
 from terrax.atmosphere import equations as atmos_equations
 from terrax.core import coordinates
 from terrax.core import orographies
@@ -151,6 +153,16 @@ class PrimitiveEquationsTest(parameterized.TestCase):
     self.assertEqual(model.timestep, model_timestep)
     self.assertIn('prognostics', model.inputs_spec)
     self.assertIn('nondim_prognostics', model.inputs_spec)
+    nodal_vol = cx.coords.compose(levels, self.grid)
+    modal_vol = cx.coords.compose(levels, self.ylm_grid)
+    obs = model.observe({
+        'prognostics': {
+            'divergence': nodal_vol,
+            'divergence_ylm': modal_vol,
+        }
+    })['prognostics']
+    self.assertEqual(obs['divergence'].coordinate, nodal_vol)
+    self.assertEqual(obs['divergence_ylm'].coordinate, modal_vol)
 
 
 if __name__ == '__main__':

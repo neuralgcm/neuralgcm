@@ -225,7 +225,7 @@ class CoupledModelsTest(parameterized.TestCase):
     if surface_operator is None:
       surface_operator = _AtmosphereSurfaceOperator(self.ylm_map, self.levels)
     operators = {
-        'prognostics': operator_utils.primitive_equations_nodal_operator(
+        'prognostics': operator_utils.primitive_equations_state_operator(
             self.ylm_map
         ),
         ATM_SURFACE_KEY: surface_operator,
@@ -752,9 +752,11 @@ class CoupledModelsTest(parameterized.TestCase):
     )
     coupled.assimilate(inputs)
 
-    # `atm_to_ocean` stores `temperature_variation` re-expressed in the ocean's
-    # `sim_units`. Its physical value is defined by the atmosphere's units
-    # (kelvin); the ocean's own unit name for it (`millikelvin`) is irrelevant.
+    # `atm_to_ocean` converts nondimensional `temperature_variation` directly
+    # from `atmosphere.sim_units` to `ocean.sim_units` via `units_passage`
+    # (where scalar unit prefixes like `'kelvin'` vs `'millikelvin'` cancel),
+    # rather than redimensionalizing with `atmosphere.observe` (in kelvin) and
+    # re-nondimensionalizing with `ocean_nondim` (which expects millikelvin).
     dim_temp = atmosphere.observe(
         {ATM_SURFACE_KEY: {'temperature_variation': self.grid}}
     )[ATM_SURFACE_KEY]

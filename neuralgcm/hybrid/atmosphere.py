@@ -341,7 +341,7 @@ class LearnedParameterizationSpectralDycore(model.Model):
     prognostics_data_key: Dataset key in `inputs` from which the model state is
       set directly. Nondimensional values are read from `nondim_` prefixed key.
     operators: Dict of observation operators for querying model state. Defaults
-      to `primitive_equations_nodal_operator(model_ylm_map)` keyed by
+      to `primitive_equations_state_operator(model_ylm_map)` keyed by
       `prognostics_data_key` when empty.
     step_start_diagnostics: Diagnostics evaluated on prognostics at the start of
       every `parameterization_timestep`, see above.
@@ -457,13 +457,15 @@ class LearnedParameterizationSpectralDycore(model.Model):
       self.step_filter = step_filters.NoFilter()
     if self.units_mapping is None:
       self.units_mapping = defaults.DEFAULT_UNITS_MAPPING
-    self.units_mapping = dict(self.units_mapping) | {
-        k: 'dimensionless' for k in self.tracer_names
-    }
+    self.units_mapping = (
+        dict(self.units_mapping)
+        | {k: 'dimensionless' for k in self.tracer_names}
+        | {f'{k}_ylm': 'dimensionless' for k in self.tracer_names}
+    )
     if not self.operators:
       self.operators = {
           self.prognostics_data_key: (
-              operator_utils.primitive_equations_nodal_operator(
+              operator_utils.primitive_equations_state_operator(
                   self.model_ylm_map
               )
           ),

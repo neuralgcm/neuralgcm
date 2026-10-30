@@ -22,6 +22,8 @@ from flax import nnx
 from neuralgcm.base import defaults
 from neuralgcm.base import units_utils
 from terrax.core import api
+from terrax.core import diagnostics
+from terrax.core import module_utils
 from terrax.core import observation_operators
 from terrax.core import transforms
 from terrax.core import typing
@@ -127,6 +129,33 @@ class Model(api.Model, abc.ABC):
   def prognostic_values(self) -> dict[str, cx.Field]:
     """Returns current nondimensional prognostic values of the model."""
     raise NotImplementedError()
+
+  def diagnostic_values(self) -> dict[str, cx.Field]:
+    """Returns current nondimensional diagnostic values in `sim_units`."""
+    assert self.sim_units is not None
+    submodels, model_paths = module_utils.retrieve_subclass_modules(
+        self, Model, return_paths=True
+    )
+    diag_modules, diag_paths = module_utils.retrieve_subclass_modules(
+        self, diagnostics.DiagnosticModule, return_paths=True
+    )
+    outputs: dict[str, cx.Field] = {}
+    for diag_module, diag_path in zip(diag_modules, diag_paths):
+      owner = self
+      owner_depth = 0
+      for submodel, model_path in zip(submodels, model_paths):
+        depth = len(model_path)
+        if depth > owner_depth and diag_path[:depth] == model_path:
+          owner = submodel
+          owner_depth = depth
+      assert owner.sim_units is not None and owner.units_mapping is not None
+      outputs |= units_utils.units_passage(
+          diag_module.diagnostic_values(),
+          owner.sim_units,
+          self.sim_units,
+          owner.units_mapping,
+      )
+    return outputs
 
   def observe_nondim(self, queries: typing.Queries) -> typing.Observation:
     """Returns nondimensional observations for nondimensional `queries`.

@@ -14,18 +14,20 @@
 
 """Observation operators and dispatch utilities for NeuralGCM models."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TypeAlias, TypeVar
 
 import coordax as cx
 import jax.numpy as jnp
 from neuralgcm.base import model
 from neuralgcm.base import units_utils
+from terrax.core import coordinates
 from terrax.core import module_utils
 from terrax.core import observation_operators
 from terrax.core import spherical_harmonics
 from terrax.core import transforms
 from terrax.core import typing
+from terrax.core import units
 from terrax.couplers import generic
 
 DataCoupler: TypeAlias = (
@@ -52,17 +54,96 @@ def merge_inputs_specs(
   return merged
 
 
-def merge_prognostics(*components: model.Model) -> dict[str, cx.Field]:
-  """Merges `prognostic_values()` across `components`, raising on conflicts."""
+def merge_prognostics(
+    *components: model.Model,
+    sim_units: units.SimUnits | None = None,
+) -> dict[str, cx.Field]:
+  """Merges `prognostic_values()` across `components`, raising on conflicts.
+
+  Args:
+    *components: Component models whose `prognostic_values()` are merged.
+    sim_units: Optional simulation units to re-express component prognostics in
+      via `units_utils.units_passage`. If `None`, component prognostics are
+      merged without unit conversion.
+
+  Returns:
+    Merged prognostic fields keyed by variable name.
+  """
   merged: dict[str, cx.Field] = {}
   for component in components:
-    for k, v in component.prognostic_values().items():
+    prognostics = component.prognostic_values()
+    if sim_units is not None:
+      assert component.sim_units is not None
+      assert component.units_mapping is not None
+      prognostics = units_utils.units_passage(
+          prognostics, component.sim_units, sim_units, component.units_mapping
+      )
+    for k, v in prognostics.items():
       if k in merged and k != 'time':
         raise ValueError(
             f'Overlapping prognostic variable {k!r} across model components.'
         )
       merged[k] = v
   return merged
+
+
+def setup_composite_units(
+    composite: model.Model, components: Sequence[model.Model]
+) -> None:
+  """Defaults `sim_units` and `units_mapping` of `composite` from components.
+
+  `sim_units` defaults to the units of the first component (so that passages
+  between the composite and its primary component are no-ops) and
+  `units_mapping` to the merged mappings of all components. Call before
+  `super().__post_init__()` in composite models.
+
+  Args:
+    composite: Composite model whose unit defaults are resolved in place.
+    components: Component models, primary component first.
+  """
+  if composite.sim_units is None:
+    composite.sim_units = components[0].sim_units
+  if composite.units_mapping is None:
+    mappings = []
+    for component in components:
+      assert component.units_mapping is not None
+      mappings.append(component.units_mapping)
+    composite.units_mapping = units_utils.merge_units_mappings(*mappings)
+
+
+def passage_query(
+    query: typing.Query, source_model: model.Model, target_model: model.Model
+) -> typing.Query:
+  """Converts nondimensional `Field` entries of `query` for `target_model`.
+
+  Coordinate entries are returned as-is and `typing.Auxiliary` wrapping is
+  preserved. `query` is returned unchanged when the models share a scale.
+
+  Args:
+    query: Query with `Field` entries in `source_model.sim_units`.
+    source_model: Model whose `sim_units` and `units_mapping` describe `query`.
+    target_model: Model whose `sim_units` the `Field` entries are converted to.
+
+  Returns:
+    `query` with `Field` entries in `target_model.sim_units`.
+  """
+  source_units, target_units = source_model.sim_units, target_model.sim_units
+  units_mapping = source_model.units_mapping
+  assert source_units is not None and target_units is not None
+  assert units_mapping is not None
+  if source_units.scale == target_units.scale:
+    return query
+  outputs = {}
+  for k, raw_entry in query.items():
+    entry, is_aux = typing.unwrap_auxiliary(raw_entry)
+    if cx.is_field(entry):
+      [entry] = units_utils.units_passage(
+          {k: entry}, source_units, target_units, units_mapping
+      ).values()
+      outputs[k] = typing.Auxiliary(entry) if is_aux else entry
+    else:
+      outputs[k] = raw_entry
+  return outputs
 
 
 def get_all_operators(
@@ -193,7 +274,7 @@ def dispatch_observe_nondim(
     assert component.sim_units is not None
     assert component.units_mapping is not None
     sub_queries = {
-        k: _passage_query(q, composite, component)
+        k: passage_query(q, composite, component)
         for k, q in sub_queries.items()
     }
     for k, obs in component.observe_nondim(sub_queries).items():
@@ -207,39 +288,23 @@ def dispatch_observe_nondim(
   }
 
 
-def _passage_query(
-    query: typing.Query, source_model: model.Model, target_model: model.Model
-) -> typing.Query:
-  """Converts nondimensional `Field` entries of `query` for `target_model`."""
-  source_units, target_units = source_model.sim_units, target_model.sim_units
-  units_mapping = source_model.units_mapping
-  assert source_units is not None and target_units is not None
-  assert units_mapping is not None
-  if source_units.scale == target_units.scale:
-    return query
-  outputs = {}
-  for k, raw_entry in query.items():
-    entry, is_aux = typing.unwrap_auxiliary(raw_entry)
-    if cx.is_field(entry):
-      [entry] = units_utils.units_passage(
-          {k: entry}, source_units, target_units, units_mapping
-      ).values()
-      outputs[k] = typing.Auxiliary(entry) if is_aux else entry
-    else:
-      outputs[k] = raw_entry
-  return outputs
+def _modal_with_ylm_suffix(inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
+  """Selects fields with `SphericalHarmonicGrid` and adds `'_ylm'` to keys."""
+  sel_modal = transforms.FilterByCoord(types=coordinates.SphericalHarmonicGrid)
+  return {f'{k}_ylm': v for k, v in sel_modal(inputs).items()}
 
 
-def primitive_equations_nodal_operator(
+def primitive_equations_state_operator(
     ylm_map: spherical_harmonics.FixedYlmMapping,
 ) -> observation_operators.TransformObservationOperator:
-  """Returns an operator observing nodal fields from primitive equation prognostics.
+  """Returns an operator observing primitive equation prognostics.
 
   Converts modal prognostic fields on `ylm_map.ylm_grid` to nodal fields on
   `ylm_map.lon_lat_grid` (passing through any already-nodal fields and `time`),
-  computes `u_component_of_wind` and `v_component_of_wind` from `divergence`
-  and `vorticity`, and computes `surface_pressure` by exponentiating
-  `log_surface_pressure`.
+  exposes modal prognostic fields on `SphericalHarmonicGrid` with a `'_ylm'`
+  key suffix, computes `u_component_of_wind` and `v_component_of_wind` from
+  `divergence` and `vorticity`, and computes `surface_pressure` by
+  exponentiating `log_surface_pressure`.
 
   Args:
     ylm_map: Spherical harmonic mapping between the model's modal and nodal
@@ -254,6 +319,7 @@ def primitive_equations_nodal_operator(
       transforms.Merge({
           'uv': transforms.VelocityFromDivCurl(ylm_map),
           'nodal': to_nodal,
+          'ylm': transforms.WrapFn(_modal_with_ylm_suffix),
       }),
       transforms.Merge({
           'nodal': transforms.Identity(),  # pyrefly: ignore[bad-assignment]

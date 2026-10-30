@@ -78,15 +78,15 @@ class UnitsPassageTest(absltest.TestCase):
     self.assertEqual(out['snow_depth'].dtype, jnp.float32)
     # Dimensionless variables have a unit factor of exactly one.
     self.assertIs(out['snow_cover_fraction'], frac)
-    # The receiving side may name the quantity in other units (e.g. it may
-    # redimensionalize `snow_depth` to centimeters); nondimensional values do
-    # not depend on that, only on the units the source values are defined in.
+    # Between two `SimUnits`, the rescaling factor depends only on the
+    # physical dimension of the unit (scalar prefixes like `'meter'` vs
+    # `'centimeter'` cancel between numerator and denominator).
     target_mapping = source_mapping | {'snow_depth': 'centimeter'}
-    expected_cm = transforms.Nondimensionalize(target_units, target_mapping)(
-        transforms.Redimensionalize(source_units, target_mapping)(fields)
+    out_cm = units_utils.units_passage(
+        fields, source_units, target_units, target_mapping
     )
     cx.testing.assert_fields_allclose(
-        out['snow_depth'], expected_cm['snow_depth'], rtol=1e-6
+        out['snow_depth'], out_cm['snow_depth'], rtol=1e-6
     )
     # The round trip back to the source units is the identity.
     back = units_utils.units_passage(

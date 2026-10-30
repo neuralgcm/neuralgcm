@@ -69,9 +69,9 @@ def units_passage(
     source_units: Units in which `fields` are expressed; `None` for physical
       units.
     target_units: Units to express `fields` in; `None` for physical units.
-    units_mapping: Physical unit of each variable, defining the quantity that
-      its nondimensional values represent (the units mapping of the model on
-      the nondimensional side; with both sides nondimensional, the source's).
+    units_mapping: Physical unit of each variable on a physical (`None`)
+      endpoint, or any unit of the same physical dimension when converting
+      between two `SimUnits` (e.g. the source model's `units_mapping`).
 
   Returns:
     `fields` in `target_units`, in the same key order.

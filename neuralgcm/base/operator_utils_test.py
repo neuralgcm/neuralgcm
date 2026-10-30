@@ -24,6 +24,7 @@ from neuralgcm.base import operator_utils
 from neuralgcm.base import units_utils
 import numpy as np
 from terrax.core import coordinates
+from terrax.core import diagnostics
 from terrax.core import observation_operators
 from terrax.core import spherical_harmonics
 from terrax.core import transforms
@@ -38,6 +39,7 @@ class _DummyComponent(model.Model):
 
   fields_by_key: dict[str, dict[str, cx.Field]] = nnx.data(default_factory=dict)
   prognostics: dict[str, cx.Field] = nnx.data(default_factory=dict)
+  diag_module: diagnostics.DiagnosticModule | None = nnx.data(default=None)
   observe_calls: list[tuple[str, ...]] = nnx.static(
       default_factory=list, init=False
   )
@@ -87,12 +89,14 @@ class _DummyComposite(model.Model):
     pass
 
   def prognostic_values(self) -> dict[str, cx.Field]:
-    merged = operator_utils.merge_prognostics(*self.components.values())
+    merged = operator_utils.merge_prognostics(
+        *self.components.values(), sim_units=self.sim_units
+    )
     return merged | self.extra_prognostics
 
   def diagnostic_values(self) -> dict[str, cx.Field]:
     self.num_diagnostic_values_calls += 1
-    return dict(self.diagnostics)
+    return super().diagnostic_values() | self.diagnostics
 
   def observe_nondim(self, queries: typing.Queries) -> typing.Observation:
     return operator_utils.dispatch_observe_nondim(
@@ -286,19 +290,28 @@ class OperatorUtilsTest(absltest.TestCase):
     sst_kelvin = np.array([280.0, 285.0, 290.0])
     kelvin_nondim = units_utils.unit_factor(units.DEFAULT_UNITS, 'kelvin')
     f_ocean = cx.field(jnp.asarray(sst_kelvin * kelvin_nondim), ax)
+    ocean_diag = diagnostics.InstantDiagnostic(
+        extract=lambda *args, **kwargs: {'sst_diag': f_ocean},
+        extract_coords={'sst_diag': ax},
+    )
+    ocean_diag({})
     ocean = _DummyComponent(
         fields_by_key={'ocean_ds': {'sst': f_ocean}},
+        prognostics={'sst': f_ocean},
+        diag_module=ocean_diag,
         sim_units=units.DEFAULT_UNITS,
-        units_mapping={'sst': 'kelvin'},
+        units_mapping={'sst': 'kelvin', 'sst_diag': 'kelvin'},
     )
     composite = _DummyComposite(
         components={'ocean': ocean},
         sim_units=units.SI_UNITS,
-        units_mapping={'sst': 'kelvin'},
+        units_mapping={'sst': 'kelvin', 'sst_diag': 'kelvin'},
     )
     observed = composite.observe({
         'ocean_ds': {'sst': ax},
         'nondim_ocean_ds': {'sst': ax},
+        'diagnostics': {'sst_diag': ax},
+        'nondim_diagnostics': {'sst_diag': ax},
     })
     # Physical units are defined by the ocean's mapping; nondimensional values
     # are expressed in the composite's (SI) `sim_units` rather than the ocean's.
@@ -307,6 +320,15 @@ class OperatorUtilsTest(absltest.TestCase):
     )
     np.testing.assert_allclose(
         observed['nondim_ocean_ds']['sst'].data, sst_kelvin, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        observed['diagnostics']['sst_diag'].data, sst_kelvin, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        observed['nondim_diagnostics']['sst_diag'].data, sst_kelvin, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        composite.prognostic_values()['sst'].data, sst_kelvin, rtol=1e-6
     )
     cx.testing.assert_fields_allclose(
         ocean.observe({'nondim_ocean_ds': {'sst': ax}})['nondim_ocean_ds'][
@@ -354,7 +376,7 @@ class OperatorUtilsTest(absltest.TestCase):
     ):
       composite.observe({'missing': {'a': ax}})
 
-  def test_primitive_equations_nodal_operator(self):
+  def test_primitive_equations_state_operator(self):
     grid = coordinates.LonLatGrid.T21()
     ylm_grid = coordinates.SphericalHarmonicGrid.T21()
     levels = coordinates.SigmaLevels.equidistant(4)
@@ -373,17 +395,25 @@ class OperatorUtilsTest(absltest.TestCase):
         'specific_humidity': cx.field(jnp.ones(nodal_vol.shape), nodal_vol),
         'time': time,
     }
-    op = operator_utils.primitive_equations_nodal_operator(ylm_map)
+    op = operator_utils.primitive_equations_state_operator(ylm_map)
     query = {
         'u_component_of_wind': nodal_vol,
         'v_component_of_wind': nodal_vol,
+        'divergence': nodal_vol,
+        'divergence_ylm': modal_vol,
+        'vorticity_ylm': modal_vol,
         'temperature': nodal_vol,
+        'temperature_ylm': modal_vol,
         'surface_pressure': grid,
+        'log_surface_pressure_ylm': ylm_grid,
         'specific_humidity': nodal_vol,
         'time': cx.Scalar(),
     }
     observed = op.observe(prognostics, query)
     self.assertEqual(set(observed.keys()), set(query.keys()))
+    cx.testing.assert_fields_allclose(
+        observed['divergence_ylm'], zeros_modal
+    )
     cx.testing.assert_fields_allclose(
         observed['surface_pressure'],
         cx.field(jnp.ones(grid.shape), grid),
@@ -392,6 +422,9 @@ class OperatorUtilsTest(absltest.TestCase):
     self.assertEqual(
         observed['time'].data.to_datetime64(), time.data.to_datetime64()
     )
+    # Nodal fields and `time` do not get a `'_ylm'` suffix.
+    with self.assertRaises(ValueError):
+      op.observe(prognostics, {'specific_humidity_ylm': nodal_vol})
 
 if __name__ == '__main__':
   absltest.main()

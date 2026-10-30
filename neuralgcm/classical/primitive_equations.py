@@ -92,7 +92,7 @@ class SpectralPrimitiveEquationsModel(model.Model):
       the coordinate representation of the prognostic variables it filters.
     tracer_names: Tuple of tracer names evolved by the dynamical core.
     operators: Observation operators for querying the model state. Defaults to
-      `primitive_equations_nodal_operator(ylm_map)` keyed by
+      `primitive_equations_state_operator(ylm_map)` keyed by
       `prognostics_data_key` if empty. Observations are returned in physical
       units per `units_mapping`, unless the query key is prefixed with
       `'nondim_'`, which returns nondimensional values.
@@ -128,13 +128,15 @@ class SpectralPrimitiveEquationsModel(model.Model):
   ):
     if units_mapping is None:
       units_mapping = defaults.DEFAULT_UNITS_MAPPING
-    units_mapping = dict(units_mapping) | {
-        k: 'dimensionless' for k in tracer_names
-    }
+    units_mapping = (
+        dict(units_mapping)
+        | {k: 'dimensionless' for k in tracer_names}
+        | {f'{k}_ylm': 'dimensionless' for k in tracer_names}
+    )
     if not operators:
       operators = {
           prognostics_data_key: (
-              operator_utils.primitive_equations_nodal_operator(ylm_map)
+              operator_utils.primitive_equations_state_operator(ylm_map)
           ),
       }
     model_kwargs = dict(

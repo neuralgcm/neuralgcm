@@ -14,8 +14,6 @@
 
 """Coupled ocean-atmosphere and ocean-land-atmosphere models."""
 
-from collections.abc import Sequence
-
 import coordax as cx
 from flax import nnx
 from neuralgcm.base import model
@@ -28,29 +26,6 @@ from terrax.core import typing
 # pylint: disable=g-classes-have-attributes
 
 DataCoupler = operator_utils.DataCoupler
-
-
-def _setup_composite_units(
-    composite: model.Model, components: Sequence[model.Model]
-) -> None:
-  """Defaults `sim_units` and `units_mapping` of `composite` from components.
-
-  `sim_units` defaults to the units of the first component (so that passages
-  between the composite and its primary component are no-ops) and
-  `units_mapping` to the merged mappings of all components.
-
-  Args:
-    composite: composite model whose unset units attributes are defaulted.
-    components: model components of `composite`; the first one is primary.
-  """
-  if composite.sim_units is None:
-    composite.sim_units = components[0].sim_units
-  if composite.units_mapping is None:
-    mappings = []
-    for component in components:
-      assert component.units_mapping is not None
-      mappings.append(component.units_mapping)
-    composite.units_mapping = units_utils.merge_units_mappings(*mappings)
 
 
 def _validate_coupler_units(
@@ -217,7 +192,7 @@ class OceanAtmosphere(model.Model):
           f'ocean.timestep={self.ocean.timestep} and '
           f'atmosphere.timestep={self.atmosphere.timestep}.'
       )
-    _setup_composite_units(self, [self.atmosphere, self.ocean])
+    operator_utils.setup_composite_units(self, [self.atmosphere, self.ocean])
     super().__post_init__()
     _validate_coupler_units(
         self.ocean_to_atmosphere_coupler,
@@ -241,7 +216,9 @@ class OceanAtmosphere(model.Model):
     return self.model_timestep
 
   def prognostic_values(self) -> dict[str, cx.Field]:
-    return operator_utils.merge_prognostics(self.ocean, self.atmosphere)
+    return operator_utils.merge_prognostics(
+        self.ocean, self.atmosphere, sim_units=self.sim_units
+    )
 
   @nnx.remat
   def _observe_ocean(self) -> typing.Observation:
@@ -402,7 +379,9 @@ class OceanLandAtmosphere(model.Model):
           f'land.timestep={self.land.timestep}, and '
           f'atmosphere.timestep={self.atmosphere.timestep}.'
       )
-    _setup_composite_units(self, [self.atmosphere, self.ocean, self.land])
+    operator_utils.setup_composite_units(
+        self, [self.atmosphere, self.ocean, self.land]
+    )
     super().__post_init__()
     _validate_coupler_units(
         self.ocean_to_atmosphere_coupler,
@@ -443,7 +422,7 @@ class OceanLandAtmosphere(model.Model):
 
   def prognostic_values(self) -> dict[str, cx.Field]:
     return operator_utils.merge_prognostics(
-        self.ocean, self.land, self.atmosphere
+        self.ocean, self.land, self.atmosphere, sim_units=self.sim_units
     )
 
   @nnx.remat

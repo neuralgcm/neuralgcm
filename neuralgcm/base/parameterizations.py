@@ -278,17 +278,19 @@ class ModalParameterization(transforms.TransformABC):
       self.to_div_curl = None
 
   def __call__(self, inputs: dict[str, cx.Field]) -> dict[str, cx.Field]:
-    inputs = parallelism.with_dycore_sharding(self.mesh, inputs)
+    mesh = self.mesh
+    assert mesh is not None  # set in `__post_init__`.
+    inputs = mesh.with_sharding_constraint(inputs, 'vertical')
     if self.features_transform is not None:
       features = self.features_transform(inputs)
-      features = parallelism.with_dycore_to_physics_sharding(
-          self.mesh, features
+      features = mesh.with_sharding_constraint(
+          features, ('horizontal', 'vertical')
       )
     else:
       features = inputs
     tendencies = self.nodal_tendency_transform(features)
-    tendencies = parallelism.with_physics_to_dycore_sharding(
-        self.mesh, tendencies
+    tendencies = mesh.with_sharding_constraint(
+        tendencies, ('vertical', 'horizontal')
     )
     if self.tendency_transform is not None:
       tendencies = self.tendency_transform(tendencies)
@@ -329,10 +331,10 @@ class ModalParameterization(transforms.TransformABC):
       assert self.to_div_curl is not None
       modal_tendencies = self.to_div_curl(to_modal)
     elif to_modal:
-      to_modal = parallelism.with_dycore_sharding(self.mesh, to_modal)
+      to_modal = mesh.with_sharding_constraint(to_modal, 'vertical')
       modal_tendencies = self.ylm_map.to_modal(to_modal)
-      modal_tendencies = parallelism.with_dycore_sharding(
-          self.mesh, modal_tendencies
+      modal_tendencies = mesh.with_sharding_constraint(
+          modal_tendencies, 'vertical'
       )
     else:
       modal_tendencies = {}
@@ -349,7 +351,7 @@ class ModalParameterization(transforms.TransformABC):
         )
         for k, target_field in prognostic_targets.items()
     }
-    return parallelism.with_dycore_sharding(self.mesh, outputs)
+    return mesh.with_sharding_constraint(outputs, 'vertical')
 
   @classmethod
   def build_using_factories(

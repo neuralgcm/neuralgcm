@@ -303,7 +303,7 @@ class SpectralPrimitiveEquationsModel(model.Model):
             f'expected {expected_coord}.'
         )
     prognostics = self.clip_transform(prognostics)
-    prognostics = parallelism.with_dycore_sharding(self.mesh, prognostics)
+    prognostics = self.mesh.with_sharding_constraint(prognostics, 'vertical')
     self.prognostics.set_value(prognostics | {'time': time})
 
   def substep(self, state: dict[str, cx.Field]) -> dict[str, cx.Field]:
@@ -329,6 +329,6 @@ class SpectralPrimitiveEquationsModel(model.Model):
 
   def prognostic_values(self) -> dict[str, cx.Field]:
     """Returns current nondimensional prognostic values of the model."""
-    return parallelism.with_dycore_sharding(
-        self.mesh, self.prognostics.get_value()
+    return self.mesh.with_sharding_constraint(
+        self.prognostics.get_value(), 'vertical'
     )

@@ -40,7 +40,6 @@ from terrax.core import interpolators
 from terrax.core import module_utils
 from terrax.core import observation_operators
 from terrax.core import orographies
-from terrax.core import parallelism
 from terrax.core import random_processes
 from terrax.core import spatial_filters
 from terrax.core import spherical_harmonics
@@ -959,7 +958,7 @@ class LearnedParameterizationSpectralDycore(model.Model):
     if nondimensionalize:
       prognostics = self.nondim_transform(prognostics)
     _check_coordinates(prognostics, expected, 'Prognostic variable')
-    prognostics = parallelism.with_dycore_sharding(self.mesh, prognostics)
+    prognostics = self.mesh.with_sharding_constraint(prognostics, 'vertical')
     self.prognostics.set_value(prognostics | {'time': time})
 
   def _assimilate_source(
@@ -1010,10 +1009,12 @@ class LearnedParameterizationSpectralDycore(model.Model):
     input_fields = {
         k: time_utils.select_zero_timedelta(v) for k, v in fields.items()
     }
-    input_fields = parallelism.with_physics_sharding(self.mesh, input_fields)
+    input_fields = self.mesh.with_sharding_constraint(
+        input_fields, 'horizontal'
+    )
     if source.regridder is not None:
-      regridded_inputs = parallelism.with_physics_sharding(
-          self.mesh, source.regridder(input_fields)
+      regridded_inputs = self.mesh.with_sharding_constraint(
+          source.regridder(input_fields), 'horizontal'
       )
     else:
       regridded_inputs = input_fields
@@ -1024,8 +1025,8 @@ class LearnedParameterizationSpectralDycore(model.Model):
         orography=self.model_orography,  # pyrefly: ignore[bad-argument-type]
         sim_units=self.sim_units,
     )
-    pe_state_nodal = parallelism.with_physics_sharding(
-        self.mesh, pe_state_nodal
+    pe_state_nodal = self.mesh.with_sharding_constraint(
+        pe_state_nodal, 'horizontal'
     )
     nodal_tracers = {k: pe_state_nodal.pop(k) for k in self.nodal_tracers}
     pe_state = self.to_modal_with_div_curl(pe_state_nodal) | nodal_tracers
@@ -1033,11 +1034,11 @@ class LearnedParameterizationSpectralDycore(model.Model):
       if source.correction_timedelta is None:
         correction_inputs = input_fields
       else:
-        # TODO(dkochkov): Use field sharding here, `with_physics_sharding`
-        # doesn't support inputs with a `timedelta` axis.
-        correction_inputs = fields
+        correction_inputs = self.mesh.with_sharding_constraint(
+            fields, 'horizontal'
+        )
       correction = source.correction(correction_inputs | {'time': time})
-      correction = parallelism.with_dycore_sharding(self.mesh, correction)
+      correction = self.mesh.with_sharding_constraint(correction, 'vertical')
       nodal_tracer_corrections = {
           k: correction.pop(k) for k in self.nodal_tracers if k in correction
       }
@@ -1058,8 +1059,8 @@ class LearnedParameterizationSpectralDycore(model.Model):
       else:
         to_modal = self.model_ylm_map.to_modal
         correction = {k: to_modal(v) for k, v in correction.items()}
-      correction = parallelism.with_dycore_sharding(
-          self.mesh, correction | nodal_tracer_corrections
+      correction = self.mesh.with_sharding_constraint(
+          correction | nodal_tracer_corrections, 'vertical'
       )
       if unknown_keys := set(correction) - set(pe_state):
         raise ValueError(
@@ -1068,10 +1069,10 @@ class LearnedParameterizationSpectralDycore(model.Model):
         )
       _check_coordinates(correction, pe_state, 'Correction of')
       pe_state |= {k: pe_state[k] + v for k, v in correction.items()}
-      pe_state = parallelism.with_dycore_sharding(self.mesh, pe_state)
+      pe_state = self.mesh.with_sharding_constraint(pe_state, 'vertical')
 
     pe_state = self.clip_transform(pe_state)
-    pe_state = parallelism.with_dycore_sharding(self.mesh, pe_state)
+    pe_state = self.mesh.with_sharding_constraint(pe_state, 'vertical')
     if source.filter_state is not None:
       state = pe_state | {'time': time}
       filtered = dict(source.filter_state(state))
@@ -1085,11 +1086,11 @@ class LearnedParameterizationSpectralDycore(model.Model):
       # Filters that are not diagonal in spectral space, e.g. nodal operations,
       # can reintroduce the clipped wavenumber.
       pe_state = self.clip_transform(filtered)
-      pe_state = parallelism.with_dycore_sharding(self.mesh, pe_state)
+      pe_state = self.mesh.with_sharding_constraint(pe_state, 'vertical')
     self.prognostics.set_value(pe_state | {'time': time})
 
   def prognostic_values(self) -> dict[str, cx.Field]:
     """Returns current nondimensional prognostic values of the model."""
-    return parallelism.with_dycore_sharding(
-        self.mesh, self.prognostics.get_value()
+    return self.mesh.with_sharding_constraint(
+        self.prognostics.get_value(), 'vertical'
     )

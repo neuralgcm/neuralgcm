@@ -697,11 +697,13 @@ class LearnedParameterizationSpectralDycore(model.Model):
   ) -> dict[str, dict[str, data_specs.CoordSpec]]:
     """Returns specs of inputs for `source` from which state can be derived."""
     all_input_variables = [
-        'geopotential',
         'temperature',
         'u_component_of_wind',
         'v_component_of_wind',
     ] + list(self.tracer_names)
+    if isinstance(source.levels, coordinates.PressureLevels):
+      # Pressure-level assimilation derives surface pressure from geopotential.
+      all_input_variables.insert(0, 'geopotential')
     lvl_dim = source.levels.dims[0]
     if isinstance(source.levels, coordinates.HybridLevels):
       # Hybrid level ticks are indices, hence levels must match exactly.
